@@ -10,3 +10,9 @@ export {
   snapshotToCas,
 } from "./cas.js";
 export type { CasBlock, CasFileManifest, CasManifest } from "./cas.js";
+export {
+  createPartitionCasSnapshot,
+  highWatermarkMap,
+  listEventsAfterPartitionSnapshot,
+} from "./partition-snapshot.js";
+export type { PartitionCasSnapshot } from "./partition-snapshot.js";

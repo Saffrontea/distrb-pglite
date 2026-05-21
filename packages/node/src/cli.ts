@@ -4,6 +4,7 @@ import { SyncNode } from "@distrb-pglite/core";
 import { parseArgs } from "node:util";
 import { restoreFromCas, snapshotToCas } from "./cas.js";
 import { inventoryDataDir } from "./inventory.js";
+import { createPartitionCasSnapshot } from "./partition-snapshot.js";
 import { PGlitePartitionStore } from "./pglite-store.js";
 import { WebSocketHub, WebSocketTransport } from "./websocket-transport.js";
 
@@ -117,6 +118,22 @@ if (command === "hub") {
   const dataDir = values.dataDir ?? `./.data/${nodeId}`;
   const manifest = await snapshotToCas({ dataDir, casDir: values.casDir });
   console.log(JSON.stringify(manifest, null, 2));
+} else if (command === "partition-snapshot") {
+  const nodeId = values.node;
+  const partition = values.partition;
+  if (!nodeId || !partition || !values.casDir) {
+    throw new Error("--node, --partition, and --casDir are required");
+  }
+
+  const store = await openStore(nodeId, values.dataDir);
+  const dataDir = values.dataDir ?? `./.data/${nodeId}`;
+  const snapshot = await createPartitionCasSnapshot({
+    store,
+    partitionId: partition,
+    dataDir,
+    casDir: values.casDir,
+  });
+  console.log(JSON.stringify(snapshot, null, 2));
 } else if (command === "cas-restore") {
   if (!values.casDir || !values.targetDir || !values.manifest) {
     throw new Error("--casDir, --targetDir, and --manifest are required");
@@ -137,6 +154,7 @@ if (command === "hub") {
   distrb-pglite catchup --node node-b --peer node-a --partition tenant:jp --url ws://localhost:8787
   distrb-pglite inventory --node node-a
   distrb-pglite cas-snapshot --node node-a --casDir ./.cas
+  distrb-pglite partition-snapshot --node node-a --partition tenant:jp --casDir ./.cas
   distrb-pglite cas-restore --casDir ./.cas --targetDir ./.restore/node-a --manifest '<json>'
 `);
 }

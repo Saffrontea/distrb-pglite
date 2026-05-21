@@ -80,3 +80,14 @@ Phase 7 starts by treating the PGlite data directory as the snapshot boundary. T
 mise exec -- pnpm --filter @distrb-pglite/node exec distrb-pglite inventory \
   --node node-a
 ```
+
+## Create A Partition Snapshot Manifest
+
+This wraps the CAS manifest with the partition id and the per-source-node high-watermark vector used for replay.
+
+```bash
+mise exec -- pnpm --filter @distrb-pglite/node exec distrb-pglite partition-snapshot \
+  --node node-a \
+  --partition tenant:jp \
+  --casDir ./.cas
+```
