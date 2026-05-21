@@ -81,6 +81,7 @@ Replication uses source-node-local event streams. Event IDs are UUID v7, but cor
 
 ## Phase 10: PGlite Fork / Custom Filesystem Integration
 
+- Define a small CAS-backed filesystem contract before binding to PGlite internals.
 - Create a PGlite integration branch or package that injects the CoW/CAS storage layer at the closest supported filesystem boundary.
 - Replace opaque directory copying with a managed snapshot filesystem adapter.
 - Add failure tests for interrupted writes, partial block availability, duplicate block fetches, and manifest corruption.

@@ -17,3 +17,11 @@ export type { PartitionStore } from "./store.js";
 export { MemoryTransport } from "./memory-transport.js";
 export type { Transport, TransportConnection, TransportHandlers } from "./transport.js";
 export { SyncNode } from "./sync-node.js";
+export { MemoryBlobStore } from "./blob-store.js";
+export type { BlobRef, BlobStore } from "./blob-store.js";
+export { CasSnapshotFilesystem } from "./snapshot-fs.js";
+export type {
+  SnapshotFile,
+  SnapshotFilesystem,
+  SnapshotFilesystemManifest,
+} from "./snapshot-fs.js";
