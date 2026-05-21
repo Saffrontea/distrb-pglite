@@ -1,7 +1,7 @@
-import { createHash } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { copyFile, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { inventoryDataDir, type FileInventoryEntry } from "./inventory.js";
+import { inventoryDataDir, type DataDirInventory, type FileInventoryEntry } from "./inventory.js";
 
 export type CasBlock = {
   hash: string;
@@ -17,7 +17,10 @@ export type CasFileManifest = {
 
 export type CasManifest = {
   version: 1;
+  snapshotId: string;
+  parentSnapshotIds: string[];
   chunkSize: number;
+  directories: string[];
   files: CasFileManifest[];
 };
 
@@ -25,6 +28,8 @@ export async function snapshotToCas(options: {
   dataDir: string;
   casDir: string;
   chunkSize?: number;
+  snapshotId?: string;
+  parentSnapshotIds?: string[];
 }): Promise<CasManifest> {
   const chunkSize = options.chunkSize ?? 64 * 1024;
   const inventory = await inventoryDataDir(options.dataDir);
@@ -40,7 +45,10 @@ export async function snapshotToCas(options: {
 
   return {
     version: 1,
+    snapshotId: options.snapshotId ?? randomUUID(),
+    parentSnapshotIds: options.parentSnapshotIds ?? [],
     chunkSize,
+    directories: inventory.directories,
     files,
   };
 }
@@ -51,6 +59,10 @@ export async function restoreFromCas(options: {
   targetDir: string;
 }): Promise<void> {
   await mkdir(options.targetDir, { recursive: true });
+
+  for (const directory of options.manifest.directories) {
+    await mkdir(join(options.targetDir, directory), { recursive: true });
+  }
 
   for (const file of options.manifest.files) {
     const chunks: Uint8Array[] = [];
@@ -89,11 +101,65 @@ export function diffMissingBlocks(
   return [...missing.values()].sort((left, right) => left.hash.localeCompare(right.hash));
 }
 
+export async function listCasBlockHashes(casDir: string): Promise<Set<string>> {
+  const hashes = new Set<string>();
+  let entries: string[];
+  try {
+    entries = await readdir(casDir);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return hashes;
+    }
+    throw error;
+  }
+
+  for (const entry of entries) {
+    if (/^[0-9a-f]{64}$/.test(entry)) {
+      hashes.add(entry);
+    }
+  }
+  return hashes;
+}
+
+export async function transferMissingBlocks(options: {
+  manifest: CasManifest;
+  sourceCasDir: string;
+  targetCasDir: string;
+  availableBlockHashes?: ReadonlySet<string>;
+}): Promise<CasBlock[]> {
+  const available = options.availableBlockHashes ?? await listCasBlockHashes(options.targetCasDir);
+  const missing = diffMissingBlocks(options.manifest, available);
+  await mkdir(options.targetCasDir, { recursive: true });
+
+  for (const block of missing) {
+    const source = blockPath(options.sourceCasDir, block.hash);
+    const target = blockPath(options.targetCasDir, block.hash);
+    const content = await readFile(source);
+    if (content.length !== block.size || sha256(content) !== block.hash) {
+      throw new Error(`CAS source block integrity check failed: ${block.hash}`);
+    }
+    await copyFile(source, target);
+  }
+
+  return missing;
+}
+
 export function manifestFilesEqualInventory(
   manifest: CasManifest,
-  inventory: readonly FileInventoryEntry[],
+  inventory: Pick<DataDirInventory, "directories" | "files"> | readonly FileInventoryEntry[],
 ): boolean {
-  return JSON.stringify(manifest.files.map(stripBlocks)) === JSON.stringify(inventory);
+  if (Array.isArray(inventory)) {
+    return JSON.stringify(manifest.files.map(stripBlocks)) === JSON.stringify(inventory);
+  }
+
+  const dataDirInventory = inventory as Pick<DataDirInventory, "directories" | "files">;
+  return JSON.stringify({
+    directories: manifest.directories,
+    files: manifest.files.map(stripBlocks),
+  }) === JSON.stringify({
+    directories: dataDirInventory.directories,
+    files: dataDirInventory.files,
+  });
 }
 
 async function writeBlocks(

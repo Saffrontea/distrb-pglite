@@ -73,6 +73,7 @@ Replication uses source-node-local event streams. Event IDs are UUID v7, but cor
 - Implement diff transfer as manifest comparison plus missing block fetch.
 - Keep this phase outside PGlite internals to validate snapshot, GC, and replication invariants before maintaining a fork.
 - Acceptance: two snapshots with overlapping data reuse blocks, transfer only missing blocks, and reconstruct a readable PGlite data directory.
+- Current contract: CAS manifests include snapshot ids, parent snapshot ids, directories, file hashes, and content-addressed block lists.
 
 ## Phase 9: Partition-Aware Snapshot Semantics
 

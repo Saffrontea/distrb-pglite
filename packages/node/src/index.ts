@@ -9,9 +9,11 @@ export type {
 } from "./inventory.js";
 export {
   diffMissingBlocks,
+  listCasBlockHashes,
   manifestFilesEqualInventory,
   restoreFromCas,
   snapshotToCas,
+  transferMissingBlocks,
 } from "./cas.js";
 export type { CasBlock, CasFileManifest, CasManifest } from "./cas.js";
 export {

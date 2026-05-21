@@ -67,3 +67,9 @@ Proceed with custom filesystem integration first. Do not fork PGlite or patch sm
 The early file-boundary snapshot contract is intentionally conservative: export only a closed or otherwise quiesced PGlite data directory. The inventory records each regular file by relative path, size, and sha256. A copied import is valid only when the target inventory exactly matches the source inventory before the imported database is opened.
 
 The Phase 7 integration test creates both application data and distributed event metadata, closes the source PGlite instance, copies the data directory, opens the copy, and verifies that both the application table and `distrb_events` high-watermark metadata are readable. This validates the black-box file boundary before moving the same invariants into CAS manifests and custom filesystem work.
+
+## Phase 8 External CAS Contract
+
+The external CAS prototype keeps PGlite unchanged. A snapshot manifest records a snapshot id, parent snapshot ids, empty directories, file hashes, and content-addressed blocks. A receiver compares the next manifest with its local CAS block set, copies only missing blocks, restores the data directory, and opens the restored PGlite database.
+
+The restore path must preserve empty directories as well as file content. PGlite can abort during startup if required runtime directories are missing even when every regular file hash matches.

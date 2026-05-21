@@ -10,6 +10,7 @@ export type FileInventoryEntry = {
 
 export type DataDirInventory = {
   root: string;
+  directories: string[];
   files: FileInventoryEntry[];
 };
 
@@ -19,10 +20,11 @@ export type DataDirSnapshotCopy = {
 };
 
 export async function inventoryDataDir(root: string): Promise<DataDirInventory> {
-  const files = await walk(root);
+  const entries = await walk(root);
   return {
     root,
-    files: files.sort((left, right) => left.path.localeCompare(right.path)),
+    directories: entries.directories.sort(),
+    files: entries.files.sort((left, right) => left.path.localeCompare(right.path)),
   };
 }
 
@@ -40,14 +42,21 @@ export async function copyDataDirSnapshot(options: {
   return { source, target };
 }
 
-async function walk(root: string, dir = root): Promise<FileInventoryEntry[]> {
+async function walk(
+  root: string,
+  dir = root,
+): Promise<{ directories: string[]; files: FileInventoryEntry[] }> {
   const entries = await readdir(dir, { withFileTypes: true });
+  const directories: string[] = [];
   const files: FileInventoryEntry[] = [];
 
   for (const entry of entries) {
     const absolutePath = join(dir, entry.name);
     if (entry.isDirectory()) {
-      files.push(...await walk(root, absolutePath));
+      directories.push(normalizeRelativePath(relative(root, absolutePath)));
+      const child = await walk(root, absolutePath);
+      directories.push(...child.directories);
+      files.push(...child.files);
       continue;
     }
 
@@ -64,7 +73,7 @@ async function walk(root: string, dir = root): Promise<FileInventoryEntry[]> {
     });
   }
 
-  return files;
+  return { directories, files };
 }
 
 function normalizeRelativePath(path: string): string {

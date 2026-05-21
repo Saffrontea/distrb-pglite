@@ -29,16 +29,18 @@ export async function createPartitionCasSnapshot(options: {
   ids?: UuidV7Factory;
 }): Promise<PartitionCasSnapshot> {
   const ids = options.ids ?? new UuidV7Factory();
+  const snapshotId = `partition-snapshot:${options.partitionId}:${ids.next()}`;
   const highWatermark = await options.store.getHighWatermark(options.partitionId);
   const manifest = await snapshotToCas({
     dataDir: options.dataDir,
     casDir: options.casDir,
     chunkSize: options.chunkSize,
+    snapshotId,
   });
 
   return {
     version: 1,
-    snapshotId: `partition-snapshot:${options.partitionId}:${ids.next()}`,
+    snapshotId,
     partitionId: options.partitionId,
     storageBinding: options.storageBinding,
     highWatermark: [...highWatermark].sort(([left], [right]) => left.localeCompare(right)),
