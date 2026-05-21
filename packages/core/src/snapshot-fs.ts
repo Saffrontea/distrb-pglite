@@ -1,16 +1,18 @@
 import type { BlobRef, BlobStore } from "./blob-store.js";
 
-export type SnapshotFile = {
+// Generic content-addressed filesystem shape. It does not know about
+// partitioning, parent snapshots, or host data-directory integrity checks.
+export type SnapshotFile<TBlock extends BlobRef = BlobRef> = {
   path: string;
   size: number;
-  blocks: BlobRef[];
+  blocks: TBlock[];
 };
 
-export type SnapshotFilesystemManifest = {
+export type SnapshotFilesystemManifest<TFile extends SnapshotFile = SnapshotFile> = {
   version: 1;
   chunkSize: number;
   directories: string[];
-  files: SnapshotFile[];
+  files: TFile[];
 };
 
 export type SnapshotFilesystem = {

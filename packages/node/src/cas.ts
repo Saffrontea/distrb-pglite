@@ -1,27 +1,22 @@
 import { createHash, randomUUID } from "node:crypto";
 import { copyFile, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import type { BlobRef, SnapshotFile, SnapshotFilesystemManifest } from "@distrb-pglite/core";
 import { inventoryDataDir, type DataDirInventory, type FileInventoryEntry } from "./inventory.js";
 
-export type CasBlock = {
-  hash: string;
-  size: number;
-};
+export type CasBlock = BlobRef;
 
-export type CasFileManifest = {
-  path: string;
-  size: number;
+// Node data-directory CAS snapshots use the core filesystem manifest shape,
+// then add per-file hashes so copied/restored host files can be verified.
+export type CasFileManifest = SnapshotFile<CasBlock> & {
   sha256: string;
-  blocks: CasBlock[];
 };
 
-export type CasManifest = {
-  version: 1;
+// External data-directory snapshot graph. This is not the in-memory filesystem
+// adapter manifest; it tracks snapshot lineage for diff transfer.
+export type CasManifest = SnapshotFilesystemManifest<CasFileManifest> & {
   snapshotId: string;
   parentSnapshotIds: string[];
-  chunkSize: number;
-  directories: string[];
-  files: CasFileManifest[];
 };
 
 export async function snapshotToCas(options: {
@@ -148,17 +143,16 @@ export function manifestFilesEqualInventory(
   manifest: CasManifest,
   inventory: Pick<DataDirInventory, "directories" | "files"> | readonly FileInventoryEntry[],
 ): boolean {
-  if (Array.isArray(inventory)) {
+  if (isFileInventoryEntries(inventory)) {
     return JSON.stringify(manifest.files.map(stripBlocks)) === JSON.stringify(inventory);
   }
 
-  const dataDirInventory = inventory as Pick<DataDirInventory, "directories" | "files">;
   return JSON.stringify({
     directories: manifest.directories,
     files: manifest.files.map(stripBlocks),
   }) === JSON.stringify({
-    directories: dataDirInventory.directories,
-    files: dataDirInventory.files,
+    directories: inventory.directories,
+    files: inventory.files,
   });
 }
 
@@ -196,4 +190,10 @@ function stripBlocks(file: CasFileManifest): FileInventoryEntry {
     size: file.size,
     sha256: file.sha256,
   };
+}
+
+function isFileInventoryEntries(
+  inventory: Pick<DataDirInventory, "directories" | "files"> | readonly FileInventoryEntry[],
+): inventory is readonly FileInventoryEntry[] {
+  return Array.isArray(inventory);
 }
