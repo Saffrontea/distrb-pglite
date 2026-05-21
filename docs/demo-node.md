@@ -110,7 +110,7 @@ mise exec -- pnpm --filter @distrb-pglite/node exec distrb-pglite partition-snap
   --node node-a \
   --partition tenant:jp \
   --casDir ./.cas \
-  --storageBinding '{"partitionId":"tenant:jp","hypertableOid":16384,"snapshotScope":"catalog-and-data","relations":[{"databaseOid":5,"tablespaceOid":1668,"relationOid":16384,"relfilenode":16384}]}'
+  --storageBinding '{"partitionId":"tenant:jp","rootRelationOid":16384,"snapshotScope":"catalog-and-data","relations":[{"databaseOid":5,"tablespaceOid":1668,"relationOid":16384,"relfilenode":16384}]}'
 ```
 
 The binding can also be discovered from PGlite catalog metadata:
@@ -119,7 +119,7 @@ The binding can also be discovered from PGlite catalog metadata:
 mise exec -- pnpm --filter @distrb-pglite/node exec distrb-pglite storage-binding \
   --node node-a \
   --partition tenant:jp \
-  --hypertable public.sensor_readings \
+  --rootRelation public.sensor_readings \
   --snapshotScope data-only
 ```
 
@@ -130,6 +130,6 @@ mise exec -- pnpm --filter @distrb-pglite/node exec distrb-pglite partition-snap
   --node node-a \
   --partition tenant:jp \
   --casDir ./.cas \
-  --hypertable public.sensor_readings \
+  --rootRelation public.sensor_readings \
   --snapshotScope data-only
 ```

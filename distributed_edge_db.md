@@ -64,7 +64,7 @@
 - **ZFSのzfsコマンド相当**。アプリがパーティションキーを決め、この層がライフサイクルを管理する。
 - Postgresのextensionとして実装可能な範囲。TimescaleDBのアーキテクチャが参考になる。
 - パーティション単位でSnapshot・Vacuum・配信が独立して動く。
-- `PartitionId`はアプリ層のラベルではなく、storage層でOID/relfilenodeに対応する概念として扱う。TimescaleDBのHypertableが内部カタログとchunk OIDを持つのと同じく、分散差分同期の最小単位はPostgres relation identityに結びつく必要がある。
+- `PartitionId`はアプリ層のラベルではなく、storage層でOID/relfilenodeに対応する概念として扱う。TimescaleDBのようなcatalog-backed partition管理と同じく、分散差分同期の最小単位はPostgres relation identityに結びつく必要がある。
 - Snapshot対象はpartitionごとに選択可能にする。データページのみを運ぶのか、カタログページとデータページを一緒に運ぶのかを明示する。
 
 ```sql
@@ -167,7 +167,7 @@ event log
 
 ```ts
 PartitionId -> {
-  hypertableOid,
+  rootRelationOid,
   relations: [
     { databaseOid, tablespaceOid, relationOid, relfilenode, storagePath }
   ],

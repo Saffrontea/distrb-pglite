@@ -186,7 +186,7 @@ describe("partition CAS snapshots", () => {
 function storageBinding(partitionId: string) {
   return {
     partitionId,
-    hypertableOid: 16_384,
+    rootRelationOid: 16_384,
     snapshotScope: "catalog-and-data" as const,
     relations: [
       {

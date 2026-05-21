@@ -16,13 +16,13 @@ type RelationIdentityRow = {
 export async function discoverStoragePartitionBinding(options: {
   db: PGliteClient;
   partitionId: PartitionId;
-  hypertable: string;
+  rootRelation: string;
   relations?: string[];
   snapshotScope: StorageSnapshotScope;
 }): Promise<StoragePartitionBinding> {
   const relationNames = options.relations?.length
     ? options.relations
-    : [options.hypertable];
+    : [options.rootRelation];
   const relations = [];
 
   for (const relationName of relationNames) {
@@ -56,7 +56,7 @@ export async function discoverStoragePartitionBinding(options: {
 
   return {
     partitionId: options.partitionId,
-    hypertableOid: relations[0]?.relationOid ?? 0,
+    rootRelationOid: relations[0]?.relationOid ?? 0,
     relations,
     snapshotScope: options.snapshotScope,
   };

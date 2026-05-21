@@ -25,14 +25,14 @@ This means the next integration point should be PGlite custom filesystem injecti
 
 `PartitionId` cannot remain only an application label. For filesystem/CAS diff sync, it must bind to Postgres storage identity:
 
-- hypertable or logical partition OID,
+- root relation or logical partition OID,
 - database OID,
 - tablespace OID,
 - relation OID,
 - relfilenode when available,
 - snapshot scope: `data-only` or `catalog-and-data`.
 
-The TimescaleDB hypertable/chunk model is the right analogy. The application chooses a partition key, but the storage layer needs a catalog-backed mapping from that partition to concrete relation files/pages.
+TimescaleDB's catalog-backed chunk model is a useful analogy, but the prototype uses the generic term root relation. The application chooses a partition key, but the storage layer needs a catalog-backed mapping from that partition to concrete relation files/pages.
 
 Snapshot scope must be explicit:
 

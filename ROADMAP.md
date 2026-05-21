@@ -79,7 +79,7 @@ Replication uses source-node-local event streams. Event IDs are UUID v7, but cor
 
 - Move from whole-data-directory snapshots toward partition-scoped snapshot catalogs.
 - Record snapshot high-watermarks as `{ source_node_id -> event_id }` and tie them to manifest roots.
-- Define how `PartitionId` maps to storage identity: hypertable OID, relation OID, relfilenode, database OID, and tablespace OID.
+- Define how `PartitionId` maps to storage identity: root relation OID, relation OID, relfilenode, database OID, and tablespace OID.
 - Make snapshot scope explicit: `data-only` or `catalog-and-data`.
 - Acceptance: a node can pull a partition snapshot, replay only events after the per-source high-watermarks, and avoid receiving unrelated partitions.
 - Current prototype: `data-only` filters CAS acquisition to matching relation files; `catalog-and-data` captures the full closed data directory for restorable bootstrap snapshots.

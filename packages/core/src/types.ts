@@ -16,7 +16,7 @@ export type StorageRelationLocator = {
 
 export type StoragePartitionBinding = {
   partitionId: PartitionId;
-  hypertableOid: PgOid;
+  rootRelationOid: PgOid;
   relations: StorageRelationLocator[];
   snapshotScope: StorageSnapshotScope;
 };

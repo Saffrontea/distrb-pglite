@@ -23,7 +23,7 @@ const { positionals, values } = parseArgs({
     targetDir: { type: "string" },
     manifest: { type: "string" },
     partition: { type: "string" },
-    hypertable: { type: "string" },
+    rootRelation: { type: "string" },
     relation: { type: "string", multiple: true },
     snapshotScope: { type: "string", default: "catalog-and-data" },
     payload: { type: "string" },
@@ -149,7 +149,7 @@ if (command === "hub") {
     : await discoverStoragePartitionBinding({
         db,
         partitionId: partition,
-        hypertable: requireString(values.hypertable, "--hypertable is required without --storageBinding"),
+        rootRelation: requireString(values.rootRelation, "--rootRelation is required without --storageBinding"),
         relations: relationValues(values.relation),
         snapshotScope: snapshotScopeValue(values.snapshotScope),
       });
@@ -165,8 +165,8 @@ if (command === "hub") {
 } else if (command === "storage-binding") {
   const nodeId = values.node;
   const partition = values.partition;
-  if (!nodeId || !partition || !values.hypertable) {
-    throw new Error("--node, --partition, and --hypertable are required");
+  if (!nodeId || !partition || !values.rootRelation) {
+    throw new Error("--node, --partition, and --rootRelation are required");
   }
 
   const dataDir = values.dataDir ?? `./.data/${nodeId}`;
@@ -174,7 +174,7 @@ if (command === "hub") {
   const binding = await discoverStoragePartitionBinding({
     db,
     partitionId: partition,
-    hypertable: values.hypertable,
+    rootRelation: values.rootRelation,
     relations: relationValues(values.relation),
     snapshotScope: snapshotScopeValue(values.snapshotScope),
   });
@@ -208,9 +208,9 @@ if (command === "hub") {
   distrb-pglite inventory --node node-a
   distrb-pglite copy-snapshot --node node-a --targetDir ./.restore/node-a
   distrb-pglite cas-snapshot --node node-a --casDir ./.cas
-  distrb-pglite storage-binding --node node-a --partition tenant:jp --hypertable public.sensor_readings --snapshotScope data-only
+  distrb-pglite storage-binding --node node-a --partition tenant:jp --rootRelation public.sensor_readings --snapshotScope data-only
   distrb-pglite partition-snapshot --node node-a --partition tenant:jp --casDir ./.cas --storageBinding '<json>'
-  distrb-pglite partition-snapshot --node node-a --partition tenant:jp --casDir ./.cas --hypertable public.sensor_readings --snapshotScope data-only
+  distrb-pglite partition-snapshot --node node-a --partition tenant:jp --casDir ./.cas --rootRelation public.sensor_readings --snapshotScope data-only
   distrb-pglite cas-restore --casDir ./.cas --targetDir ./.restore/node-a --manifest '<json>'
 `);
 }

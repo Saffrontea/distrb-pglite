@@ -5,7 +5,7 @@ describe("StoragePartitionBinding", () => {
   it("binds a partition id to Postgres storage identity and snapshot scope", () => {
     const binding: StoragePartitionBinding = {
       partitionId: "tenant:jp",
-      hypertableOid: 16_384,
+      rootRelationOid: 16_384,
       snapshotScope: "catalog-and-data",
       relations: [
         {
@@ -18,14 +18,14 @@ describe("StoragePartitionBinding", () => {
     };
 
     expect(binding.partitionId).toBe("tenant:jp");
-    expect(binding.relations[0]?.relationOid).toBe(binding.hypertableOid);
+    expect(binding.relations[0]?.relationOid).toBe(binding.rootRelationOid);
     expect(binding.snapshotScope).toBe("catalog-and-data");
   });
 
   it("allows data-only snapshots when catalog compatibility is external", () => {
     const binding: StoragePartitionBinding = {
       partitionId: "tenant:jp",
-      hypertableOid: 16_384,
+      rootRelationOid: 16_384,
       snapshotScope: "data-only",
       relations: [
         {

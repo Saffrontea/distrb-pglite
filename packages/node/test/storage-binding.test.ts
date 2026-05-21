@@ -38,17 +38,17 @@ describe("discoverStoragePartitionBinding", () => {
     const binding = await discoverStoragePartitionBinding({
       db,
       partitionId: "tenant:jp",
-      hypertable: "public.sensor_readings",
+      rootRelation: "public.sensor_readings",
       snapshotScope: "data-only",
     });
 
     expect(binding.partitionId).toBe("tenant:jp");
-    expect(binding.hypertableOid).toBeGreaterThan(0);
+    expect(binding.rootRelationOid).toBeGreaterThan(0);
     expect(binding.relations).toHaveLength(1);
     expect(binding.relations[0]).toMatchObject({
       databaseOid: expect.any(Number),
       tablespaceOid: expect.any(Number),
-      relationOid: binding.hypertableOid,
+      relationOid: binding.rootRelationOid,
       relfilenode: expect.any(Number),
       storagePath: expect.stringMatching(/^base\/\d+\/\d+/),
     });
@@ -75,7 +75,7 @@ describe("discoverStoragePartitionBinding", () => {
     await expect(discoverStoragePartitionBinding({
       db,
       partitionId: "tenant:jp",
-      hypertable: "public.missing_relation",
+      rootRelation: "public.missing_relation",
       snapshotScope: "data-only",
     })).rejects.toThrow("relation not found");
     await db.close();
