@@ -2,6 +2,7 @@
 import { PGlite } from "@electric-sql/pglite";
 import { SyncNode } from "@distrb-pglite/core";
 import { parseArgs } from "node:util";
+import { restoreFromCas, snapshotToCas } from "./cas.js";
 import { inventoryDataDir } from "./inventory.js";
 import { PGlitePartitionStore } from "./pglite-store.js";
 import { WebSocketHub, WebSocketTransport } from "./websocket-transport.js";
@@ -15,6 +16,9 @@ const { positionals, values } = parseArgs({
     node: { type: "string" },
     peer: { type: "string" },
     dataDir: { type: "string" },
+    casDir: { type: "string" },
+    targetDir: { type: "string" },
+    manifest: { type: "string" },
     partition: { type: "string" },
     payload: { type: "string" },
   },
@@ -104,6 +108,25 @@ if (command === "hub") {
 
   const dataDir = values.dataDir ?? `./.data/${nodeId}`;
   console.log(JSON.stringify(await inventoryDataDir(dataDir), null, 2));
+} else if (command === "cas-snapshot") {
+  const nodeId = values.node;
+  if (!nodeId || !values.casDir) {
+    throw new Error("--node and --casDir are required");
+  }
+
+  const dataDir = values.dataDir ?? `./.data/${nodeId}`;
+  const manifest = await snapshotToCas({ dataDir, casDir: values.casDir });
+  console.log(JSON.stringify(manifest, null, 2));
+} else if (command === "cas-restore") {
+  if (!values.casDir || !values.targetDir || !values.manifest) {
+    throw new Error("--casDir, --targetDir, and --manifest are required");
+  }
+
+  await restoreFromCas({
+    casDir: values.casDir,
+    targetDir: values.targetDir,
+    manifest: JSON.parse(values.manifest),
+  });
 } else {
   console.log(`Usage:
   distrb-pglite hub --port 8787
@@ -113,6 +136,8 @@ if (command === "hub") {
   distrb-pglite list --node node-a --partition tenant:jp
   distrb-pglite catchup --node node-b --peer node-a --partition tenant:jp --url ws://localhost:8787
   distrb-pglite inventory --node node-a
+  distrb-pglite cas-snapshot --node node-a --casDir ./.cas
+  distrb-pglite cas-restore --casDir ./.cas --targetDir ./.restore/node-a --manifest '<json>'
 `);
 }
 
