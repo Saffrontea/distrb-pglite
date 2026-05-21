@@ -2,6 +2,7 @@
 import { PGlite } from "@electric-sql/pglite";
 import { SyncNode } from "@distrb-pglite/core";
 import { parseArgs } from "node:util";
+import { inventoryDataDir } from "./inventory.js";
 import { PGlitePartitionStore } from "./pglite-store.js";
 import { WebSocketHub, WebSocketTransport } from "./websocket-transport.js";
 
@@ -95,6 +96,14 @@ if (command === "hub") {
   const applied = await node.catchUpFrom(peerNodeId, partition);
   await node.stop();
   console.log(JSON.stringify({ applied }, null, 2));
+} else if (command === "inventory") {
+  const nodeId = values.node;
+  if (!nodeId) {
+    throw new Error("--node is required");
+  }
+
+  const dataDir = values.dataDir ?? `./.data/${nodeId}`;
+  console.log(JSON.stringify(await inventoryDataDir(dataDir), null, 2));
 } else {
   console.log(`Usage:
   distrb-pglite hub --port 8787
@@ -103,6 +112,7 @@ if (command === "hub") {
   distrb-pglite write --node node-a --partition tenant:jp --payload '{"title":"hello"}' --offline
   distrb-pglite list --node node-a --partition tenant:jp
   distrb-pglite catchup --node node-b --peer node-a --partition tenant:jp --url ws://localhost:8787
+  distrb-pglite inventory --node node-a
 `);
 }
 

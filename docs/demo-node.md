@@ -71,3 +71,12 @@ mise exec -- pnpm --filter @distrb-pglite/node exec distrb-pglite catchup \
 ```
 
 The CLI stores PGlite data under `./.data/<node-id>` by default.
+
+## Inspect PGlite Data Directory
+
+Phase 7 starts by treating the PGlite data directory as the snapshot boundary. The inventory command lists every regular file with size and sha256.
+
+```bash
+mise exec -- pnpm --filter @distrb-pglite/node exec distrb-pglite inventory \
+  --node node-a
+```
