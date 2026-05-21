@@ -92,6 +92,7 @@ Replication uses source-node-local event streams. Event IDs are UUID v7, but cor
 - Study where PGlite’s embedded Postgres build exposes or can be patched around storage manager behavior.
 - Identify the smallest useful smgr/TableAM/WAL interception point for page/block-level CoW.
 - Compare three implementation paths: PGlite filesystem adapter, Postgres extension, and patched Postgres/smgr fork.
+- Document the current PGlite public filesystem boundary before patching internals.
 - Acceptance: produce a design note with concrete patch points, build implications, test strategy, and a decision on whether smgr-level work is justified.
 
 ## Phase 12: smgr-Level CoW Experiment
