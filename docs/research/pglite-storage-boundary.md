@@ -47,6 +47,8 @@ The partition snapshot path now uses this binding during CAS acquisition:
 - `catalog-and-data` keeps the full closed data directory in this prototype, including empty directories, because that is the restorable bootstrap format until catalog-page selection is made precise.
 - a snapshot request is rejected if the requested `partitionId` and `storageBinding.partitionId` differ.
 
+The Node adapter can now discover this binding from PGlite catalog state. `discoverStoragePartitionBinding` reads `pg_class`, `pg_database`, `pg_relation_filenode()`, and `pg_relation_filepath()` for a relation name such as `public.sensor_readings`. The resulting `storagePath` is preferred by the snapshot filter so CAS acquisition is tied to the actual relation file path rather than only reconstructing a path from OIDs.
+
 ## smgr Track
 
 smgr-level work remains a research track, not the next implementation step.

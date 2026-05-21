@@ -169,7 +169,7 @@ event log
 PartitionId -> {
   hypertableOid,
   relations: [
-    { databaseOid, tablespaceOid, relationOid, relfilenode }
+    { databaseOid, tablespaceOid, relationOid, relfilenode, storagePath }
   ],
   snapshotScope: "data-only" | "catalog-and-data"
 }
@@ -180,6 +180,8 @@ PartitionId -> {
 - この対応がないと、FS/CAS層はどのページがどのpartitionに属するか判断できず、分散差分同期を正しく切れない。
 
 現在のprototypeでは、このbindingをpartition snapshot取得に接続している。`data-only`では`base/<databaseOid>/<relfilenode>`に一致するrelation本体、segment、FSM/VM/init forkだけをCAS manifestへ入れる。`catalog-and-data`では復元可能性を優先し、closed data directory全体をCAS manifestへ入れる。
+
+また、PGlite上の`pg_class`、`pg_database`、`pg_relation_filenode()`、`pg_relation_filepath()`からbindingを生成できる。`storagePath`が得られる場合は、それを優先して実ファイルと`PartitionId`を結合する。
 
 ---
 

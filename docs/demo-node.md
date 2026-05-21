@@ -112,3 +112,24 @@ mise exec -- pnpm --filter @distrb-pglite/node exec distrb-pglite partition-snap
   --casDir ./.cas \
   --storageBinding '{"partitionId":"tenant:jp","hypertableOid":16384,"snapshotScope":"catalog-and-data","relations":[{"databaseOid":5,"tablespaceOid":1668,"relationOid":16384,"relfilenode":16384}]}'
 ```
+
+The binding can also be discovered from PGlite catalog metadata:
+
+```bash
+mise exec -- pnpm --filter @distrb-pglite/node exec distrb-pglite storage-binding \
+  --node node-a \
+  --partition tenant:jp \
+  --hypertable public.sensor_readings \
+  --snapshotScope data-only
+```
+
+And used directly during snapshot acquisition:
+
+```bash
+mise exec -- pnpm --filter @distrb-pglite/node exec distrb-pglite partition-snapshot \
+  --node node-a \
+  --partition tenant:jp \
+  --casDir ./.cas \
+  --hypertable public.sensor_readings \
+  --snapshotScope data-only
+```

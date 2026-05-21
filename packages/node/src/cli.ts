@@ -6,6 +6,7 @@ import { restoreFromCas, snapshotToCas } from "./cas.js";
 import { copyDataDirSnapshot, inventoryDataDir } from "./inventory.js";
 import { createPartitionCasSnapshot } from "./partition-snapshot.js";
 import { PGlitePartitionStore } from "./pglite-store.js";
+import { discoverStoragePartitionBinding } from "./storage-binding.js";
 import { WebSocketHub, WebSocketTransport } from "./websocket-transport.js";
 import { runNodeDemo } from "./demo.js";
 
@@ -22,6 +23,9 @@ const { positionals, values } = parseArgs({
     targetDir: { type: "string" },
     manifest: { type: "string" },
     partition: { type: "string" },
+    hypertable: { type: "string" },
+    relation: { type: "string", multiple: true },
+    snapshotScope: { type: "string", default: "catalog-and-data" },
     payload: { type: "string" },
     storageBinding: { type: "string" },
   },
@@ -134,20 +138,48 @@ if (command === "hub") {
 } else if (command === "partition-snapshot") {
   const nodeId = values.node;
   const partition = values.partition;
-  if (!nodeId || !partition || !values.casDir || !values.storageBinding) {
-    throw new Error("--node, --partition, --casDir, and --storageBinding are required");
+  if (!nodeId || !partition || !values.casDir) {
+    throw new Error("--node, --partition, and --casDir are required");
   }
 
-  const store = await openStore(nodeId, values.dataDir);
   const dataDir = values.dataDir ?? `./.data/${nodeId}`;
+  const { db, store } = await openStoreWithDb(nodeId, dataDir);
+  const storageBinding = values.storageBinding
+    ? JSON.parse(values.storageBinding)
+    : await discoverStoragePartitionBinding({
+        db,
+        partitionId: partition,
+        hypertable: requireString(values.hypertable, "--hypertable is required without --storageBinding"),
+        relations: relationValues(values.relation),
+        snapshotScope: snapshotScopeValue(values.snapshotScope),
+      });
   const snapshot = await createPartitionCasSnapshot({
     store,
     partitionId: partition,
-    storageBinding: JSON.parse(values.storageBinding),
+    storageBinding,
     dataDir,
     casDir: values.casDir,
   });
+  await db.close();
   console.log(JSON.stringify(snapshot, null, 2));
+} else if (command === "storage-binding") {
+  const nodeId = values.node;
+  const partition = values.partition;
+  if (!nodeId || !partition || !values.hypertable) {
+    throw new Error("--node, --partition, and --hypertable are required");
+  }
+
+  const dataDir = values.dataDir ?? `./.data/${nodeId}`;
+  const { db } = await openStoreWithDb(nodeId, dataDir);
+  const binding = await discoverStoragePartitionBinding({
+    db,
+    partitionId: partition,
+    hypertable: values.hypertable,
+    relations: relationValues(values.relation),
+    snapshotScope: snapshotScopeValue(values.snapshotScope),
+  });
+  await db.close();
+  console.log(JSON.stringify(binding, null, 2));
 } else if (command === "cas-restore") {
   if (!values.casDir || !values.targetDir || !values.manifest) {
     throw new Error("--casDir, --targetDir, and --manifest are required");
@@ -176,7 +208,9 @@ if (command === "hub") {
   distrb-pglite inventory --node node-a
   distrb-pglite copy-snapshot --node node-a --targetDir ./.restore/node-a
   distrb-pglite cas-snapshot --node node-a --casDir ./.cas
+  distrb-pglite storage-binding --node node-a --partition tenant:jp --hypertable public.sensor_readings --snapshotScope data-only
   distrb-pglite partition-snapshot --node node-a --partition tenant:jp --casDir ./.cas --storageBinding '<json>'
+  distrb-pglite partition-snapshot --node node-a --partition tenant:jp --casDir ./.cas --hypertable public.sensor_readings --snapshotScope data-only
   distrb-pglite cas-restore --casDir ./.cas --targetDir ./.restore/node-a --manifest '<json>'
 `);
 }
@@ -185,8 +219,36 @@ async function openStore(
   nodeId: string,
   dataDir = `./.data/${nodeId}`,
 ): Promise<PGlitePartitionStore> {
+  return (await openStoreWithDb(nodeId, dataDir)).store;
+}
+
+async function openStoreWithDb(
+  nodeId: string,
+  dataDir = `./.data/${nodeId}`,
+): Promise<{ db: PGlite; store: PGlitePartitionStore }> {
   const db = new PGlite(dataDir);
   const store = new PGlitePartitionStore(nodeId, db);
   await store.migrate();
-  return store;
+  return { db, store };
+}
+
+function relationValues(value: string | string[] | undefined): string[] | undefined {
+  if (!value) {
+    return undefined;
+  }
+  return Array.isArray(value) ? value : [value];
+}
+
+function snapshotScopeValue(value: string | boolean | undefined): "data-only" | "catalog-and-data" {
+  if (value === "data-only" || value === "catalog-and-data") {
+    return value;
+  }
+  throw new Error("--snapshotScope must be data-only or catalog-and-data");
+}
+
+function requireString(value: string | boolean | undefined, message: string): string {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error(message);
+  }
+  return value;
 }

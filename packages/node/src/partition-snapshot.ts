@@ -92,9 +92,10 @@ export function storageBindingSnapshotFilter(
 function relationFileStems(relation: StorageRelationLocator): string[] {
   const relfilenode = relation.relfilenode ?? relation.relationOid;
   return [
+    relation.storagePath,
     `base/${relation.databaseOid}/${relfilenode}`,
     `pg_tblspc/${relation.tablespaceOid}/${relation.databaseOid}/${relfilenode}`,
-  ];
+  ].filter((path): path is string => typeof path === "string" && path.length > 0);
 }
 
 function relationFileStem(path: string): string {

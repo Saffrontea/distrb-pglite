@@ -11,6 +11,7 @@ export type StorageRelationLocator = {
   tablespaceOid: PgOid;
   relationOid: PgOid;
   relfilenode?: PgOid;
+  storagePath?: string;
 };
 
 export type StoragePartitionBinding = {
