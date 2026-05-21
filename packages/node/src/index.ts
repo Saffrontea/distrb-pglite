@@ -15,11 +15,17 @@ export {
   snapshotToCas,
   transferMissingBlocks,
 } from "./cas.js";
-export type { CasBlock, CasFileManifest, CasManifest } from "./cas.js";
+export type {
+  CasBlock,
+  CasFileManifest,
+  CasManifest,
+  CasSnapshotFilter,
+} from "./cas.js";
 export {
   createPartitionCasSnapshot,
   highWatermarkMap,
   listEventsAfterPartitionSnapshot,
+  storageBindingSnapshotFilter,
 } from "./partition-snapshot.js";
 export type { PartitionCasSnapshot } from "./partition-snapshot.js";
 export { PGliteCasFilesystem } from "./pglite-cas-filesystem.js";

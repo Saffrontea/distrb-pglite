@@ -19,20 +19,28 @@ export type CasManifest = SnapshotFilesystemManifest<CasFileManifest> & {
   parentSnapshotIds: string[];
 };
 
+export type CasSnapshotFilter = {
+  includeFile(file: FileInventoryEntry): boolean;
+};
+
 export async function snapshotToCas(options: {
   dataDir: string;
   casDir: string;
   chunkSize?: number;
   snapshotId?: string;
   parentSnapshotIds?: string[];
+  filter?: CasSnapshotFilter;
 }): Promise<CasManifest> {
   const chunkSize = options.chunkSize ?? 64 * 1024;
   const inventory = await inventoryDataDir(options.dataDir);
+  const selectedFiles = options.filter
+    ? inventory.files.filter((file) => options.filter?.includeFile(file) ?? false)
+    : inventory.files;
   const files: CasFileManifest[] = [];
 
   await mkdir(options.casDir, { recursive: true });
 
-  for (const file of inventory.files) {
+  for (const file of selectedFiles) {
     const content = await readFile(join(options.dataDir, file.path));
     const blocks = await writeBlocks(options.casDir, content, chunkSize);
     files.push({ ...file, blocks });
@@ -43,7 +51,9 @@ export async function snapshotToCas(options: {
     snapshotId: options.snapshotId ?? randomUUID(),
     parentSnapshotIds: options.parentSnapshotIds ?? [],
     chunkSize,
-    directories: inventory.directories,
+    directories: options.filter
+      ? selectedDirectories(inventory.directories, selectedFiles)
+      : inventory.directories,
     files,
   };
 }
@@ -196,4 +206,20 @@ function isFileInventoryEntries(
   inventory: Pick<DataDirInventory, "directories" | "files"> | readonly FileInventoryEntry[],
 ): inventory is readonly FileInventoryEntry[] {
   return Array.isArray(inventory);
+}
+
+function selectedDirectories(
+  directories: readonly string[],
+  files: readonly FileInventoryEntry[],
+): string[] {
+  const required = new Set<string>();
+  for (const file of files) {
+    let path = dirname(file.path);
+    while (path !== ".") {
+      required.add(path);
+      path = dirname(path);
+    }
+  }
+
+  return directories.filter((directory) => required.has(directory));
 }

@@ -179,6 +179,8 @@ PartitionId -> {
 - `catalog-and-data`は新規ノードのpull、DDL変更後、またはpartition定義自体の同期向け。
 - この対応がないと、FS/CAS層はどのページがどのpartitionに属するか判断できず、分散差分同期を正しく切れない。
 
+現在のprototypeでは、このbindingをpartition snapshot取得に接続している。`data-only`では`base/<databaseOid>/<relfilenode>`に一致するrelation本体、segment、FSM/VM/init forkだけをCAS manifestへ入れる。`catalog-and-data`では復元可能性を優先し、closed data directory全体をCAS manifestへ入れる。
+
 ---
 
 ## 実装レイヤーの分離

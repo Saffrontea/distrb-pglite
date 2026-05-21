@@ -125,6 +125,62 @@ describe("partition CAS snapshots", () => {
       { value: "b1" },
     ]);
   });
+
+  it("uses data-only storage bindings to snapshot matching relation files", async () => {
+    const root = await mkdtemp(join(tmpdir(), "distrb-pglite-partition-data-only-"));
+    const dataDir = join(root, "data");
+    const casDir = join(root, "cas");
+    await mkdir(join(dataDir, "base", "5"), { recursive: true });
+    await mkdir(join(dataDir, "global"), { recursive: true });
+    await writeFile(join(dataDir, "base", "5", "16384"), "main");
+    await writeFile(join(dataDir, "base", "5", "16384.1"), "segment");
+    await writeFile(join(dataDir, "base", "5", "16384_fsm"), "fsm");
+    await writeFile(join(dataDir, "base", "5", "16384_vm.2"), "vm-segment");
+    await writeFile(join(dataDir, "base", "5", "99999"), "other-relation");
+    await writeFile(join(dataDir, "global", "pg_control"), "catalog-control");
+
+    const store = new InMemoryPartitionStore("node-c");
+    await store.registerPartition("tenant:jp");
+
+    const snapshot = await createPartitionCasSnapshot({
+      store,
+      partitionId: "tenant:jp",
+      storageBinding: {
+        ...storageBinding("tenant:jp"),
+        snapshotScope: "data-only",
+      },
+      dataDir,
+      casDir,
+      chunkSize: 8,
+    });
+
+    expect(snapshot.manifest.directories).toEqual(["base", "base/5"]);
+    expect(snapshot.manifest.files.map((file) => file.path)).toEqual([
+      "base/5/16384",
+      "base/5/16384_fsm",
+      "base/5/16384_vm.2",
+      "base/5/16384.1",
+    ]);
+  });
+
+  it("rejects a storage binding for a different partition", async () => {
+    const root = await mkdtemp(join(tmpdir(), "distrb-pglite-partition-mismatch-"));
+    const dataDir = join(root, "data");
+    const casDir = join(root, "cas");
+    await mkdir(dataDir, { recursive: true });
+    await writeFile(join(dataDir, "db-file"), "snapshot-state");
+
+    const store = new InMemoryPartitionStore("node-c");
+    await store.registerPartition("tenant:jp");
+
+    await expect(createPartitionCasSnapshot({
+      store,
+      partitionId: "tenant:jp",
+      storageBinding: storageBinding("tenant:us"),
+      dataDir,
+      casDir,
+    })).rejects.toThrow("storage binding partition mismatch");
+  });
 });
 
 function storageBinding(partitionId: string) {

@@ -41,6 +41,12 @@ Snapshot scope must be explicit:
 
 Without this binding, a filesystem-level CAS layer cannot decide which blocks belong to a partition or whether catalog changes must accompany data changes.
 
+The partition snapshot path now uses this binding during CAS acquisition:
+
+- `data-only` includes only files matching `base/<databaseOid>/<relfilenode>` plus segment and fork variants such as `.1`, `_fsm`, `_vm`, and `_init`.
+- `catalog-and-data` keeps the full closed data directory in this prototype, including empty directories, because that is the restorable bootstrap format until catalog-page selection is made precise.
+- a snapshot request is rejected if the requested `partitionId` and `storageBinding.partitionId` differ.
+
 ## smgr Track
 
 smgr-level work remains a research track, not the next implementation step.

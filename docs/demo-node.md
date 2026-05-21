@@ -103,6 +103,7 @@ mise exec -- pnpm --filter @distrb-pglite/node exec distrb-pglite copy-snapshot 
 ## Create A Partition Snapshot Manifest
 
 This wraps the CAS manifest with the partition id and the per-source-node high-watermark vector used for replay.
+When `snapshotScope` is `data-only`, the snapshot includes only relation files that match the storage binding's `databaseOid` and `relfilenode` or `relationOid`. When it is `catalog-and-data`, the current prototype keeps the full closed data directory so the snapshot remains directly restorable.
 
 ```bash
 mise exec -- pnpm --filter @distrb-pglite/node exec distrb-pglite partition-snapshot \
