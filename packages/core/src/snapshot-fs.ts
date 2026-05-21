@@ -9,6 +9,7 @@ export type SnapshotFile = {
 export type SnapshotFilesystemManifest = {
   version: 1;
   chunkSize: number;
+  directories: string[];
   files: SnapshotFile[];
 };
 
@@ -57,6 +58,7 @@ export class CasSnapshotFilesystem implements SnapshotFilesystem {
     return {
       version: 1,
       chunkSize: this.chunkSize,
+      directories: [],
       files,
     };
   }

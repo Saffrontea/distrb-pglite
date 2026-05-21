@@ -39,7 +39,11 @@ export class PGliteCasFilesystem extends BaseFilesystem {
     for (const [path, node] of this.sortedFiles()) {
       await fs.writeFile(path, node.content);
     }
-    return fs.snapshot();
+    const manifest = await fs.snapshot();
+    return {
+      ...manifest,
+      directories: this.sortedDirectories(),
+    };
   }
 
   async restore(manifest: SnapshotFilesystemManifest): Promise<void> {
@@ -49,6 +53,10 @@ export class PGliteCasFilesystem extends BaseFilesystem {
     this.nodes.set("/", this.createDirNode());
     this.fds.clear();
     this.nextFd = 3;
+
+    for (const directory of optionsDirectories(manifest)) {
+      this.mkdir(directory, { recursive: true });
+    }
 
     for (const file of manifest.files) {
       this.mkdir(dirname(file.path), { recursive: true });
@@ -157,7 +165,7 @@ export class PGliteCasFilesystem extends BaseFilesystem {
   ): number {
     const open = this.requireFd(fd);
     const node = this.requireFile(open.path);
-    const start = position < 0 ? open.position : position;
+    const start = position == null || position < 0 ? open.position : position;
     const chunk = node.content.subarray(start, start + length);
     buffer.set(chunk, offset);
     open.position = start + chunk.length;
@@ -233,7 +241,7 @@ export class PGliteCasFilesystem extends BaseFilesystem {
     const node = this.requireFile(open.path);
     const start = open.flags.includes("a")
       ? node.content.length
-      : position < 0
+      : position == null || position < 0
         ? open.position
         : position;
     const end = start + length;
@@ -277,12 +285,20 @@ export class PGliteCasFilesystem extends BaseFilesystem {
       .sort(([left], [right]) => left.localeCompare(right));
   }
 
+  private sortedDirectories(): string[] {
+    return [...this.nodes]
+      .filter((entry): entry is [string, Node] => entry[1].kind === "dir")
+      .map(([path]) => path)
+      .filter((path) => path !== "/")
+      .sort((left, right) => left.localeCompare(right));
+  }
+
   private createDirNode(mode = 0o777): Node {
-    return this.createNode("dir", new Uint8Array(), mode);
+    return this.createNode("dir", new Uint8Array(), withTypeBits("dir", mode));
   }
 
   private createFileNode(content: Uint8Array, mode = 0o666): Node {
-    return this.createNode("file", content, mode);
+    return this.createNode("file", content, withTypeBits("file", mode));
   }
 
   private createNode(kind: Node["kind"], content: Uint8Array, mode: number): Node {
@@ -325,6 +341,19 @@ function statsFor(node: Node): FsStats {
     mtime: node.mtime,
     ctime: node.ctime,
   };
+}
+
+function withTypeBits(kind: Node["kind"], mode: number): number {
+  const typeMask = 0o170000;
+  if ((mode & typeMask) !== 0) {
+    return mode;
+  }
+
+  return (kind === "dir" ? 0o040000 : 0o100000) | mode;
+}
+
+function optionsDirectories(manifest: SnapshotFilesystemManifest): string[] {
+  return "directories" in manifest ? manifest.directories : [];
 }
 
 function touch(node: Node): void {
