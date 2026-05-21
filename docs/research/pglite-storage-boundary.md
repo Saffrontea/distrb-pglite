@@ -37,3 +37,7 @@ If those limits appear, the smgr research should identify concrete patch points 
 ## Decision
 
 Proceed with custom filesystem integration first. Do not fork PGlite or patch smgr until the CAS filesystem adapter has failed a concrete acceptance test.
+
+## Adapter Progress
+
+`PGliteCasFilesystem` now implements the Node-like synchronous methods required by PGlite's `BaseFilesystem` shape and can snapshot/restore its state through CAS blobs. The next step is to pass it into `new PGlite({ fs })` and close any compatibility gaps against PGlite's runtime expectations.

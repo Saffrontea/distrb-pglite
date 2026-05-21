@@ -16,3 +16,4 @@ export {
   listEventsAfterPartitionSnapshot,
 } from "./partition-snapshot.js";
 export type { PartitionCasSnapshot } from "./partition-snapshot.js";
+export { PGliteCasFilesystem } from "./pglite-cas-filesystem.js";
