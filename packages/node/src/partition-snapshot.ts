@@ -9,7 +9,12 @@ import type {
   StorageRelationLocator,
 } from "@distrb-pglite/core";
 import { UuidV7Factory } from "@distrb-pglite/core";
-import { snapshotToCas, type CasManifest, type CasSnapshotFilter } from "./cas.js";
+import {
+  restoreFromCas,
+  snapshotToCas,
+  type CasManifest,
+  type CasSnapshotFilter,
+} from "./cas.js";
 import type { FileInventoryEntry } from "./inventory.js";
 
 export type PartitionCasSnapshot = {
@@ -29,6 +34,7 @@ export async function createPartitionCasSnapshot(options: {
   casDir: string;
   chunkSize?: number;
   ids?: UuidV7Factory;
+  beforeStorageSnapshot?: () => Promise<void>;
 }): Promise<PartitionCasSnapshot> {
   if (options.storageBinding.partitionId !== options.partitionId) {
     throw new Error(
@@ -39,6 +45,7 @@ export async function createPartitionCasSnapshot(options: {
   const ids = options.ids ?? new UuidV7Factory();
   const snapshotId = `partition-snapshot:${options.partitionId}:${ids.next()}`;
   const highWatermark = await options.store.getHighWatermark(options.partitionId);
+  await options.beforeStorageSnapshot?.();
   const manifest = await snapshotToCas({
     dataDir: options.dataDir,
     casDir: options.casDir,
@@ -69,6 +76,43 @@ export async function listEventsAfterPartitionSnapshot(
     snapshot.partitionId,
     highWatermarkMap(snapshot),
   );
+}
+
+export async function restorePartitionCasSnapshot(options: {
+  snapshot: PartitionCasSnapshot;
+  casDir: string;
+  targetDir: string;
+}): Promise<void> {
+  if (options.snapshot.storageBinding.snapshotScope !== "catalog-and-data") {
+    throw new Error("only catalog-and-data partition snapshots can restore a full data directory");
+  }
+
+  await restoreFromCas({
+    manifest: options.snapshot.manifest,
+    casDir: options.casDir,
+    targetDir: options.targetDir,
+  });
+}
+
+export async function replayEventsAfterPartitionSnapshot(options: {
+  sourceStore: PartitionStore;
+  targetStore: PartitionStore;
+  snapshot: PartitionCasSnapshot;
+}): Promise<number> {
+  await options.targetStore.registerPartition(options.snapshot.partitionId);
+  const events = await listEventsAfterPartitionSnapshot(
+    options.sourceStore,
+    options.snapshot,
+  );
+
+  let applied = 0;
+  for (const event of events) {
+    if (await options.targetStore.applyRemote(event)) {
+      applied += 1;
+    }
+  }
+
+  return applied;
 }
 
 export function storageBindingSnapshotFilter(

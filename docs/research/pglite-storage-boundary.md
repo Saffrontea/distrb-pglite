@@ -49,6 +49,8 @@ The partition snapshot path now uses this binding during CAS acquisition:
 
 The Node adapter can now discover this binding from PGlite catalog state. `discoverStoragePartitionBinding` reads `pg_class`, `pg_database`, `pg_relation_filenode()`, and `pg_relation_filepath()` for a relation name such as `public.sensor_readings`. The resulting `storagePath` is preferred by the snapshot filter so CAS acquisition is tied to the actual relation file path rather than only reconstructing a path from OIDs.
 
+The Phase 9 pull path is now explicit for `catalog-and-data` snapshots: restore the snapshot CAS manifest into a new PGlite data directory, open the restored node, then replay only events for the snapshot partition after the per-source high-watermark. This keeps unrelated partition events out of replay even when the source has advanced other partitions after the snapshot.
+
 ## smgr Track
 
 smgr-level work remains a research track, not the next implementation step.

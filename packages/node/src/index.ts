@@ -25,6 +25,8 @@ export {
   createPartitionCasSnapshot,
   highWatermarkMap,
   listEventsAfterPartitionSnapshot,
+  replayEventsAfterPartitionSnapshot,
+  restorePartitionCasSnapshot,
   storageBindingSnapshotFilter,
 } from "./partition-snapshot.js";
 export type { PartitionCasSnapshot } from "./partition-snapshot.js";

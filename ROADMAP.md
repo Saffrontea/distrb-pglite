@@ -84,6 +84,7 @@ Replication uses source-node-local event streams. Event IDs are UUID v7, but cor
 - Acceptance: a node can pull a partition snapshot, replay only events after the per-source high-watermarks, and avoid receiving unrelated partitions.
 - Current prototype: `data-only` filters CAS acquisition to matching relation files; `catalog-and-data` captures the full closed data directory for restorable bootstrap snapshots.
 - Current prototype: storage bindings can be discovered from PGlite catalog metadata and `pg_relation_filepath()`.
+- Current prototype: `catalog-and-data` partition snapshots can be restored to a new PGlite data directory and replay only same-partition events after the snapshot high-watermark.
 
 ## Phase 10: PGlite Fork / Custom Filesystem Integration
 

@@ -133,3 +133,5 @@ mise exec -- pnpm --filter @distrb-pglite/node exec distrb-pglite partition-snap
   --rootRelation public.sensor_readings \
   --snapshotScope data-only
 ```
+
+For restoreable bootstrap snapshots, use `catalog-and-data`; after restoring the CAS manifest, replay starts from the snapshot high-watermark for the same partition only.

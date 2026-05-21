@@ -1,12 +1,17 @@
 import { InMemoryPartitionStore } from "@distrb-pglite/core";
+import { PGlite } from "@electric-sql/pglite";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   createPartitionCasSnapshot,
+  discoverStoragePartitionBinding,
   highWatermarkMap,
   listEventsAfterPartitionSnapshot,
+  PGlitePartitionStore,
+  replayEventsAfterPartitionSnapshot,
+  restorePartitionCasSnapshot,
 } from "../src/index.js";
 
 describe("partition CAS snapshots", () => {
@@ -181,6 +186,110 @@ describe("partition CAS snapshots", () => {
       casDir,
     })).rejects.toThrow("storage binding partition mismatch");
   });
+
+  it("restores a catalog-and-data snapshot and replays only events after its high-watermark", async () => {
+    const root = await mkdtemp(join(tmpdir(), "distrb-pglite-partition-pull-"));
+    const sourceDir = join(root, "source");
+    const casDir = join(root, "cas");
+    const targetDir = join(root, "target");
+
+    let sourceDb = new PGlite(sourceDir);
+    let sourceStore = new PGlitePartitionStore("node-a", sourceDb);
+    await sourceStore.migrate();
+    await sourceDb.exec(`
+      CREATE TABLE sensor_readings (
+        tenant_id text NOT NULL,
+        sensor_id text NOT NULL,
+        reading integer NOT NULL
+      );
+    `);
+    await sourceDb.query(
+      "INSERT INTO sensor_readings (tenant_id, sensor_id, reading) VALUES ($1, $2, $3)",
+      ["tenant:jp", "tokyo-1", 42],
+    );
+    const snapshottedEvent = await sourceStore.appendLocal({
+      partitionId: "tenant:jp",
+      schemaVersion: 1,
+      payload: { sensorId: "tokyo-1", reading: 42 },
+    });
+
+    const binding = await discoverStoragePartitionBinding({
+      db: sourceDb,
+      partitionId: "tenant:jp",
+      rootRelation: "public.sensor_readings",
+      snapshotScope: "catalog-and-data",
+    });
+    const snapshot = await createPartitionCasSnapshot({
+      store: sourceStore,
+      partitionId: "tenant:jp",
+      storageBinding: binding,
+      dataDir: sourceDir,
+      casDir,
+      beforeStorageSnapshot: async () => {
+        await sourceDb.close();
+      },
+    });
+
+    sourceDb = new PGlite(sourceDir);
+    sourceStore = new PGlitePartitionStore("node-a", sourceDb);
+    await sourceStore.migrate();
+    const replayedEvent = await sourceStore.appendLocal({
+      partitionId: "tenant:jp",
+      schemaVersion: 1,
+      payload: { sensorId: "tokyo-2", reading: 43 },
+    });
+    await sourceStore.appendLocal({
+      partitionId: "tenant:us",
+      schemaVersion: 1,
+      payload: { sensorId: "sf-2", reading: 11 },
+    });
+    await sourceDb.close();
+
+    await restorePartitionCasSnapshot({ snapshot, casDir, targetDir });
+
+    const targetDb = new PGlite(targetDir);
+    const targetStore = new PGlitePartitionStore("node-target", targetDb);
+    await targetStore.migrate();
+    await expect(
+      targetStore.listEventsAfterCursors("tenant:jp", new Map()),
+    ).resolves.toMatchObject([
+      {
+        eventId: snapshottedEvent.eventId,
+        partitionId: "tenant:jp",
+        payload: { sensorId: "tokyo-1", reading: 42 },
+      },
+    ]);
+
+    sourceDb = new PGlite(sourceDir);
+    sourceStore = new PGlitePartitionStore("node-a", sourceDb);
+    await sourceStore.migrate();
+    await expect(replayEventsAfterPartitionSnapshot({
+      sourceStore,
+      targetStore,
+      snapshot,
+    })).resolves.toBe(1);
+
+    await expect(
+      targetStore.listEventsAfterCursors("tenant:jp", new Map()),
+    ).resolves.toMatchObject([
+      {
+        eventId: snapshottedEvent.eventId,
+        partitionId: "tenant:jp",
+        payload: { sensorId: "tokyo-1", reading: 42 },
+      },
+      {
+        eventId: replayedEvent.eventId,
+        partitionId: "tenant:jp",
+        payload: { sensorId: "tokyo-2", reading: 43 },
+      },
+    ]);
+    await expect(
+      targetStore.listEventsAfterCursors("tenant:us", new Map()),
+    ).resolves.toHaveLength(0);
+
+    await targetDb.close();
+    await sourceDb.close();
+  }, 120_000);
 });
 
 function storageBinding(partitionId: string) {
