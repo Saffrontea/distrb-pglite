@@ -7,6 +7,7 @@ import { inventoryDataDir } from "./inventory.js";
 import { createPartitionCasSnapshot } from "./partition-snapshot.js";
 import { PGlitePartitionStore } from "./pglite-store.js";
 import { WebSocketHub, WebSocketTransport } from "./websocket-transport.js";
+import { runNodeDemo } from "./demo.js";
 
 const { positionals, values } = parseArgs({
   allowPositionals: true,
@@ -146,9 +147,16 @@ if (command === "hub") {
     targetDir: values.targetDir,
     manifest: JSON.parse(values.manifest),
   });
+} else if (command === "demo") {
+  const summary = await runNodeDemo({
+    baseDir: values.dataDir,
+    port: Number(values.port),
+  });
+  console.log(JSON.stringify(summary, null, 2));
 } else {
   console.log(`Usage:
   distrb-pglite hub --port 8787
+  distrb-pglite demo --dataDir ./.data/phase6-demo --port 8787
   distrb-pglite node --node node-a --partition tenant:jp --url ws://localhost:8787
   distrb-pglite write --node node-a --partition tenant:jp --payload '{"title":"hello"}' --url ws://localhost:8787
   distrb-pglite write --node node-a --partition tenant:jp --payload '{"title":"hello"}' --offline

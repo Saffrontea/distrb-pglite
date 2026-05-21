@@ -9,6 +9,15 @@ mise exec -- pnpm install
 mise exec -- pnpm build
 ```
 
+## Run The End-To-End Demo
+
+The single-process demo starts a hub, writes a `tenant:jp` sensor event through WebSocket sync, verifies a `tenant:us` subscriber ignores it, performs an offline local write, and then recovers the missing event through catch-up.
+
+```bash
+mise exec -- pnpm --filter @distrb-pglite/node exec distrb-pglite demo \
+  --dataDir ./.data/phase6-demo
+```
+
 ## Start A Hub
 
 ```bash

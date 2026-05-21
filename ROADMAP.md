@@ -56,6 +56,7 @@ Replication uses source-node-local event streams. Event IDs are UUID v7, but cor
 - Demonstrate local write, local read, partition subscription, offline recovery, and WebSocket sync.
 - Provide Node CLI commands for write, list, and catch-up.
 - Link the MVP behavior back to `distributed_edge_db.md`.
+- Acceptance: `distrb-pglite demo` and the Phase 6 integration test exercise the same PGlite + WebSocket scenario.
 
 ## Phase 7: PGlite File Boundary And Snapshot Inventory
 

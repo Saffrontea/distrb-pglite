@@ -45,6 +45,11 @@ export class WebSocketHub {
   }
 
   async close(): Promise<void> {
+    for (const client of this.clients.values()) {
+      client.socket.terminate();
+    }
+    this.clients.clear();
+
     await new Promise<void>((resolve, reject) => {
       this.server.close((error) => {
         if (error) {
