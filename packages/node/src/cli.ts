@@ -3,7 +3,7 @@ import { PGlite } from "@electric-sql/pglite";
 import { SyncNode } from "@distrb-pglite/core";
 import { parseArgs } from "node:util";
 import { restoreFromCas, snapshotToCas } from "./cas.js";
-import { inventoryDataDir } from "./inventory.js";
+import { copyDataDirSnapshot, inventoryDataDir } from "./inventory.js";
 import { createPartitionCasSnapshot } from "./partition-snapshot.js";
 import { PGlitePartitionStore } from "./pglite-store.js";
 import { WebSocketHub, WebSocketTransport } from "./websocket-transport.js";
@@ -111,6 +111,17 @@ if (command === "hub") {
 
   const dataDir = values.dataDir ?? `./.data/${nodeId}`;
   console.log(JSON.stringify(await inventoryDataDir(dataDir), null, 2));
+} else if (command === "copy-snapshot") {
+  const nodeId = values.node;
+  if (!nodeId || !values.targetDir) {
+    throw new Error("--node and --targetDir are required");
+  }
+
+  const dataDir = values.dataDir ?? `./.data/${nodeId}`;
+  console.log(JSON.stringify(await copyDataDirSnapshot({
+    sourceDir: dataDir,
+    targetDir: values.targetDir,
+  }), null, 2));
 } else if (command === "cas-snapshot") {
   const nodeId = values.node;
   if (!nodeId || !values.casDir) {
@@ -163,6 +174,7 @@ if (command === "hub") {
   distrb-pglite list --node node-a --partition tenant:jp
   distrb-pglite catchup --node node-b --peer node-a --partition tenant:jp --url ws://localhost:8787
   distrb-pglite inventory --node node-a
+  distrb-pglite copy-snapshot --node node-a --targetDir ./.restore/node-a
   distrb-pglite cas-snapshot --node node-a --casDir ./.cas
   distrb-pglite partition-snapshot --node node-a --partition tenant:jp --casDir ./.cas --storageBinding '<json>'
   distrb-pglite cas-restore --casDir ./.cas --targetDir ./.restore/node-a --manifest '<json>'

@@ -64,6 +64,7 @@ Replication uses source-node-local event streams. Event IDs are UUID v7, but cor
 - Build an inventory tool that lists the files and logical snapshot inputs for a PGlite data directory before and after writes.
 - Define the minimum stable file-level contract needed for snapshot export/import without relying on global process state.
 - Acceptance: a test can create a PGlite database, write data, inventory the data directory, copy/import it, and prove the imported node can read the same application data and event metadata.
+- Current contract: source PGlite data directories must be closed or quiesced before file-level copy/import.
 
 ## Phase 8: External CoW/CAS Prototype
 

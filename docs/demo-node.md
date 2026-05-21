@@ -90,6 +90,16 @@ mise exec -- pnpm --filter @distrb-pglite/node exec distrb-pglite inventory \
   --node node-a
 ```
 
+## Copy A Closed Data Directory Snapshot
+
+For the Phase 7 file-boundary prototype, the stable import/export contract is a closed or otherwise quiesced PGlite data directory. The copy command records the source inventory, copies the directory, and records the target inventory so the two file sets can be compared before opening the imported database.
+
+```bash
+mise exec -- pnpm --filter @distrb-pglite/node exec distrb-pglite copy-snapshot \
+  --node node-a \
+  --targetDir ./.restore/node-a
+```
+
 ## Create A Partition Snapshot Manifest
 
 This wraps the CAS manifest with the partition id and the per-source-node high-watermark vector used for replay.

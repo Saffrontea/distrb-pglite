@@ -61,3 +61,9 @@ Proceed with custom filesystem integration first. Do not fork PGlite or patch sm
 ## Adapter Progress
 
 `PGliteCasFilesystem` now implements the Node-like synchronous methods required by PGlite's `BaseFilesystem` shape and can snapshot/restore its state through CAS blobs. The next step is to pass it into `new PGlite({ fs })` and close any compatibility gaps against PGlite's runtime expectations.
+
+## Phase 7 File Snapshot Contract
+
+The early file-boundary snapshot contract is intentionally conservative: export only a closed or otherwise quiesced PGlite data directory. The inventory records each regular file by relative path, size, and sha256. A copied import is valid only when the target inventory exactly matches the source inventory before the imported database is opened.
+
+The Phase 7 integration test creates both application data and distributed event metadata, closes the source PGlite instance, copies the data directory, opens the copy, and verifies that both the application table and `distrb_events` high-watermark metadata are readable. This validates the black-box file boundary before moving the same invariants into CAS manifests and custom filesystem work.
