@@ -21,6 +21,26 @@ This means the next integration point should be PGlite custom filesystem injecti
 4. Use `syncToFs` / `initialSyncFs` as the first durability hooks.
 5. Keep `dumpDataDir()` compatibility for debug and migration.
 
+## Partition Identity Must Be Storage-Level
+
+`PartitionId` cannot remain only an application label. For filesystem/CAS diff sync, it must bind to Postgres storage identity:
+
+- hypertable or logical partition OID,
+- database OID,
+- tablespace OID,
+- relation OID,
+- relfilenode when available,
+- snapshot scope: `data-only` or `catalog-and-data`.
+
+The TimescaleDB hypertable/chunk model is the right analogy. The application chooses a partition key, but the storage layer needs a catalog-backed mapping from that partition to concrete relation files/pages.
+
+Snapshot scope must be explicit:
+
+- `data-only`: transfer relation data pages when catalog/schema compatibility is already guaranteed.
+- `catalog-and-data`: transfer catalog pages plus data pages when a node needs partition definitions, DDL changes, or bootstrap state.
+
+Without this binding, a filesystem-level CAS layer cannot decide which blocks belong to a partition or whether catalog changes must accompany data changes.
+
 ## smgr Track
 
 smgr-level work remains a research track, not the next implementation step.

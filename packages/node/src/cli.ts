@@ -22,6 +22,7 @@ const { positionals, values } = parseArgs({
     manifest: { type: "string" },
     partition: { type: "string" },
     payload: { type: "string" },
+    storageBinding: { type: "string" },
   },
 });
 
@@ -121,8 +122,8 @@ if (command === "hub") {
 } else if (command === "partition-snapshot") {
   const nodeId = values.node;
   const partition = values.partition;
-  if (!nodeId || !partition || !values.casDir) {
-    throw new Error("--node, --partition, and --casDir are required");
+  if (!nodeId || !partition || !values.casDir || !values.storageBinding) {
+    throw new Error("--node, --partition, --casDir, and --storageBinding are required");
   }
 
   const store = await openStore(nodeId, values.dataDir);
@@ -130,6 +131,7 @@ if (command === "hub") {
   const snapshot = await createPartitionCasSnapshot({
     store,
     partitionId: partition,
+    storageBinding: JSON.parse(values.storageBinding),
     dataDir,
     casDir: values.casDir,
   });
@@ -154,7 +156,7 @@ if (command === "hub") {
   distrb-pglite catchup --node node-b --peer node-a --partition tenant:jp --url ws://localhost:8787
   distrb-pglite inventory --node node-a
   distrb-pglite cas-snapshot --node node-a --casDir ./.cas
-  distrb-pglite partition-snapshot --node node-a --partition tenant:jp --casDir ./.cas
+  distrb-pglite partition-snapshot --node node-a --partition tenant:jp --casDir ./.cas --storageBinding '<json>'
   distrb-pglite cas-restore --casDir ./.cas --targetDir ./.restore/node-a --manifest '<json>'
 `);
 }

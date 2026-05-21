@@ -5,6 +5,7 @@ import type {
   PartitionId,
   PartitionStore,
   SnapshotId,
+  StoragePartitionBinding,
 } from "@distrb-pglite/core";
 import { UuidV7Factory } from "@distrb-pglite/core";
 import { snapshotToCas, type CasManifest } from "./cas.js";
@@ -13,6 +14,7 @@ export type PartitionCasSnapshot = {
   version: 1;
   snapshotId: SnapshotId;
   partitionId: PartitionId;
+  storageBinding: StoragePartitionBinding;
   highWatermark: [NodeId, EventId][];
   manifest: CasManifest;
 };
@@ -20,6 +22,7 @@ export type PartitionCasSnapshot = {
 export async function createPartitionCasSnapshot(options: {
   store: PartitionStore;
   partitionId: PartitionId;
+  storageBinding: StoragePartitionBinding;
   dataDir: string;
   casDir: string;
   chunkSize?: number;
@@ -37,6 +40,7 @@ export async function createPartitionCasSnapshot(options: {
     version: 1,
     snapshotId: `partition-snapshot:${options.partitionId}:${ids.next()}`,
     partitionId: options.partitionId,
+    storageBinding: options.storageBinding,
     highWatermark: [...highWatermark].sort(([left], [right]) => left.localeCompare(right)),
     manifest,
   };

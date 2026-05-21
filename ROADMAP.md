@@ -76,7 +76,8 @@ Replication uses source-node-local event streams. Event IDs are UUID v7, but cor
 
 - Move from whole-data-directory snapshots toward partition-scoped snapshot catalogs.
 - Record snapshot high-watermarks as `{ source_node_id -> event_id }` and tie them to manifest roots.
-- Define how app-level partitions map to physical snapshot units while PGlite remains file-backed.
+- Define how `PartitionId` maps to storage identity: hypertable OID, relation OID, relfilenode, database OID, and tablespace OID.
+- Make snapshot scope explicit: `data-only` or `catalog-and-data`.
 - Acceptance: a node can pull a partition snapshot, replay only events after the per-source high-watermarks, and avoid receiving unrelated partitions.
 
 ## Phase 10: PGlite Fork / Custom Filesystem Integration

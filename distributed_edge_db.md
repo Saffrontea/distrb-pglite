@@ -64,6 +64,8 @@
 - **ZFSのzfsコマンド相当**。アプリがパーティションキーを決め、この層がライフサイクルを管理する。
 - Postgresのextensionとして実装可能な範囲。TimescaleDBのアーキテクチャが参考になる。
 - パーティション単位でSnapshot・Vacuum・配信が独立して動く。
+- `PartitionId`はアプリ層のラベルではなく、storage層でOID/relfilenodeに対応する概念として扱う。TimescaleDBのHypertableが内部カタログとchunk OIDを持つのと同じく、分散差分同期の最小単位はPostgres relation identityに結びつく必要がある。
+- Snapshot対象はpartitionごとに選択可能にする。データページのみを運ぶのか、カタログページとデータページを一緒に運ぶのかを明示する。
 
 ```sql
 -- DDLイメージ
@@ -159,13 +161,31 @@ event log
 差分配信       = 購読しているパーティションの差分だけ
 ```
 
+### Storage-level PartitionId
+
+`PartitionId`は最終的に次のようなstorage bindingを持つ。
+
+```ts
+PartitionId -> {
+  hypertableOid,
+  relations: [
+    { databaseOid, tablespaceOid, relationOid, relfilenode }
+  ],
+  snapshotScope: "data-only" | "catalog-and-data"
+}
+```
+
+- `data-only`は既に同じカタログ定義を持つノードへの差分転送向け。
+- `catalog-and-data`は新規ノードのpull、DDL変更後、またはpartition定義自体の同期向け。
+- この対応がないと、FS/CAS層はどのページがどのpartitionに属するか判断できず、分散差分同期を正しく切れない。
+
 ---
 
 ## 実装レイヤーの分離
 
 | 機能 | 実装場所 |
 |---|---|
-| パーティション管理 | Postgres extension |
+| パーティション管理 | Postgres extension（OID/relfilenode対応を含む） |
 | UUID v7冪等性 | Postgres extension（トリガー + uuid型） |
 | Snapshotカタログ管理 | Postgres extension |
 | ローカルトランザクション | PGLite |

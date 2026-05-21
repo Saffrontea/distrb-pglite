@@ -89,5 +89,6 @@ This wraps the CAS manifest with the partition id and the per-source-node high-w
 mise exec -- pnpm --filter @distrb-pglite/node exec distrb-pglite partition-snapshot \
   --node node-a \
   --partition tenant:jp \
-  --casDir ./.cas
+  --casDir ./.cas \
+  --storageBinding '{"partitionId":"tenant:jp","hypertableOid":16384,"snapshotScope":"catalog-and-data","relations":[{"databaseOid":5,"tablespaceOid":1668,"relationOid":16384,"relfilenode":16384}]}'
 ```

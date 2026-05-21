@@ -44,6 +44,7 @@ describe("partition CAS snapshots", () => {
     const snapshot = await createPartitionCasSnapshot({
       store,
       partitionId: "tenant:jp",
+      storageBinding: storageBinding("tenant:jp"),
       dataDir,
       casDir,
       chunkSize: 8,
@@ -51,6 +52,7 @@ describe("partition CAS snapshots", () => {
 
     expect(snapshot.version).toBe(1);
     expect(snapshot.partitionId).toBe("tenant:jp");
+    expect(snapshot.storageBinding).toEqual(storageBinding("tenant:jp"));
     expect(snapshot.highWatermark).toEqual([
       ["node-a", "018bcfe5-6800-7002-8000-000000000002"],
       ["node-b", "018bcfe5-6800-7001-8000-000000000003"],
@@ -79,6 +81,7 @@ describe("partition CAS snapshots", () => {
     const snapshot = await createPartitionCasSnapshot({
       store: snapshotStore,
       partitionId: "tenant:jp",
+      storageBinding: storageBinding("tenant:jp"),
       dataDir,
       casDir,
     });
@@ -123,3 +126,19 @@ describe("partition CAS snapshots", () => {
     ]);
   });
 });
+
+function storageBinding(partitionId: string) {
+  return {
+    partitionId,
+    hypertableOid: 16_384,
+    snapshotScope: "catalog-and-data" as const,
+    relations: [
+      {
+        databaseOid: 5,
+        tablespaceOid: 1_668,
+        relationOid: 16_384,
+        relfilenode: 16_384,
+      },
+    ],
+  };
+}

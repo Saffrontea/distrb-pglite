@@ -2,6 +2,23 @@ export type NodeId = string;
 export type PartitionId = string;
 export type EventId = string;
 export type SnapshotId = string;
+export type PgOid = number;
+
+export type StorageSnapshotScope = "data-only" | "catalog-and-data";
+
+export type StorageRelationLocator = {
+  databaseOid: PgOid;
+  tablespaceOid: PgOid;
+  relationOid: PgOid;
+  relfilenode?: PgOid;
+};
+
+export type StoragePartitionBinding = {
+  partitionId: PartitionId;
+  hypertableOid: PgOid;
+  relations: StorageRelationLocator[];
+  snapshotScope: StorageSnapshotScope;
+};
 
 export type EventCursor = {
   sourceNodeId: NodeId;
@@ -27,6 +44,7 @@ export type LocalEventInput<TPayload = unknown> = {
 export type SnapshotMetadata = {
   snapshotId: SnapshotId;
   partitionId: PartitionId;
+  storageBinding?: StoragePartitionBinding;
   highWatermark: HighWatermark;
 };
 
@@ -40,4 +58,3 @@ export type ReplayResponse = {
   partitionId: PartitionId;
   events: EventEnvelope[];
 };
-

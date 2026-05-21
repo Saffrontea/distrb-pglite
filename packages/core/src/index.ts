@@ -6,10 +6,14 @@ export type {
   LocalEventInput,
   NodeId,
   PartitionId,
+  PgOid,
   ReplayRequest,
   ReplayResponse,
   SnapshotId,
   SnapshotMetadata,
+  StoragePartitionBinding,
+  StorageRelationLocator,
+  StorageSnapshotScope,
 } from "./types.js";
 export { compareEventIds, isUuidV7, UuidV7Factory } from "./uuid-v7.js";
 export { InMemoryPartitionStore } from "./store.js";
