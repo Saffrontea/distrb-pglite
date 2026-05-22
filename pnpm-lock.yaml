@@ -39,6 +39,18 @@ importers:
         specifier: ^8.5.13
         version: 8.18.1
 
+  packages/sensor-demo:
+    dependencies:
+      '@distrb-pglite/core':
+        specifier: workspace:*
+        version: link:../core
+      '@distrb-pglite/node':
+        specifier: workspace:*
+        version: link:../node
+      '@electric-sql/pglite':
+        specifier: ^0.3.4
+        version: 0.3.16
+
   packages/testkit:
     dependencies:
       '@distrb-pglite/core':
