@@ -9,6 +9,7 @@ import {
   loadStorageBindingGroup,
   loadStoragePartitionBinding,
   loadStorageSnapshotCatalogEntry,
+  loadStorageSnapshotCatalogEntryForPull,
   listStorageSnapshotCatalogEntries,
   PGlitePartitionStore,
   savePartitionCasSnapshotCatalogEntry,
@@ -379,6 +380,18 @@ describe("discoverStoragePartitionBinding", () => {
       groupId: "sensor_readings",
       partitionId: "tenant:jp",
     });
+    const dataPullEntry = await loadStorageSnapshotCatalogEntryForPull({
+      db,
+      groupId: "sensor_readings",
+      partitionId: "tenant:jp",
+      requirement: "data-refresh",
+    });
+    const bootstrapEntry = await loadStorageSnapshotCatalogEntryForPull({
+      db,
+      groupId: "sensor_readings",
+      partitionId: "tenant:jp",
+      requirement: "bootstrap",
+    });
     await db.close();
 
     expect(allEntries.map((entry) => entry.partitionId)).toEqual(["tenant:jp", "tenant:us"]);
@@ -389,5 +402,7 @@ describe("discoverStoragePartitionBinding", () => {
       ddlGeneration: jpBinding.ddlGeneration,
       components: ["data"],
     });
+    expect(dataPullEntry?.snapshotId).toBe(jpSnapshot.snapshotId);
+    expect(bootstrapEntry).toBeUndefined();
   }, 120_000);
 });

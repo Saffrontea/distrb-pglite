@@ -38,11 +38,13 @@ export type {
 } from "./snapshot-fs.js";
 export {
   canSatisfyStoragePull,
+  canSatisfyStorageSnapshotCatalogPull,
   componentsForPullRequirement,
   componentsForSnapshotScope,
   missingStorageSnapshotComponents,
   planStorageGc,
   producedStorageSnapshotComponents,
   requiredStorageSnapshotComponents,
+  selectStorageSnapshotCatalogEntryForPull,
 } from "./storage-policy.js";
 export type { StorageGcPlanOptions } from "./storage-policy.js";

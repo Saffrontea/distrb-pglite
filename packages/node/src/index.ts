@@ -47,6 +47,7 @@ export {
   loadStorageBindingGroup,
   loadStoragePartitionBinding,
   loadStorageSnapshotCatalogEntry,
+  loadStorageSnapshotCatalogEntryForPull,
   listStorageSnapshotCatalogEntries,
   migrateStorageBindingCatalog,
   savePartitionCasSnapshotCatalogEntry,

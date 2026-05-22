@@ -3,6 +3,7 @@ import type {
   StorageGcPlan,
   StoragePartitionBinding,
   StoragePullRequirement,
+  StorageSnapshotCatalogEntry,
   StorageSnapshotComponent,
   StorageSnapshotScope,
 } from "./types.js";
@@ -72,6 +73,30 @@ export function canSatisfyStoragePull(
       requiredStorageSnapshotComponents(binding, requirement),
     ).length === 0
   );
+}
+
+export function canSatisfyStorageSnapshotCatalogPull(
+  entry: Pick<StorageSnapshotCatalogEntry, "components">,
+  requirement: StoragePullRequirement,
+): boolean {
+  return (
+    missingStorageSnapshotComponents(
+      entry.components,
+      componentsForPullRequirement(requirement),
+    ).length === 0
+  );
+}
+
+export function selectStorageSnapshotCatalogEntryForPull<TEntry extends StorageSnapshotCatalogEntry>(
+  entries: readonly TEntry[],
+  requirement: StoragePullRequirement,
+): TEntry | undefined {
+  return [...entries]
+    .sort((left, right) =>
+      right.ddlGeneration - left.ddlGeneration
+      || right.snapshotId.localeCompare(left.snapshotId)
+    )
+    .find((entry) => canSatisfyStorageSnapshotCatalogPull(entry, requirement));
 }
 
 export function planStorageGc(

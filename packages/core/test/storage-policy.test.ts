@@ -1,13 +1,19 @@
 import { describe, expect, it } from "vitest";
 import {
   canSatisfyStoragePull,
+  canSatisfyStorageSnapshotCatalogPull,
   componentsForPullRequirement,
   missingStorageSnapshotComponents,
   planStorageGc,
   producedStorageSnapshotComponents,
   requiredStorageSnapshotComponents,
+  selectStorageSnapshotCatalogEntryForPull,
 } from "../src/index.js";
-import type { StorageBindingGroup, StoragePartitionBinding } from "../src/index.js";
+import type {
+  StorageBindingGroup,
+  StoragePartitionBinding,
+  StorageSnapshotCatalogEntry,
+} from "../src/index.js";
 
 describe("storage snapshot policy", () => {
   const catalogAndDataBinding: StoragePartitionBinding = {
@@ -58,6 +64,24 @@ describe("storage snapshot policy", () => {
       ),
     ).toEqual(["catalog"]);
   });
+
+  it("selects the newest snapshot catalog entry that satisfies pull requirements", () => {
+    const entries: StorageSnapshotCatalogEntry[] = [
+      snapshotEntry("old-data", ["data"], 2),
+      snapshotEntry("new-data", ["data"], 4),
+      snapshotEntry("catalog", ["catalog"], 5),
+      snapshotEntry("bootstrap", ["catalog", "data"], 3),
+    ];
+
+    expect(canSatisfyStorageSnapshotCatalogPull(entries[0]!, "data-refresh")).toBe(true);
+    expect(canSatisfyStorageSnapshotCatalogPull(entries[0]!, "bootstrap")).toBe(false);
+    expect(selectStorageSnapshotCatalogEntryForPull(entries, "data-refresh")?.snapshotId)
+      .toBe("new-data");
+    expect(selectStorageSnapshotCatalogEntryForPull(entries, "catalog-refresh")?.snapshotId)
+      .toBe("catalog");
+    expect(selectStorageSnapshotCatalogEntryForPull(entries, "bootstrap")?.snapshotId)
+      .toBe("bootstrap");
+  });
 });
 
 describe("storage GC policy", () => {
@@ -100,3 +124,20 @@ describe("storage GC policy", () => {
     expect(plan.gcAllowedThroughGeneration).toBe(3);
   });
 });
+
+function snapshotEntry(
+  snapshotId: string,
+  components: StorageSnapshotCatalogEntry["components"],
+  ddlGeneration: number,
+): StorageSnapshotCatalogEntry {
+  return {
+    groupId: "sensor_readings",
+    partitionId: "tenant:jp",
+    snapshotId,
+    components,
+    highWatermark: [],
+    ddlGeneration,
+    manifestKind: "cas",
+    manifest: {},
+  };
+}

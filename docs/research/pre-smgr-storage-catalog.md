@@ -83,7 +83,7 @@ Policy inputs:
 
 The first enforceable rule should be conservative: do not GC blocks referenced by any retained snapshot manifest, and do not advance `gcAfterGeneration` past the minimum active pull generation.
 
-Prototype status: core now exposes pull requirement helpers that resolve `bootstrap`, `catalog-refresh`, and `data-refresh` into explicit snapshot components. Core also computes a conservative GC plan from binding group DDL generation, retained generations, active pull generations, and retained snapshot manifest generations.
+Prototype status: core now exposes pull requirement helpers that resolve `bootstrap`, `catalog-refresh`, and `data-refresh` into explicit snapshot components. Core can select the newest persisted snapshot catalog entry that satisfies a pull requirement. Core also computes a conservative GC plan from binding group DDL generation, retained generations, active pull generations, and retained snapshot manifest generations.
 
 ## Before smgr
 

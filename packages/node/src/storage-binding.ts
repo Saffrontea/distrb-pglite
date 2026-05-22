@@ -1,7 +1,9 @@
+import { selectStorageSnapshotCatalogEntryForPull } from "@distrb-pglite/core";
 import type {
   PartitionId,
   StorageBindingGroup,
   StoragePartitionBinding,
+  StoragePullRequirement,
   StorageRelationLocator,
   StorageRelationRole,
   StorageSnapshotCatalogEntry,
@@ -296,6 +298,20 @@ export async function listStorageSnapshotCatalogEntries<TManifest = unknown>(opt
   );
 
   return result.rows.map((row) => snapshotCatalogEntryFromRow<TManifest>(row));
+}
+
+export async function loadStorageSnapshotCatalogEntryForPull<TManifest = unknown>(options: {
+  db: PGliteClient;
+  groupId: string;
+  partitionId?: PartitionId;
+  requirement: StoragePullRequirement;
+}): Promise<StorageSnapshotCatalogEntry<TManifest> | undefined> {
+  const entries = await listStorageSnapshotCatalogEntries<TManifest>({
+    db: options.db,
+    groupId: options.groupId,
+    partitionId: options.partitionId,
+  });
+  return selectStorageSnapshotCatalogEntryForPull(entries, options.requirement);
 }
 
 export async function createStorageBindingGroup(options: {
