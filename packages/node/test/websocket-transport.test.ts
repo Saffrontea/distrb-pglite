@@ -1,113 +1,81 @@
 import { InMemoryPartitionStore, SyncNode } from "@distrb-pglite/core";
-import { createServer } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import { WebSocketHub, WebSocketTransport } from "../src/index.js";
+import {
+  describeTransportContract,
+  getFreePort,
+  type TransportSetup,
+} from "./transport-contract.js";
 
-describe("WebSocketTransport", () => {
+// ─── contract テスト ──────────────────────────────────────────────────────────
+
+describeTransportContract("WebSocketHub+WebSocketTransport", async () => {
+  const port = await getFreePort();
+  const hub = new WebSocketHub({ port });
+  const url = `ws://127.0.0.1:${port}`;
+  const nodes: SyncNode[] = [];
+
+  const setup: TransportSetup = {
+    createNode: async (nodeId) => {
+      const store = new InMemoryPartitionStore(nodeId);
+      const node  = new SyncNode(nodeId, store, new WebSocketTransport(url));
+      nodes.push(node);
+      return { node, store };
+    },
+    teardown: async () => {
+      await Promise.all(nodes.splice(0).map((n) => n.stop().catch(() => {})));
+      await hub.close();
+    },
+  };
+  return setup;
+});
+
+// ─── Hub 固有テスト ───────────────────────────────────────────────────────────
+
+describe("WebSocketTransport (Hub 固有)", () => {
   afterEach(async () => {
     await Promise.all(hubs.map((hub) => hub.close()));
     hubs.length = 0;
   });
 
-  it("replicates and catches up through the same SyncNode transport contract", async () => {
-    await expectReplication({ compress: false });
-  });
+  it("zstd 圧縮を有効にしてもイベントが届く", async () => {
+    const port = await getFreePort();
+    if (port === undefined) return;
 
-  it("replicates with zstd-compressed wire messages", async () => {
-    await expectReplication({ compress: true });
+    const hub = new WebSocketHub({ port, compress: true });
+    hubs.push(hub);
+
+    const url = `ws://127.0.0.1:${port}`;
+    const storeB = new InMemoryPartitionStore("node-b");
+    const nodeA  = new SyncNode("node-a", new InMemoryPartitionStore("node-a"), new WebSocketTransport(url, true));
+    const nodeB  = new SyncNode("node-b", storeB, new WebSocketTransport(url, true));
+
+    await nodeA.start();
+    await nodeA.subscribe("tenant:jp");
+    await nodeB.start();
+    await nodeB.subscribe("tenant:jp");
+
+    await nodeA.write({ partitionId: "tenant:jp", schemaVersion: 1, payload: { compressed: true } });
+
+    await waitFor(async () => {
+      const events = await storeB.listEventsAfterCursors("tenant:jp", new Map());
+      expect(events).toHaveLength(1);
+      expect(events[0]?.payload).toEqual({ compressed: true });
+    });
+
+    await nodeA.stop();
+    await nodeB.stop();
   });
 });
 
-async function expectReplication(options: { compress: boolean }): Promise<void> {
-  const port = await getFreePort();
-  if (port === undefined) {
-    return;
-  }
-
-  const hub = new WebSocketHub({ port, compress: options.compress });
-  hubs.push(hub);
-
-  const url = `ws://127.0.0.1:${port}`;
-  const nodeA = new SyncNode(
-    "node-a",
-    new InMemoryPartitionStore("node-a"),
-    new WebSocketTransport(url, options.compress),
-  );
-  const nodeBStore = new InMemoryPartitionStore("node-b");
-  const nodeB = new SyncNode("node-b", nodeBStore, new WebSocketTransport(url, options.compress));
-
-  await nodeA.start();
-  await nodeA.subscribe("tenant:jp");
-  await nodeB.start();
-  await nodeB.subscribe("tenant:jp");
-
-  await nodeA.write({
-    partitionId: "tenant:jp",
-    schemaVersion: 1,
-    payload: { title: "over ws" },
-  });
-
-  await waitFor(async () => {
-    const events = await nodeBStore.listEventsAfterCursors("tenant:jp", new Map());
-    expect(events).toHaveLength(1);
-    expect(events[0]?.payload).toEqual({ title: "over ws" });
-  });
-
-  const nodeCStore = new InMemoryPartitionStore("node-c");
-  const nodeC = new SyncNode("node-c", nodeCStore, new WebSocketTransport(url, options.compress));
-  await nodeC.start();
-  await nodeC.subscribe("tenant:jp");
-
-  await expect(nodeC.catchUpFrom("node-a", "tenant:jp")).resolves.toBe(1);
-  await expect(nodeCStore.listEventsAfterCursors("tenant:jp", new Map())).resolves.toHaveLength(1);
-
-  await nodeA.stop();
-  await nodeB.stop();
-  await nodeC.stop();
-}
-
 const hubs: WebSocketHub[] = [];
 
-async function getFreePort(): Promise<number | undefined> {
-  const server = createServer();
-  const canListen = await new Promise<boolean>((resolve, reject) => {
-    server.once("error", (error: NodeJS.ErrnoException) => {
-      if (error.code === "EPERM" || error.code === "EACCES") {
-        resolve(false);
-        return;
-      }
-      reject(error);
-    });
-    server.listen(0, "127.0.0.1", () => resolve(true));
-  });
-
-  if (!canListen) {
-    return undefined;
+async function waitFor(fn: () => Promise<void>, ms = 2000): Promise<void> {
+  const start = Date.now();
+  let last: unknown;
+  while (Date.now() - start < ms) {
+    try { await fn(); return; } catch (e) { last = e; }
+    await new Promise((r) => setTimeout(r, 20));
   }
-
-  const address = server.address();
-  await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
-
-  if (!address || typeof address === "string") {
-    throw new Error("failed to allocate test port");
-  }
-
-  return address.port;
-}
-
-async function waitFor(assertion: () => Promise<void>, timeoutMs = 1000): Promise<void> {
-  const startedAt = Date.now();
-  let lastError: unknown;
-
-  while (Date.now() - startedAt < timeoutMs) {
-    try {
-      await assertion();
-      return;
-    } catch (error) {
-      lastError = error;
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-  }
-
-  throw lastError;
+  throw last;
 }

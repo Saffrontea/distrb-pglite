@@ -1,6 +1,8 @@
 export { PGlitePartitionStore } from "./pglite-store.js";
 export type { PGliteClient } from "./pglite-store.js";
 export { WebSocketHub, WebSocketTransport } from "./websocket-transport.js";
+export { P2PWebSocketTransport } from "./p2p-transport.js";
+export type { P2PTransportOptions } from "./p2p-transport.js";
 export { copyDataDirSnapshot, inventoryDataDir } from "./inventory.js";
 export type {
   DataDirInventory,
