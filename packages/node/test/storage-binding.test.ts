@@ -11,6 +11,7 @@ import {
   loadStorageSnapshotCatalogEntry,
   loadStorageSnapshotCatalogEntryForPull,
   listStorageSnapshotCatalogEntries,
+  migrateStorageBindingCatalog,
   PGlitePartitionStore,
   savePartitionCasSnapshotCatalogEntry,
   saveStorageBindingGroup,
@@ -288,6 +289,114 @@ describe("discoverStoragePartitionBinding", () => {
     expect(reloaded?.bindings).toHaveLength(2);
     expect(reloaded?.bindings.every((binding) =>
       binding.relations.every((relation) => relation.parentRelationOid === created.rootRelationOid),
+    )).toBe(true);
+  }, 120_000);
+
+  it("exposes SQL DDL and DML for binding relation groups", async () => {
+    const root = await makeTempDir("storage-binding-sql");
+    const dataDir = join(root, "data");
+    const db = new PGlite(dataDir);
+
+    await db.exec(`
+      CREATE TABLE sensor_readings (
+        tenant_id text NOT NULL,
+        sensor_id text NOT NULL,
+        reading integer NOT NULL
+      );
+      CREATE TABLE sensor_readings_tenant_jp (
+        tenant_id text NOT NULL,
+        sensor_id text NOT NULL,
+        reading integer NOT NULL
+      );
+      CREATE INDEX sensor_readings_tenant_jp_sensor_id
+        ON sensor_readings_tenant_jp (sensor_id);
+    `);
+    await migrateStorageBindingCatalog(db);
+
+    await db.query(
+      `
+        SELECT distrb_create_binding_group(
+          $1,
+          $2::regclass,
+          $3::jsonb
+        )
+      `,
+      [
+        "sensor_readings",
+        "public.sensor_readings",
+        JSON.stringify({ retainSnapshotGenerations: 2, gcAfterGeneration: 7 }),
+      ],
+    );
+    await db.query(
+      `
+        SELECT distrb_bind_partition(
+          $1,
+          $2,
+          $3::regclass[],
+          $4,
+          $5::text[],
+          $6::text[]
+        )
+      `,
+      [
+        "sensor_readings",
+        "tenant:jp",
+        [
+          "public.sensor_readings_tenant_jp",
+          "public.sensor_readings_tenant_jp_sensor_id",
+        ],
+        "catalog-and-data",
+        ["catalog", "data"],
+        ["data"],
+      ],
+    );
+
+    const group = await loadStorageBindingGroup(db, "sensor_readings");
+    const relationRows = await db.query<{
+      partition_id: string;
+      relation_ordinal: number;
+      relation_role: string;
+      parent_relation_oid: number;
+      storage_path: string;
+    }>(
+      `
+        SELECT
+          partition_id,
+          relation_ordinal,
+          relation_role,
+          parent_relation_oid,
+          storage_path
+        FROM distrb_storage_binding_relations
+        WHERE group_id = $1
+        ORDER BY relation_ordinal
+      `,
+      ["sensor_readings"],
+    );
+    await db.close();
+
+    expect(group).toMatchObject({
+      groupId: "sensor_readings",
+      ddlGeneration: 2,
+      vacuumPolicy: {
+        retainSnapshotGenerations: 2,
+        gcAfterGeneration: 7,
+      },
+    });
+    expect(group?.bindings).toHaveLength(1);
+    expect(group?.bindings[0]).toMatchObject({
+      partitionId: "tenant:jp",
+      snapshotScope: "catalog-and-data",
+      snapshotComponents: ["catalog", "data"],
+      pullRequires: ["data"],
+      ddlGeneration: 2,
+    });
+    expect(group?.bindings[0]?.relations).toHaveLength(2);
+    expect(relationRows.rows).toHaveLength(2);
+    expect(relationRows.rows.map((row) => row.relation_ordinal)).toEqual([0, 1]);
+    expect(relationRows.rows.every((row) =>
+      row.relation_role === "child"
+      && row.parent_relation_oid === group?.rootRelationOid
+      && row.storage_path.startsWith("base/")
     )).toBe(true);
   }, 120_000);
 

@@ -60,6 +60,23 @@ export async function migrateStorageBindingCatalog(db: PGliteClient): Promise<vo
       PRIMARY KEY (group_id, partition_id)
     );
 
+    CREATE TABLE IF NOT EXISTS distrb_storage_binding_relations (
+      group_id text NOT NULL,
+      partition_id text NOT NULL,
+      relation_ordinal integer NOT NULL,
+      database_oid integer NOT NULL,
+      tablespace_oid integer NOT NULL,
+      relation_oid integer NOT NULL,
+      relfilenode integer,
+      storage_path text,
+      relation_role text NOT NULL,
+      parent_relation_oid integer,
+      PRIMARY KEY (group_id, partition_id, relation_ordinal),
+      FOREIGN KEY (group_id, partition_id)
+        REFERENCES distrb_storage_bindings(group_id, partition_id)
+        ON DELETE CASCADE
+    );
+
     CREATE TABLE IF NOT EXISTS distrb_storage_snapshots (
       group_id text NOT NULL REFERENCES distrb_storage_binding_groups(group_id) ON DELETE CASCADE,
       partition_id text NOT NULL,
@@ -72,6 +89,178 @@ export async function migrateStorageBindingCatalog(db: PGliteClient): Promise<vo
       created_at timestamptz NOT NULL DEFAULT now(),
       PRIMARY KEY (group_id, partition_id, snapshot_id)
     );
+
+    CREATE OR REPLACE FUNCTION distrb_create_binding_group(
+      group_name text,
+      root_relation regclass,
+      vacuum_policy jsonb DEFAULT NULL
+    )
+    RETURNS integer
+    LANGUAGE plpgsql
+    AS $$
+    DECLARE
+      root_oid integer := root_relation::oid::integer;
+    BEGIN
+      INSERT INTO distrb_storage_binding_groups (
+        group_id,
+        root_relation_oid,
+        ddl_generation,
+        vacuum_policy
+      )
+      VALUES (group_name, root_oid, 1, vacuum_policy)
+      ON CONFLICT (group_id) DO UPDATE SET
+        root_relation_oid = EXCLUDED.root_relation_oid,
+        vacuum_policy = EXCLUDED.vacuum_policy;
+
+      RETURN root_oid;
+    END;
+    $$;
+
+    CREATE OR REPLACE FUNCTION distrb_bind_partition(
+      group_name text,
+      partition_name text,
+      child_relations regclass[],
+      snapshot_scope text DEFAULT 'data-only',
+      snapshot_components text[] DEFAULT NULL,
+      pull_requires text[] DEFAULT NULL
+    )
+    RETURNS integer
+    LANGUAGE plpgsql
+    AS $$
+    DECLARE
+      root_oid integer;
+      next_generation integer;
+      resolved_components text[];
+      resolved_pull_requires text[];
+      relation_name regclass;
+      relation_index integer := 0;
+      relation_row record;
+      relations_json jsonb := '[]'::jsonb;
+      relation_json jsonb;
+    BEGIN
+      IF array_length(child_relations, 1) IS NULL THEN
+        RAISE EXCEPTION 'at least one relation is required to bind a storage partition';
+      END IF;
+
+      SELECT root_relation_oid, ddl_generation + 1
+      INTO root_oid, next_generation
+      FROM distrb_storage_binding_groups
+      WHERE group_id = group_name
+      FOR UPDATE;
+
+      IF root_oid IS NULL THEN
+        RAISE EXCEPTION 'storage binding group not found: %', group_name;
+      END IF;
+
+      resolved_components := COALESCE(
+        snapshot_components,
+        CASE WHEN snapshot_scope = 'catalog-and-data'
+          THEN ARRAY['catalog', 'data']
+          ELSE ARRAY['data']
+        END
+      );
+      resolved_pull_requires := COALESCE(
+        pull_requires,
+        CASE WHEN snapshot_scope = 'catalog-and-data'
+          THEN ARRAY['catalog', 'data']
+          ELSE ARRAY['data']
+        END
+      );
+
+      DELETE FROM distrb_storage_bindings
+      WHERE group_id = group_name
+        AND partition_id = partition_name;
+
+      INSERT INTO distrb_storage_bindings (group_id, partition_id, binding)
+      VALUES (
+        group_name,
+        partition_name,
+        jsonb_build_object(
+          'partitionId', partition_name,
+          'rootRelationOid', root_oid,
+          'relations', '[]'::jsonb,
+          'snapshotScope', snapshot_scope,
+          'snapshotComponents', to_jsonb(resolved_components),
+          'pullRequires', to_jsonb(resolved_pull_requires),
+          'ddlGeneration', next_generation
+        )
+      );
+
+      FOREACH relation_name IN ARRAY child_relations LOOP
+        SELECT
+          d.oid::integer AS database_oid,
+          COALESCE(NULLIF(c.reltablespace, 0), d.dattablespace)::integer AS tablespace_oid,
+          c.oid::integer AS relation_oid,
+          NULLIF(pg_relation_filenode(c.oid), 0)::integer AS relfilenode,
+          pg_relation_filepath(c.oid) AS storage_path
+        INTO relation_row
+        FROM pg_class c
+        JOIN pg_database d ON d.datname = current_database()
+        WHERE c.oid = relation_name::oid;
+
+        IF relation_row.relation_oid IS NULL THEN
+          RAISE EXCEPTION 'relation not found for storage binding: %', relation_name;
+        END IF;
+
+        relation_json := jsonb_build_object(
+          'databaseOid', relation_row.database_oid,
+          'tablespaceOid', relation_row.tablespace_oid,
+          'relationOid', relation_row.relation_oid,
+          'relfilenode', COALESCE(relation_row.relfilenode, relation_row.relation_oid),
+          'storagePath', relation_row.storage_path,
+          'role', 'child',
+          'parentRelationOid', root_oid
+        );
+        relations_json := relations_json || jsonb_build_array(relation_json);
+
+        INSERT INTO distrb_storage_binding_relations (
+          group_id,
+          partition_id,
+          relation_ordinal,
+          database_oid,
+          tablespace_oid,
+          relation_oid,
+          relfilenode,
+          storage_path,
+          relation_role,
+          parent_relation_oid
+        )
+        VALUES (
+          group_name,
+          partition_name,
+          relation_index,
+          relation_row.database_oid,
+          relation_row.tablespace_oid,
+          relation_row.relation_oid,
+          COALESCE(relation_row.relfilenode, relation_row.relation_oid),
+          relation_row.storage_path,
+          'child',
+          root_oid
+        );
+
+        relation_index := relation_index + 1;
+      END LOOP;
+
+      UPDATE distrb_storage_bindings
+      SET binding = jsonb_build_object(
+          'partitionId', partition_name,
+          'rootRelationOid', root_oid,
+          'relations', relations_json,
+          'snapshotScope', snapshot_scope,
+          'snapshotComponents', to_jsonb(resolved_components),
+          'pullRequires', to_jsonb(resolved_pull_requires),
+          'ddlGeneration', next_generation
+        )
+      WHERE group_id = group_name
+        AND partition_id = partition_name;
+
+      UPDATE distrb_storage_binding_groups
+      SET ddl_generation = next_generation
+      WHERE group_id = group_name;
+
+      RETURN next_generation;
+    END;
+    $$;
   `);
 }
 
@@ -112,6 +301,55 @@ export async function saveStorageBindingGroup(
       `,
       [group.groupId, binding.partitionId, JSON.stringify(binding)],
     );
+
+    await db.query(
+      `
+        DELETE FROM distrb_storage_binding_relations
+        WHERE group_id = $1
+          AND partition_id = $2
+      `,
+      [group.groupId, binding.partitionId],
+    );
+
+    for (const [relationIndex, relation] of binding.relations.entries()) {
+      await db.query(
+        `
+          INSERT INTO distrb_storage_binding_relations (
+            group_id,
+            partition_id,
+            relation_ordinal,
+            database_oid,
+            tablespace_oid,
+            relation_oid,
+            relfilenode,
+            storage_path,
+            relation_role,
+            parent_relation_oid
+          )
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+          ON CONFLICT (group_id, partition_id, relation_ordinal) DO UPDATE SET
+            database_oid = EXCLUDED.database_oid,
+            tablespace_oid = EXCLUDED.tablespace_oid,
+            relation_oid = EXCLUDED.relation_oid,
+            relfilenode = EXCLUDED.relfilenode,
+            storage_path = EXCLUDED.storage_path,
+            relation_role = EXCLUDED.relation_role,
+            parent_relation_oid = EXCLUDED.parent_relation_oid
+        `,
+        [
+          group.groupId,
+          binding.partitionId,
+          relationIndex,
+          relation.databaseOid,
+          relation.tablespaceOid,
+          relation.relationOid,
+          relation.relfilenode ?? null,
+          relation.storagePath ?? null,
+          relation.role ?? "child",
+          relation.parentRelationOid ?? null,
+        ],
+      );
+    }
   }
 }
 
@@ -321,15 +559,33 @@ export async function createStorageBindingGroup(options: {
   ddlGeneration?: number;
   vacuumPolicy?: StorageBindingGroup["vacuumPolicy"];
 }): Promise<StorageBindingGroup> {
-  const root = await discoverRelationLocator(options.db, options.rootRelation, "root");
-  const group: StorageBindingGroup = {
-    groupId: options.groupId,
-    rootRelationOid: root.relationOid,
-    ddlGeneration: options.ddlGeneration ?? 1,
-    vacuumPolicy: options.vacuumPolicy,
-    bindings: [],
-  };
-  await saveStorageBindingGroup(options.db, group);
+  await migrateStorageBindingCatalog(options.db);
+  await options.db.query(
+    `
+      SELECT distrb_create_binding_group($1, $2::regclass, $3::jsonb)
+    `,
+    [
+      options.groupId,
+      options.rootRelation,
+      JSON.stringify(options.vacuumPolicy ?? null),
+    ],
+  );
+
+  if (options.ddlGeneration !== undefined && options.ddlGeneration !== 1) {
+    await options.db.query(
+      `
+        UPDATE distrb_storage_binding_groups
+        SET ddl_generation = $2
+        WHERE group_id = $1
+      `,
+      [options.groupId, options.ddlGeneration],
+    );
+  }
+
+  const group = await loadStorageBindingGroup(options.db, options.groupId);
+  if (!group) {
+    throw new Error(`storage binding group not found after create: ${options.groupId}`);
+  }
   return group;
 }
 
@@ -342,48 +598,33 @@ export async function bindStoragePartition(options: {
   snapshotComponents?: StorageSnapshotComponent[];
   pullRequires?: StorageSnapshotComponent[];
 }): Promise<StorageBindingGroup> {
-  if (options.relations.length === 0) {
-    throw new Error("at least one relation is required to bind a storage partition");
-  }
+  await migrateStorageBindingCatalog(options.db);
+  await options.db.query(
+    `
+      SELECT distrb_bind_partition(
+        $1,
+        $2,
+        $3::regclass[],
+        $4,
+        $5::text[],
+        $6::text[]
+      )
+    `,
+    [
+      options.groupId,
+      options.partitionId,
+      options.relations,
+      options.snapshotScope,
+      options.snapshotComponents ?? null,
+      options.pullRequires ?? null,
+    ],
+  );
 
   const group = await loadStorageBindingGroup(options.db, options.groupId);
   if (!group) {
-    throw new Error(`storage binding group not found: ${options.groupId}`);
+    throw new Error(`storage binding group not found after bind: ${options.groupId}`);
   }
-
-  const nextGeneration = group.ddlGeneration + 1;
-  const relations: StorageRelationLocator[] = [];
-  for (const relationName of options.relations) {
-    relations.push(await discoverRelationLocator(
-      options.db,
-      relationName,
-      "child",
-      group.rootRelationOid,
-    ));
-  }
-
-  const binding: StoragePartitionBinding = {
-    partitionId: options.partitionId,
-    rootRelationOid: group.rootRelationOid,
-    relations,
-    snapshotScope: options.snapshotScope,
-    snapshotComponents: options.snapshotComponents ?? defaultComponents(options.snapshotScope),
-    pullRequires: options.pullRequires ?? defaultComponents(options.snapshotScope),
-    ddlGeneration: nextGeneration,
-  };
-
-  const bindings = [
-    ...group.bindings.filter((existing) => existing.partitionId !== options.partitionId),
-    binding,
-  ].sort((left, right) => left.partitionId.localeCompare(right.partitionId));
-
-  const updated: StorageBindingGroup = {
-    ...group,
-    ddlGeneration: nextGeneration,
-    bindings,
-  };
-  await saveStorageBindingGroup(options.db, updated);
-  return updated;
+  return group;
 }
 
 export async function discoverStoragePartitionBinding(options: {

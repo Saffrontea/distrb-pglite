@@ -25,7 +25,7 @@ Minimum catalog tables:
 
 This can start as PGlite application tables, then move into a Postgres extension catalog once the DDL surface stabilizes.
 
-Prototype status: `distrb_storage_binding_groups` and `distrb_storage_bindings` now persist binding groups and JSON binding metadata in PGlite. Node can reload a binding group after reopening PGlite and use the stored binding to create a partition snapshot without CLI JSON. `distrb_storage_snapshots` now records snapshot ids, component sets, high-watermarks, DDL generations, manifest kind, and manifest JSON for produced partition snapshots.
+Prototype status: `distrb_storage_binding_groups`, `distrb_storage_bindings`, and `distrb_storage_binding_relations` now persist binding groups, partition bindings, and physical relation locators in PGlite. Node can reload a binding group after reopening PGlite and use the stored binding to create a partition snapshot without CLI JSON. `distrb_storage_snapshots` now records snapshot ids, component sets, high-watermarks, DDL generations, manifest kind, and manifest JSON for produced partition snapshots.
 
 ## 3. Postgres Extension DDL
 
@@ -52,9 +52,9 @@ SELECT distrb_snapshot_policy(
 );
 ```
 
-The early implementation can simulate this with ordinary SQL tables and Node helpers. The extension version should later enforce dependency tracking and DDL generation increments.
+The early implementation can simulate this with ordinary SQL tables and SQL functions. Node helpers may call those functions for tests and demos, but the catalog contract must remain SQL-owned so it can move into a Postgres extension without becoming a Node API.
 
-Prototype status: Node helpers now simulate the first two DDL operations. `createStorageBindingGroup` records a root relation and initial DDL generation. `bindStoragePartition` attaches one or more child relations to a partition, increments the group DDL generation, records relation roles and parent relation OIDs, and persists the updated group.
+Prototype status: PGlite now installs `distrb_create_binding_group` and `distrb_bind_partition` functions. `distrb_create_binding_group` records a root relation and initial DDL generation. `distrb_bind_partition` attaches one or more child relations to a partition, increments the group DDL generation, records relation roles and parent relation OIDs in normalized relation rows, and persists the updated binding. Node helpers are wrappers around these SQL functions.
 
 ## 4. Child Relation Groups
 
