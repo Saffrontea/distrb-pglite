@@ -48,6 +48,7 @@ export {
   bindStoragePartition,
   applyStorageCatalogManifest,
   createStorageBindingGroup,
+  detectStorageBindingDrift,
   discoverStoragePartitionBinding,
   loadStorageBindingGroup,
   loadStorageCatalogManifest,
@@ -59,10 +60,15 @@ export {
   planStorageGcFromCatalog,
   planStorageSnapshotFence,
   prepareStorageSnapshotFence,
+  refreshStorageBindingGeneration,
   runStorageCasGcFromCatalog,
   savePartitionCasSnapshotCatalogEntry,
   savePartitionFilesystemSnapshotCatalogEntry,
   saveStorageBindingGroup,
   saveStorageSnapshotCatalogEntry,
 } from "./storage-binding.js";
-export type { StorageCasGcExecution, StorageSnapshotFenceTarget } from "./storage-binding.js";
+export type {
+  StorageBindingDrift,
+  StorageCasGcExecution,
+  StorageSnapshotFenceTarget,
+} from "./storage-binding.js";

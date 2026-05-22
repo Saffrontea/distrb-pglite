@@ -22,6 +22,7 @@ export type StorageRelationLocator = {
 export type StoragePartitionBinding = {
   partitionId: PartitionId;
   rootRelationOid: PgOid;
+  boundChildRelationOids?: PgOid[];
   relations: StorageRelationLocator[];
   snapshotScope: StorageSnapshotScope;
   snapshotComponents?: StorageSnapshotComponent[];

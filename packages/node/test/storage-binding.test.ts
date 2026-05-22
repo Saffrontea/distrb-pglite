@@ -7,6 +7,7 @@ import {
   bindStoragePartition,
   createStorageBindingGroup,
   createPartitionCasSnapshot,
+  detectStorageBindingDrift,
   discoverStoragePartitionBinding,
   loadStorageBindingGroup,
   loadStorageCatalogManifest,
@@ -19,6 +20,7 @@ import {
   planStorageGcFromCatalog,
   planStorageSnapshotFence,
   prepareStorageSnapshotFence,
+  refreshStorageBindingGeneration,
   runStorageCasGcFromCatalog,
   savePartitionCasSnapshotCatalogEntry,
   saveStorageBindingGroup,
@@ -263,6 +265,9 @@ describe("discoverStoragePartitionBinding", () => {
       snapshotComponents: ["data"],
       pullRequires: ["data"],
     });
+    expect(withJp.bindings[0]?.boundChildRelationOids).toEqual([
+      withJp.bindings[0]?.relations[0]?.relationOid,
+    ]);
     expect(withJp.bindings[0]?.relations[0]).toMatchObject({
       role: "child",
       parentRelationOid: created.rootRelationOid,
@@ -296,6 +301,7 @@ describe("discoverStoragePartitionBinding", () => {
       gcAfterGeneration: 8,
     });
     expect(reloaded?.bindings).toHaveLength(2);
+    expect(reloaded?.bindings.every((binding) => binding.boundChildRelationOids?.length === 1)).toBe(true);
     expect(reloaded?.bindings.every((binding) =>
       binding.relations.some((relation) =>
         relation.role === "child" && relation.parentRelationOid === created.rootRelationOid
@@ -608,6 +614,88 @@ describe("discoverStoragePartitionBinding", () => {
     expect(applied).toEqual(planned);
   }, 120_000);
 
+  it("detects closure drift from bound child relation metadata and refreshes generation", async () => {
+    const root = await makeTempDir("storage-binding-drift");
+    const dataDir = join(root, "data");
+    const db = new PGlite(dataDir);
+    await migrateStorageBindingCatalog(db);
+
+    await db.exec(`
+      CREATE TABLE sensor_readings (
+        tenant_id text NOT NULL,
+        sensor_id text NOT NULL,
+        reading integer NOT NULL
+      );
+      CREATE TABLE sensor_readings_tenant_jp (
+        tenant_id text NOT NULL,
+        sensor_id text NOT NULL,
+        reading integer NOT NULL
+      );
+    `);
+    await createStorageBindingGroup({
+      db,
+      groupId: "sensor_readings",
+      rootRelation: "public.sensor_readings",
+    });
+    const before = await bindStoragePartition({
+      db,
+      groupId: "sensor_readings",
+      partitionId: "tenant:jp",
+      relations: ["public.sensor_readings_tenant_jp"],
+      snapshotScope: "data-only",
+    });
+    expect(before.bindings[0]?.relations.map((relation) => relation.role)).toEqual(["child", "toast"]);
+
+    await db.exec("CREATE INDEX sensor_readings_tenant_jp_sensor_id ON sensor_readings_tenant_jp (sensor_id)");
+    const drift = await detectStorageBindingDrift({
+      db,
+      groupId: "sensor_readings",
+      partitionId: "tenant:jp",
+    });
+    const refreshed = await refreshStorageBindingGeneration({
+      db,
+      groupId: "sensor_readings",
+      partitionId: "tenant:jp",
+    });
+    const afterDrift = await detectStorageBindingDrift({
+      db,
+      groupId: "sensor_readings",
+      partitionId: "tenant:jp",
+    });
+    const lineageRows = await db.query<{ relation_role: string; ddl_generation: number }>(
+      `
+        SELECT relation_role, ddl_generation
+        FROM distrb_storage_relation_lineage
+        WHERE group_id = $1
+          AND partition_id = $2
+        ORDER BY ddl_generation, relation_role
+      `,
+      ["sensor_readings", "tenant:jp"],
+    );
+    await db.close();
+
+    expect(drift).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        partitionId: "tenant:jp",
+        currentRelation: expect.objectContaining({ role: "index" }),
+      }),
+    ]));
+    expect(refreshed.ddlGeneration).toBe(3);
+    expect(refreshed.bindings[0]).toMatchObject({
+      ddlGeneration: 3,
+      boundChildRelationOids: before.bindings[0]?.boundChildRelationOids,
+    });
+    expect(refreshed.bindings[0]?.relations.map((relation) => relation.role)).toEqual(["child", "index", "toast"]);
+    expect(afterDrift).toEqual([]);
+    expect(lineageRows.rows).toEqual(
+      expect.arrayContaining([
+        { relation_role: "child", ddl_generation: 2 },
+        { relation_role: "child", ddl_generation: 3 },
+        { relation_role: "index", ddl_generation: 3 },
+      ]),
+    );
+  }, 120_000);
+
   it("lists persisted snapshot catalog entries by group and partition", async () => {
     const root = await makeTempDir("storage-snapshot-catalog");
     const dataDir = join(root, "data");
@@ -822,6 +910,7 @@ describe("discoverStoragePartitionBinding", () => {
     expect(loaded?.bindings).toHaveLength(1);
     expect(loaded?.bindings[0]).toMatchObject({
       partitionId: "tenant:jp",
+      boundChildRelationOids: manifest?.bindings[0]?.boundChildRelationOids,
       snapshotScope: "catalog-and-data",
       snapshotComponents: ["catalog", "data"],
       pullRequires: ["catalog", "data"],
