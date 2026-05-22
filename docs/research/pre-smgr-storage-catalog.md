@@ -25,7 +25,7 @@ Minimum catalog tables:
 
 This can start as PGlite application tables, then move into a Postgres extension catalog once the DDL surface stabilizes.
 
-Prototype status: `distrb_storage_binding_groups`, `distrb_storage_bindings`, and `distrb_storage_binding_relations` now persist binding groups, partition bindings, and physical relation locators in PGlite. Node reloads binding relations from normalized metadata rows, not from the embedded binding JSON, so SQL-generated metadata is the source of truth for multi-relation bindings. `distrb_storage_snapshots` now records snapshot ids, component sets, high-watermarks, DDL generations, manifest kind, and manifest JSON for produced partition snapshots.
+Prototype status: `distrb_storage_binding_groups`, `distrb_storage_bindings`, `distrb_storage_binding_relations`, and `distrb_storage_relation_lineage` now persist binding groups, partition bindings, physical relation locators, and relation filenode lineage in PGlite. Node reloads binding relations from normalized metadata rows, not from the embedded binding JSON, so SQL-generated metadata is the source of truth for multi-relation bindings. `distrb_storage_snapshots` now records snapshot ids, component sets, high-watermarks, DDL generations, manifest kind, and manifest JSON for produced partition snapshots. `distrb_create_catalog_manifest` turns the SQL catalog into a catalog component manifest containing relation definitions, binding metadata, snapshots, and DDL generation.
 
 ## 3. Postgres Extension DDL
 
@@ -59,15 +59,18 @@ SELECT distrb_create_bound_table(
 );
 
 SELECT distrb_snapshot_policy(
-  group_name => 'sensor_readings',
-  snapshot_components => ARRAY['catalog', 'data'],
-  pull_requires => ARRAY['data']
+  'sensor_readings',
+  'tenant:jp',
+  'data-only',
+  ARRAY['data'],
+  ARRAY['data'],
+  '{"retainSnapshotGenerations": 4, "gcAfterGeneration": 12}'::jsonb
 );
 ```
 
 The early implementation can simulate this with ordinary SQL tables and SQL functions. Node helpers may call those functions for tests and demos, but the catalog contract must remain SQL-owned so it can move into a Postgres extension without becoming a Node API.
 
-Prototype status: PGlite now installs `distrb_create_binding_group`, `distrb_bind_partition`, `distrb_create_root_table`, and `distrb_create_bound_table` functions. `distrb_create_binding_group` records an existing root relation and initial DDL generation. `distrb_create_root_table` creates the root table and records the group in one SQL call. `distrb_bind_partition` attaches one or more existing child relations to a partition, increments the group DDL generation, records relation roles and parent relation OIDs in normalized relation rows, and persists the updated binding. `distrb_create_bound_table` creates a child table and binds it in one SQL call. Node helpers are wrappers around these SQL functions where possible.
+Prototype status: PGlite now installs `distrb_create_binding_group`, `distrb_bind_partition`, `distrb_create_root_table`, `distrb_create_bound_table`, and `distrb_snapshot_policy` functions. `distrb_create_binding_group` records an existing root relation and initial DDL generation. `distrb_create_root_table` creates the root table and records the group in one SQL call. `distrb_bind_partition` attaches one or more existing child relations to a partition, expands child tables into table/index/TOAST storage relations, increments the group DDL generation, records relation roles and parent relation OIDs in normalized relation rows, records lineage, and persists the updated binding. `distrb_create_bound_table` creates a child table and binds it in one SQL call. `distrb_snapshot_policy` updates snapshot scope, produced components, pull requirements, vacuum policy, and DDL generation through SQL. Node helpers are wrappers around these SQL functions where possible.
 
 ## 4. Child Relation Groups
 
@@ -80,7 +83,7 @@ A single logical partition may map to multiple physical relations:
 
 `StorageBindingGroup` groups those bindings under one root relation and DDL generation. Each `StorageRelationLocator` can carry a role and parent relation OID so snapshot selection and replay can include all required child files.
 
-Prototype status: child table relations are now discovered from PGlite catalog metadata and stored with `role: "child"` and `parentRelationOid`.
+Prototype status: child table relations are now discovered from PGlite catalog metadata and stored with `role: "child"` and `parentRelationOid`. `distrb_storage_relation_closure` also discovers index and TOAST storage relations and stores them with `role: "index"` or `role: "toast"` and a parent relation OID.
 
 ## 5. Vacuum And GC Coordination
 

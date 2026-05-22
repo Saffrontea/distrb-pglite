@@ -13,6 +13,7 @@ export type {
   SnapshotMetadata,
   StoragePartitionBinding,
   StorageBindingGroup,
+  StorageCatalogManifest,
   StorageRelationLocator,
   StorageRelationRole,
   StorageGcPlan,

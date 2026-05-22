@@ -7,6 +7,7 @@ import {
   createPartitionCasSnapshot,
   discoverStoragePartitionBinding,
   loadStorageBindingGroup,
+  loadStorageCatalogManifest,
   loadStoragePartitionBinding,
   loadStorageSnapshotCatalogEntry,
   loadStorageSnapshotCatalogEntryForPull,
@@ -289,7 +290,9 @@ describe("discoverStoragePartitionBinding", () => {
     });
     expect(reloaded?.bindings).toHaveLength(2);
     expect(reloaded?.bindings.every((binding) =>
-      binding.relations.every((relation) => relation.parentRelationOid === created.rootRelationOid),
+      binding.relations.some((relation) =>
+        relation.role === "child" && relation.parentRelationOid === created.rootRelationOid
+      ),
     )).toBe(true);
   }, 120_000);
 
@@ -342,10 +345,7 @@ describe("discoverStoragePartitionBinding", () => {
       [
         "sensor_readings",
         "tenant:jp",
-        [
-          "public.sensor_readings_tenant_jp",
-          "public.sensor_readings_tenant_jp_sensor_id",
-        ],
+        ["public.sensor_readings_tenant_jp"],
         "catalog-and-data",
         ["catalog", "data"],
         ["data"],
@@ -368,6 +368,7 @@ describe("discoverStoragePartitionBinding", () => {
       relation_role: string;
       parent_relation_oid: number;
       storage_path: string;
+      relation_oid: number;
     }>(
       `
         SELECT
@@ -375,12 +376,23 @@ describe("discoverStoragePartitionBinding", () => {
           relation_ordinal,
           relation_role,
           parent_relation_oid,
-          storage_path
+          storage_path,
+          relation_oid
         FROM distrb_storage_binding_relations
         WHERE group_id = $1
         ORDER BY relation_ordinal
       `,
       ["sensor_readings"],
+    );
+    const lineageRows = await db.query<{ relation_oid: number; ddl_generation: number }>(
+      `
+        SELECT relation_oid, ddl_generation
+        FROM distrb_storage_relation_lineage
+        WHERE group_id = $1
+          AND partition_id = $2
+        ORDER BY relation_oid
+      `,
+      ["sensor_readings", "tenant:jp"],
     );
     await db.close();
 
@@ -400,14 +412,24 @@ describe("discoverStoragePartitionBinding", () => {
       pullRequires: ["data"],
       ddlGeneration: 2,
     });
-    expect(group?.bindings[0]?.relations).toHaveLength(2);
-    expect(relationRows.rows).toHaveLength(2);
-    expect(relationRows.rows.map((row) => row.relation_ordinal)).toEqual([0, 1]);
-    expect(relationRows.rows.every((row) =>
-      row.relation_role === "child"
-      && row.parent_relation_oid === group?.rootRelationOid
-      && row.storage_path.startsWith("base/")
-    )).toBe(true);
+    expect(group?.bindings[0]?.relations.length).toBeGreaterThanOrEqual(2);
+    expect(relationRows.rows.length).toBeGreaterThanOrEqual(2);
+    expect(relationRows.rows.map((row) => row.relation_ordinal)).toEqual(
+      relationRows.rows.map((_, index) => index),
+    );
+    expect(relationRows.rows.map((row) => row.relation_role)).toEqual(
+      expect.arrayContaining(["child", "index"]),
+    );
+    expect(relationRows.rows[0]).toMatchObject({
+      parent_relation_oid: group?.rootRelationOid,
+      storage_path: expect.stringMatching(/^base\//),
+    });
+    expect(relationRows.rows[1]).toMatchObject({
+      parent_relation_oid: relationRows.rows[0]?.relation_oid,
+      storage_path: expect.stringMatching(/^base\//),
+    });
+    expect(lineageRows.rows).toHaveLength(relationRows.rows.length);
+    expect(lineageRows.rows.every((row) => row.ddl_generation === 2)).toBe(true);
   }, 120_000);
 
   it("creates root and bound tables through the PGlite SQL interface", async () => {
@@ -458,6 +480,26 @@ describe("discoverStoragePartitionBinding", () => {
       "INSERT INTO sensor_readings_tenant_jp (tenant_id, sensor_id, reading) VALUES ($1, $2, $3)",
       ["tenant:jp", "tokyo-1", 42],
     );
+    await db.query(
+      `
+        SELECT distrb_snapshot_policy(
+          $1,
+          $2,
+          $3,
+          $4::text[],
+          $5::text[],
+          $6::jsonb
+        )
+      `,
+      [
+        "sensor_readings",
+        "tenant:jp",
+        "data-only",
+        ["data"],
+        ["data"],
+        JSON.stringify({ retainSnapshotGenerations: 4, gcAfterGeneration: 12 }),
+      ],
+    );
 
     const tables = await db.query<{ root_exists: string; child_exists: string }>(
       `
@@ -480,14 +522,18 @@ describe("discoverStoragePartitionBinding", () => {
     expect(row.rows[0]?.reading).toBe(42);
     expect(group).toMatchObject({
       groupId: "sensor_readings",
-      ddlGeneration: 2,
+      ddlGeneration: 3,
+      vacuumPolicy: {
+        retainSnapshotGenerations: 4,
+        gcAfterGeneration: 12,
+      },
     });
     expect(group?.bindings[0]).toMatchObject({
       partitionId: "tenant:jp",
-      snapshotScope: "catalog-and-data",
-      snapshotComponents: ["catalog", "data"],
+      snapshotScope: "data-only",
+      snapshotComponents: ["data"],
       pullRequires: ["data"],
-      ddlGeneration: 2,
+      ddlGeneration: 3,
     });
     expect(group?.bindings[0]?.relations[0]).toMatchObject({
       parentRelationOid: group.rootRelationOid,
@@ -612,6 +658,10 @@ describe("discoverStoragePartitionBinding", () => {
       groupId: "sensor_readings",
       activePullGenerations: [2],
     });
+    const catalogManifest = await loadStorageCatalogManifest({
+      db,
+      groupId: "sensor_readings",
+    });
     await db.close();
 
     expect(allEntries.map((entry) => entry.partitionId)).toEqual(["tenant:jp", "tenant:us"]);
@@ -631,5 +681,22 @@ describe("discoverStoragePartitionBinding", () => {
       protectedGenerations: [2, 3],
       gcAllowedThroughGeneration: 1,
     });
+    expect(catalogManifest).toMatchObject({
+      version: 1,
+      groupId: "sensor_readings",
+      ddlGeneration: 3,
+      snapshots: [
+        expect.objectContaining({ partitionId: "tenant:jp", manifestKind: "cas" }),
+        expect.objectContaining({ partitionId: "tenant:us", manifestKind: "cas" }),
+      ],
+    });
+    expect(catalogManifest?.bindings.map((binding) => binding.partitionId)).toEqual([
+      "tenant:jp",
+      "tenant:us",
+    ]);
+    expect(catalogManifest?.bindings.every((binding) =>
+      binding.relations.some((relation) => relation.role === "child")
+      && binding.relations.some((relation) => relation.role === "toast")
+    )).toBe(true);
   }, 120_000);
 });

@@ -61,6 +61,22 @@ export type StorageSnapshotCatalogEntry<TManifest = unknown> = {
   manifest: TManifest;
 };
 
+export type StorageCatalogManifest = {
+  version: 1;
+  groupId: string;
+  rootRelationOid: PgOid;
+  ddlGeneration: number;
+  vacuumPolicy?: StorageBindingGroup["vacuumPolicy"];
+  bindings: StoragePartitionBinding[];
+  snapshots: Array<{
+    partitionId: PartitionId;
+    snapshotId: SnapshotId;
+    components: StorageSnapshotComponent[];
+    ddlGeneration: number;
+    manifestKind: StorageSnapshotManifestKind;
+  }>;
+};
+
 export type EventCursor = {
   sourceNodeId: NodeId;
   eventId: EventId;
