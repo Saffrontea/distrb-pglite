@@ -1,8 +1,13 @@
-import { selectStorageSnapshotCatalogEntryForPull } from "@distrb-pglite/core";
+import {
+  planStorageGc,
+  selectStorageSnapshotCatalogEntryForPull,
+} from "@distrb-pglite/core";
 import type {
   PartitionId,
   StorageBindingGroup,
+  StorageGcPlan,
   StoragePartitionBinding,
+  StorageGcPlanOptions,
   StoragePullRequirement,
   StorageRelationLocator,
   StorageRelationRole,
@@ -31,6 +36,19 @@ type BindingGroupRow = {
 type BindingRow = {
   partition_id: string;
   binding: unknown;
+};
+
+type BindingRelationRow = {
+  group_id: string;
+  partition_id: string;
+  relation_ordinal: number;
+  database_oid: number;
+  tablespace_oid: number;
+  relation_oid: number;
+  relfilenode: number | null;
+  storage_path: string | null;
+  relation_role: string;
+  parent_relation_oid: number | null;
 };
 
 type SnapshotCatalogRow = {
@@ -332,6 +350,42 @@ export async function migrateStorageBindingCatalog(db: PGliteClient): Promise<vo
       );
     END;
     $$;
+
+    CREATE OR REPLACE VIEW distrb_storage_binding_metadata AS
+      SELECT
+        g.group_id,
+        g.root_relation_oid,
+        g.ddl_generation AS group_ddl_generation,
+        g.vacuum_policy,
+        b.partition_id,
+        (b.binding->>'snapshotScope') AS snapshot_scope,
+        b.binding->'snapshotComponents' AS snapshot_components,
+        b.binding->'pullRequires' AS pull_requires,
+        (b.binding->>'ddlGeneration')::integer AS binding_ddl_generation,
+        r.relation_ordinal,
+        r.database_oid,
+        r.tablespace_oid,
+        r.relation_oid,
+        r.relfilenode,
+        r.storage_path,
+        r.relation_role,
+        r.parent_relation_oid
+      FROM distrb_storage_binding_groups g
+      JOIN distrb_storage_bindings b
+        ON b.group_id = g.group_id
+      LEFT JOIN distrb_storage_binding_relations r
+        ON r.group_id = b.group_id
+       AND r.partition_id = b.partition_id;
+
+    CREATE OR REPLACE FUNCTION distrb_retained_snapshot_generations(group_name text)
+    RETURNS TABLE(ddl_generation integer)
+    LANGUAGE sql
+    AS $$
+      SELECT DISTINCT s.ddl_generation
+      FROM distrb_storage_snapshots s
+      WHERE s.group_id = group_name
+      ORDER BY s.ddl_generation
+    $$;
   `);
 }
 
@@ -455,6 +509,7 @@ export async function loadStorageBindingGroup(
     `,
     [groupId],
   );
+  const relationRows = await listStorageBindingRelationRows(db, groupId);
 
   return {
     groupId: row.group_id,
@@ -463,9 +518,15 @@ export async function loadStorageBindingGroup(
     vacuumPolicy: row.vacuum_policy
       ? row.vacuum_policy as StorageBindingGroup["vacuumPolicy"]
       : undefined,
-    bindings: bindingsResult.rows.map((bindingRow) =>
-      bindingRow.binding as StoragePartitionBinding
-    ),
+    bindings: bindingsResult.rows.map((bindingRow) => {
+      const binding = bindingRow.binding as StoragePartitionBinding;
+      return {
+        ...binding,
+        relations: relationRows
+          .filter((relation) => relation.partition_id === bindingRow.partition_id)
+          .map(storageRelationLocatorFromRow),
+      };
+    }),
   };
 }
 
@@ -623,6 +684,30 @@ export async function loadStorageSnapshotCatalogEntryForPull<TManifest = unknown
   return selectStorageSnapshotCatalogEntryForPull(entries, options.requirement);
 }
 
+export async function planStorageGcFromCatalog(options: {
+  db: PGliteClient;
+  groupId: string;
+  activePullGenerations?: StorageGcPlanOptions["activePullGenerations"];
+}): Promise<StorageGcPlan | undefined> {
+  const group = await loadStorageBindingGroup(options.db, options.groupId);
+  if (!group) {
+    return undefined;
+  }
+
+  const snapshotGenerations = await options.db.query<{ ddl_generation: number }>(
+    `
+      SELECT ddl_generation
+      FROM distrb_retained_snapshot_generations($1)
+    `,
+    [options.groupId],
+  );
+
+  return planStorageGc(group, {
+    activePullGenerations: options.activePullGenerations,
+    retainedSnapshotGenerations: snapshotGenerations.rows.map((row) => row.ddl_generation),
+  });
+}
+
 export async function createStorageBindingGroup(options: {
   db: PGliteClient;
   groupId: string;
@@ -760,6 +845,45 @@ async function discoverRelationLocator(
 
 function defaultComponents(scope: StorageSnapshotScope): StorageSnapshotComponent[] {
   return scope === "catalog-and-data" ? ["catalog", "data"] : ["data"];
+}
+
+async function listStorageBindingRelationRows(
+  db: PGliteClient,
+  groupId: string,
+): Promise<BindingRelationRow[]> {
+  const result = await db.query<BindingRelationRow>(
+    `
+      SELECT
+        group_id,
+        partition_id,
+        relation_ordinal,
+        database_oid,
+        tablespace_oid,
+        relation_oid,
+        relfilenode,
+        storage_path,
+        relation_role,
+        parent_relation_oid
+      FROM distrb_storage_binding_relations
+      WHERE group_id = $1
+      ORDER BY partition_id, relation_ordinal
+    `,
+    [groupId],
+  );
+
+  return result.rows;
+}
+
+function storageRelationLocatorFromRow(row: BindingRelationRow): StorageRelationLocator {
+  return {
+    databaseOid: row.database_oid,
+    tablespaceOid: row.tablespace_oid,
+    relationOid: row.relation_oid,
+    relfilenode: row.relfilenode ?? undefined,
+    storagePath: row.storage_path ?? undefined,
+    role: row.relation_role as StorageRelationRole,
+    parentRelationOid: row.parent_relation_oid ?? undefined,
+  };
 }
 
 function snapshotCatalogEntryFromRow<TManifest>(

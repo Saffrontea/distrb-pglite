@@ -50,6 +50,7 @@ export {
   loadStorageSnapshotCatalogEntryForPull,
   listStorageSnapshotCatalogEntries,
   migrateStorageBindingCatalog,
+  planStorageGcFromCatalog,
   savePartitionCasSnapshotCatalogEntry,
   savePartitionFilesystemSnapshotCatalogEntry,
   saveStorageBindingGroup,

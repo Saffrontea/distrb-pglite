@@ -13,6 +13,7 @@ import {
   listStorageSnapshotCatalogEntries,
   migrateStorageBindingCatalog,
   PGlitePartitionStore,
+  planStorageGcFromCatalog,
   savePartitionCasSnapshotCatalogEntry,
   saveStorageBindingGroup,
 } from "../src/index.js";
@@ -350,6 +351,15 @@ describe("discoverStoragePartitionBinding", () => {
         ["data"],
       ],
     );
+    await db.query(
+      `
+        UPDATE distrb_storage_bindings
+        SET binding = jsonb_set(binding, '{relations}', '[]'::jsonb)
+        WHERE group_id = $1
+          AND partition_id = $2
+      `,
+      ["sensor_readings", "tenant:jp"],
+    );
 
     const group = await loadStorageBindingGroup(db, "sensor_readings");
     const relationRows = await db.query<{
@@ -513,6 +523,10 @@ describe("discoverStoragePartitionBinding", () => {
       db,
       groupId: "sensor_readings",
       rootRelation: "public.sensor_readings",
+      vacuumPolicy: {
+        retainSnapshotGenerations: 1,
+        gcAfterGeneration: 9,
+      },
     });
 
     const withJp = await bindStoragePartition({
@@ -586,6 +600,18 @@ describe("discoverStoragePartitionBinding", () => {
       partitionId: "tenant:jp",
       requirement: "bootstrap",
     });
+    const retainedGenerations = await db.query<{ ddl_generation: number }>(
+      `
+        SELECT ddl_generation
+        FROM distrb_retained_snapshot_generations($1)
+      `,
+      ["sensor_readings"],
+    );
+    const gcPlan = await planStorageGcFromCatalog({
+      db,
+      groupId: "sensor_readings",
+      activePullGenerations: [2],
+    });
     await db.close();
 
     expect(allEntries.map((entry) => entry.partitionId)).toEqual(["tenant:jp", "tenant:us"]);
@@ -598,5 +624,12 @@ describe("discoverStoragePartitionBinding", () => {
     });
     expect(dataPullEntry?.snapshotId).toBe(jpSnapshot.snapshotId);
     expect(bootstrapEntry).toBeUndefined();
+    expect(retainedGenerations.rows.map((row) => row.ddl_generation)).toEqual([2, 3]);
+    expect(gcPlan).toMatchObject({
+      ddlGeneration: 3,
+      retainFromGeneration: 3,
+      protectedGenerations: [2, 3],
+      gcAllowedThroughGeneration: 1,
+    });
   }, 120_000);
 });

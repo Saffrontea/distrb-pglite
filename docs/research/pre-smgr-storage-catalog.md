@@ -25,7 +25,7 @@ Minimum catalog tables:
 
 This can start as PGlite application tables, then move into a Postgres extension catalog once the DDL surface stabilizes.
 
-Prototype status: `distrb_storage_binding_groups`, `distrb_storage_bindings`, and `distrb_storage_binding_relations` now persist binding groups, partition bindings, and physical relation locators in PGlite. Node can reload a binding group after reopening PGlite and use the stored binding to create a partition snapshot without CLI JSON. `distrb_storage_snapshots` now records snapshot ids, component sets, high-watermarks, DDL generations, manifest kind, and manifest JSON for produced partition snapshots.
+Prototype status: `distrb_storage_binding_groups`, `distrb_storage_bindings`, and `distrb_storage_binding_relations` now persist binding groups, partition bindings, and physical relation locators in PGlite. Node reloads binding relations from normalized metadata rows, not from the embedded binding JSON, so SQL-generated metadata is the source of truth for multi-relation bindings. `distrb_storage_snapshots` now records snapshot ids, component sets, high-watermarks, DDL generations, manifest kind, and manifest JSON for produced partition snapshots.
 
 ## 3. Postgres Extension DDL
 
@@ -96,7 +96,7 @@ Policy inputs:
 
 The first enforceable rule should be conservative: do not GC blocks referenced by any retained snapshot manifest, and do not advance `gcAfterGeneration` past the minimum active pull generation.
 
-Prototype status: core now exposes pull requirement helpers that resolve `bootstrap`, `catalog-refresh`, and `data-refresh` into explicit snapshot components. Core can select the newest persisted snapshot catalog entry that satisfies a pull requirement. Core also computes a conservative GC plan from binding group DDL generation, retained generations, active pull generations, and retained snapshot manifest generations.
+Prototype status: core now exposes pull requirement helpers that resolve `bootstrap`, `catalog-refresh`, and `data-refresh` into explicit snapshot components. Core can select the newest persisted snapshot catalog entry that satisfies a pull requirement. Core also computes a conservative GC plan from binding group DDL generation, retained generations, active pull generations, and retained snapshot manifest generations. PGlite exposes `distrb_retained_snapshot_generations` so retained snapshot generations can be derived from catalog rows, and Node can compute GC plans directly from SQL metadata.
 
 ## Before smgr
 
