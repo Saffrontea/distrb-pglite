@@ -7,7 +7,7 @@ export type PgOid = number;
 export type StorageSnapshotScope = "data-only" | "catalog-and-data";
 export type StorageSnapshotComponent = "catalog" | "data";
 export type StoragePullRequirement = "bootstrap" | "catalog-refresh" | "data-refresh";
-export type StorageRelationRole = "root" | "child" | "index" | "toast";
+export type StorageRelationRole = "root" | "child" | "index" | "toast" | "data-catalog";
 
 export type StorageRelationLocator = {
   databaseOid: PgOid;

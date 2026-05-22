@@ -644,7 +644,9 @@ describe("discoverStoragePartitionBinding", () => {
       relations: ["public.sensor_readings_tenant_jp"],
       snapshotScope: "data-only",
     });
-    expect(before.bindings[0]?.relations.map((relation) => relation.role)).toEqual(["child", "toast"]);
+    expect(before.bindings[0]?.relations.map((relation) => relation.role)).toEqual(
+      expect.arrayContaining(["child", "toast", "data-catalog", "index"]),
+    );
 
     await db.exec("CREATE INDEX sensor_readings_tenant_jp_sensor_id ON sensor_readings_tenant_jp (sensor_id)");
     const drift = await detectStorageBindingDrift({
@@ -685,12 +687,16 @@ describe("discoverStoragePartitionBinding", () => {
       ddlGeneration: 3,
       boundChildRelationOids: before.bindings[0]?.boundChildRelationOids,
     });
-    expect(refreshed.bindings[0]?.relations.map((relation) => relation.role)).toEqual(["child", "index", "toast"]);
+    expect(refreshed.bindings[0]?.relations.map((relation) => relation.role)).toEqual(
+      expect.arrayContaining(["child", "index", "toast", "data-catalog"]),
+    );
     expect(afterDrift).toEqual([]);
     expect(lineageRows.rows).toEqual(
       expect.arrayContaining([
         { relation_role: "child", ddl_generation: 2 },
         { relation_role: "child", ddl_generation: 3 },
+        { relation_role: "data-catalog", ddl_generation: 2 },
+        { relation_role: "data-catalog", ddl_generation: 3 },
         { relation_role: "index", ddl_generation: 3 },
       ]),
     );

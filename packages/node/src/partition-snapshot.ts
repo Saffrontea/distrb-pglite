@@ -252,16 +252,39 @@ function remapDataOnlyManifest(
   sourceBinding: StoragePartitionBinding,
   targetBinding: StoragePartitionBinding,
 ): CasManifest {
+  const sourceDataCatalogFileStems = dataCatalogRelationFileStems(sourceBinding);
   return {
     ...manifest,
     directories: [],
     files: manifest.files.map((file) => ({
       ...file,
       path: isDataComponentMetadataFile(file.path)
+        || sourceDataCatalogFileStems.has(relationFileStem(file.path))
         ? file.path
         : remapRelationFilePath(file.path, sourceBinding, targetBinding),
     })),
   };
+}
+
+function dataCatalogRelationFileStems(
+  binding: StoragePartitionBinding,
+): ReadonlySet<string> {
+  const dataCatalogOids = new Set(
+    binding.relations
+      .filter((relation) => relation.role === "data-catalog")
+      .map((relation) => relation.relationOid),
+  );
+  return new Set(
+    binding.relations
+      .filter((relation) =>
+        relation.role === "data-catalog"
+        || (
+          relation.parentRelationOid !== undefined
+          && dataCatalogOids.has(relation.parentRelationOid)
+        )
+      )
+      .flatMap((relation) => relationFileStems(relation)),
+  );
 }
 
 function remapRelationFilePath(
@@ -299,6 +322,10 @@ function isDataComponentMetadataFile(path: string): boolean {
     || path.startsWith("pg_commit_ts/")
     || path.startsWith("pg_serial/")
     || path.startsWith("pg_twophase/")
+    || path === "global/pg_filenode.map"
+    || path.endsWith("/pg_filenode.map")
+    || path === "global/pg_internal.init"
+    || path.endsWith("/pg_internal.init")
   );
 }
 

@@ -2,6 +2,7 @@ import type {
   PartitionId,
   PartitionStore,
   StorageCatalogManifest,
+  StorageSnapshotComponent,
   StoragePartitionBinding,
   StoragePullRequirement,
   StorageSnapshotCatalogEntry,
@@ -20,7 +21,7 @@ import {
   loadStoragePartitionBinding,
   prepareStorageSnapshotFence,
   refreshStorageBindingGeneration,
-  savePartitionCasSnapshotCatalogEntry,
+  saveStorageSnapshotCatalogEntry,
   type StorageBindingDrift,
   type StorageSnapshotFenceTarget,
 } from "./storage-binding.js";
@@ -30,6 +31,7 @@ export type ManagedPartitionCasSnapshot = {
   drift: StorageBindingDrift[];
   fence: StorageSnapshotFenceTarget[];
   snapshot: PartitionCasSnapshot;
+  entry: StorageSnapshotCatalogEntry<CasManifest>;
 };
 
 export type PulledPartitionCasSnapshot = {
@@ -87,15 +89,15 @@ export async function createManagedPartitionCasSnapshot(options: {
     ids: options.ids,
     beforeStorageSnapshot: options.beforeStorageSnapshot,
   });
+  const entry = partitionCasSnapshotCatalogEntry({
+    groupId: options.groupId,
+    snapshot,
+  });
   if (options.saveCatalogEntry ?? true) {
-    await savePartitionCasSnapshotCatalogEntry({
-      db: options.db,
-      groupId: options.groupId,
-      snapshot,
-    });
+    await saveStorageSnapshotCatalogEntry(options.db, entry);
   }
 
-  return { drift, fence, snapshot };
+  return { drift, fence, snapshot, entry };
 }
 
 export async function pullPartitionCasSnapshot(options: {
@@ -173,4 +175,25 @@ function catalogEntryToPartitionCasSnapshot(
     highWatermark: entry.highWatermark,
     manifest: entry.manifest,
   };
+}
+
+function partitionCasSnapshotCatalogEntry(options: {
+  groupId: string;
+  snapshot: PartitionCasSnapshot;
+  components?: StorageSnapshotComponent[];
+}): StorageSnapshotCatalogEntry<CasManifest> {
+  return {
+    groupId: options.groupId,
+    partitionId: options.snapshot.partitionId,
+    snapshotId: options.snapshot.snapshotId,
+    components: options.components ?? defaultComponents(options.snapshot.storageBinding.snapshotScope),
+    highWatermark: options.snapshot.highWatermark,
+    ddlGeneration: options.snapshot.storageBinding.ddlGeneration ?? 0,
+    manifestKind: "cas",
+    manifest: options.snapshot.manifest,
+  };
+}
+
+function defaultComponents(scope: StoragePartitionBinding["snapshotScope"]): StorageSnapshotComponent[] {
+  return scope === "catalog-and-data" ? ["catalog", "data"] : ["data"];
 }

@@ -239,7 +239,8 @@ export async function migrateStorageBindingCatalog(db: PGliteClient): Promise<vo
 
     CREATE OR REPLACE FUNCTION distrb_storage_relation_closure(
       child_relations regclass[],
-      root_oid integer
+      root_oid integer,
+      include_data_catalog boolean DEFAULT false
     )
     RETURNS TABLE(
       relation_ordinal integer,
@@ -267,27 +268,50 @@ export async function migrateStorageBindingCatalog(db: PGliteClient): Promise<vo
           root_oid AS parent_relation_oid
         FROM input_relations
       ),
+      data_catalog_relations AS (
+        SELECT
+          COALESCE((SELECT max(input_ordinal) + 1 FROM child), 0) AS input_ordinal,
+          c.oid::integer AS relation_oid,
+          'data-catalog'::text AS relation_role,
+          NULL::integer AS parent_relation_oid
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE include_data_catalog
+          AND n.nspname = 'pg_catalog'
+          AND c.relname IN (
+            'pg_attribute',
+            'pg_class',
+            'pg_index',
+            'pg_namespace',
+            'pg_type'
+          )
+      ),
+      base_relations AS (
+        SELECT * FROM child
+        UNION ALL
+        SELECT * FROM data_catalog_relations
+      ),
       index_relations AS (
         SELECT
-          child.input_ordinal,
+          base_relations.input_ordinal,
           i.indexrelid::integer AS relation_oid,
           'index'::text AS relation_role,
-          child.relation_oid AS parent_relation_oid
-        FROM child
-        JOIN pg_index i ON i.indrelid = child.relation_oid
+          base_relations.relation_oid AS parent_relation_oid
+        FROM base_relations
+        JOIN pg_index i ON i.indrelid = base_relations.relation_oid
       ),
       toast_relations AS (
         SELECT
-          child.input_ordinal,
+          base_relations.input_ordinal,
           table_class.reltoastrelid::integer AS relation_oid,
           'toast'::text AS relation_role,
-          child.relation_oid AS parent_relation_oid
-        FROM child
-        JOIN pg_class table_class ON table_class.oid = child.relation_oid
+          base_relations.relation_oid AS parent_relation_oid
+        FROM base_relations
+        JOIN pg_class table_class ON table_class.oid = base_relations.relation_oid
         WHERE table_class.reltoastrelid <> 0
       ),
       all_relations AS (
-        SELECT * FROM child
+        SELECT * FROM base_relations
         UNION ALL
         SELECT * FROM index_relations
         UNION ALL
@@ -301,6 +325,7 @@ export async function migrateStorageBindingCatalog(db: PGliteClient): Promise<vo
               WHEN 'child' THEN 0
               WHEN 'index' THEN 1
               WHEN 'toast' THEN 2
+              WHEN 'data-catalog' THEN 3
               ELSE 3
             END,
             all_relations.relation_oid
@@ -410,7 +435,11 @@ export async function migrateStorageBindingCatalog(db: PGliteClient): Promise<vo
       END LOOP;
 
       FOR relation_row IN
-        SELECT * FROM distrb_storage_relation_closure(child_relations, root_oid)
+        SELECT * FROM distrb_storage_relation_closure(
+          child_relations,
+          root_oid,
+          snapshot_scope = 'data-only'
+        )
       LOOP
         relation_json := jsonb_build_object(
           'databaseOid', relation_row.database_oid,
@@ -676,7 +705,14 @@ export async function migrateStorageBindingCatalog(db: PGliteClient): Promise<vo
       ) c
       JOIN distrb_storage_binding_groups g
         ON g.group_id = c.group_id
-      CROSS JOIN LATERAL distrb_storage_relation_closure(c.child_relations, g.root_relation_oid) closure
+      JOIN distrb_storage_bindings b
+        ON b.group_id = c.group_id
+       AND b.partition_id = c.partition_id
+      CROSS JOIN LATERAL distrb_storage_relation_closure(
+        c.child_relations,
+        g.root_relation_oid,
+        b.binding->>'snapshotScope' = 'data-only'
+      ) closure
     $$;
 
     CREATE OR REPLACE FUNCTION distrb_storage_binding_drift(
