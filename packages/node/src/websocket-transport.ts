@@ -9,6 +9,7 @@ import {
   type TransportHandlers,
 } from "@distrb-pglite/core";
 import WebSocket, { WebSocketServer } from "ws";
+import { loadZstd } from "./zstd.js";
 
 type WireMessage =
   | { type: "hello"; nodeId: NodeId }
@@ -38,8 +39,10 @@ type ClientRecord = {
 export class WebSocketHub {
   private readonly server: WebSocketServer;
   private readonly clients = new Map<NodeId, ClientRecord>();
+  private readonly compress: boolean;
 
-  constructor(options: { port: number }) {
+  constructor(options: { port: number; compress?: boolean }) {
+    this.compress = options.compress ?? false;
     this.server = new WebSocketServer({ port: options.port });
     this.server.on("connection", (socket) => this.handleConnection(socket));
   }
@@ -65,23 +68,25 @@ export class WebSocketHub {
     let record: ClientRecord | undefined;
 
     socket.on("message", (data) => {
-      const message = JSON.parse(data.toString()) as WireMessage;
-      if (message.type === "hello") {
-        record = {
-          nodeId: message.nodeId,
-          socket,
-          subscriptions: new Set(),
-        };
-        this.clients.set(message.nodeId, record);
-        return;
-      }
+      void (async () => {
+        const message = await this.decode(data as Buffer);
+        if (message.type === "hello") {
+          record = {
+            nodeId: message.nodeId,
+            socket,
+            subscriptions: new Set(),
+          };
+          this.clients.set(message.nodeId, record);
+          return;
+        }
 
-      if (!record) {
-        socket.close(1008, "hello required before other messages");
-        return;
-      }
+        if (!record) {
+          socket.close(1008, "hello required before other messages");
+          return;
+        }
 
-      this.handleMessage(record, message);
+        this.handleMessage(record, message);
+      })();
     });
 
     socket.on("close", () => {
@@ -116,7 +121,7 @@ export class WebSocketHub {
         continue;
       }
 
-      send(client.socket, { type: "event", event });
+      void this.encode(client.socket, { type: "event", event });
     }
   }
 
@@ -125,7 +130,7 @@ export class WebSocketHub {
     if (!target) {
       const requester = this.clients.get(message.requesterNodeId);
       if (requester) {
-        send(requester.socket, {
+        void this.encode(requester.socket, {
           type: "replay-response",
           requestId: message.requestId,
           partitionId: message.partitionId,
@@ -135,18 +140,40 @@ export class WebSocketHub {
       return;
     }
 
-    send(target.socket, message);
+    void this.encode(target.socket, message);
   }
 
   private forwardReplayResponse(message: Extract<WireMessage, { type: "replay-response" }>): void {
     for (const client of this.clients.values()) {
-      send(client.socket, message);
+      void this.encode(client.socket, message);
     }
   }
-}
 
+  private async encode(socket: WebSocket, message: WireMessage): Promise<void> {
+    if (socket.readyState !== WebSocket.OPEN) {
+      return;
+    }
+    if (this.compress) {
+      const zstd = await loadZstd();
+      socket.send(zstd.compress(Buffer.from(JSON.stringify(message))));
+    } else {
+      socket.send(JSON.stringify(message));
+    }
+  }
+
+  private async decode(data: Buffer): Promise<WireMessage> {
+    if (this.compress) {
+      const zstd = await loadZstd();
+      return JSON.parse(Buffer.from(zstd.decompress(new Uint8Array(data))).toString()) as WireMessage;
+    }
+    return JSON.parse(data.toString()) as WireMessage;
+  }
+}
 export class WebSocketTransport implements Transport {
-  constructor(private readonly url: string) {}
+  constructor(
+    private readonly url: string,
+    private readonly compress?: boolean,
+  ) {}
 
   async connect(nodeId: NodeId, handlers: TransportHandlers): Promise<TransportConnection> {
     const socket = new WebSocket(this.url);
@@ -155,7 +182,8 @@ export class WebSocketTransport implements Transport {
       socket.once("error", reject);
     });
 
-    return new WebSocketTransportConnection(nodeId, socket, handlers);
+    const zstd = this.compress ? await loadZstd() : undefined;
+    return new WebSocketTransportConnection(nodeId, socket, handlers, zstd);
   }
 }
 
@@ -169,19 +197,20 @@ class WebSocketTransportConnection implements TransportConnection {
     private readonly nodeId: NodeId,
     private readonly socket: WebSocket,
     private readonly handlers: TransportHandlers,
+    private readonly zstd?: Awaited<ReturnType<typeof loadZstd>>,
   ) {
     this.socket.on("message", (data) => {
-      void this.handleMessage(JSON.parse(data.toString()) as WireMessage);
+      void this.handleMessage(this.decode(data as Buffer));
     });
-    send(this.socket, { type: "hello", nodeId });
+    this.send({ type: "hello", nodeId });
   }
 
   async subscribe(partitionId: PartitionId): Promise<void> {
-    send(this.socket, { type: "subscribe", partitionId });
+    this.send({ type: "subscribe", partitionId });
   }
 
   async publish(event: EventEnvelope): Promise<void> {
-    send(this.socket, { type: "event", event });
+    this.send({ type: "event", event });
   }
 
   async requestReplay(
@@ -194,7 +223,7 @@ class WebSocketTransportConnection implements TransportConnection {
       this.pendingReplay.set(requestId, resolve);
     });
 
-    send(this.socket, {
+    this.send({
       type: "replay-request",
       requestId,
       requesterNodeId: this.nodeId,
@@ -204,6 +233,24 @@ class WebSocketTransportConnection implements TransportConnection {
     });
 
     return response;
+  }
+
+  private send(message: WireMessage): void {
+    if (this.socket.readyState !== WebSocket.OPEN) {
+      return;
+    }
+    if (this.zstd) {
+      this.socket.send(this.zstd.compress(Buffer.from(JSON.stringify(message))));
+    } else {
+      this.socket.send(JSON.stringify(message));
+    }
+  }
+
+  private decode(data: Buffer): WireMessage {
+    if (this.zstd) {
+      return JSON.parse(Buffer.from(this.zstd.decompress(new Uint8Array(data))).toString()) as WireMessage;
+    }
+    return JSON.parse(data.toString()) as WireMessage;
   }
 
   async close(): Promise<void> {
@@ -217,7 +264,7 @@ class WebSocketTransportConnection implements TransportConnection {
         break;
       case "replay-request": {
         if (!this.handlers.onReplayRequest) {
-          send(this.socket, {
+          this.send({
             type: "replay-response",
             requestId: message.requestId,
             partitionId: message.partitionId,
@@ -231,7 +278,7 @@ class WebSocketTransportConnection implements TransportConnection {
           partitionId: message.partitionId,
           cursors: new Map(message.cursors),
         });
-        send(this.socket, { type: "replay-response", requestId: message.requestId, ...response });
+        this.send({ type: "replay-response", requestId: message.requestId, ...response });
         break;
       }
       case "replay-response": {
@@ -246,11 +293,5 @@ class WebSocketTransportConnection implements TransportConnection {
       case "subscribe":
         break;
     }
-  }
-}
-
-function send(socket: WebSocket, message: WireMessage): void {
-  if (socket.readyState === WebSocket.OPEN) {
-    socket.send(JSON.stringify(message));
   }
 }

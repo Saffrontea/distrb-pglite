@@ -14,6 +14,7 @@ import { UuidV7Factory } from "@distrb-pglite/core";
 import {
   restoreFromCas,
   snapshotToCas,
+  type CasChunking,
   type CasManifest,
   type CasSnapshotFilter,
 } from "./cas.js";
@@ -47,6 +48,8 @@ export async function createPartitionCasSnapshot(options: {
   dataDir: string;
   casDir: string;
   chunkSize?: number;
+  chunking?: CasChunking;
+  compress?: boolean;
   ids?: UuidV7Factory;
   beforeStorageSnapshot?: () => Promise<void>;
 }): Promise<PartitionCasSnapshot> {
@@ -60,6 +63,8 @@ export async function createPartitionCasSnapshot(options: {
     dataDir: options.dataDir,
     casDir: options.casDir,
     chunkSize: options.chunkSize,
+    chunking: options.chunking,
+    compress: options.compress,
     snapshotId,
     filter: storageBindingSnapshotFilter(options.storageBinding),
   });
@@ -144,6 +149,29 @@ export async function restorePartitionCasSnapshot(options: {
   });
 }
 
+export async function restorePartitionDataOnlyCasSnapshot(options: {
+  snapshot: PartitionCasSnapshot;
+  casDir: string;
+  targetDir: string;
+  targetStorageBinding?: StoragePartitionBinding;
+}): Promise<void> {
+  if (options.snapshot.storageBinding.snapshotScope !== "data-only") {
+    throw new Error("only data-only partition snapshots can restore relation files into an existing data directory");
+  }
+
+  await restoreFromCas({
+    manifest: options.targetStorageBinding
+      ? remapDataOnlyManifest(
+          options.snapshot.manifest,
+          options.snapshot.storageBinding,
+          options.targetStorageBinding,
+        )
+      : options.snapshot.manifest,
+    casDir: options.casDir,
+    targetDir: options.targetDir,
+  });
+}
+
 export async function replayEventsAfterPartitionSnapshot(options: {
   sourceStore: PartitionStore;
   targetStore: PartitionStore;
@@ -178,7 +206,7 @@ export function storageBindingSnapshotFilter(
 
   return {
     includeFile(file: FileInventoryEntry): boolean {
-      return relationFiles.has(relationFileStem(file.path));
+      return relationFiles.has(relationFileStem(file.path)) || isDataComponentMetadataFile(file.path);
     },
   };
 }
@@ -211,4 +239,59 @@ function relationFileStem(path: string): string {
   return path
     .replace(/_(fsm|vm|init)(\.\d+)?$/, "")
     .replace(/\.\d+$/, "");
+}
+
+function remapDataOnlyManifest(
+  manifest: CasManifest,
+  sourceBinding: StoragePartitionBinding,
+  targetBinding: StoragePartitionBinding,
+): CasManifest {
+  return {
+    ...manifest,
+    directories: [],
+    files: manifest.files.map((file) => ({
+      ...file,
+      path: isDataComponentMetadataFile(file.path)
+        ? file.path
+        : remapRelationFilePath(file.path, sourceBinding, targetBinding),
+    })),
+  };
+}
+
+function remapRelationFilePath(
+  path: string,
+  sourceBinding: StoragePartitionBinding,
+  targetBinding: StoragePartitionBinding,
+): string {
+  const stem = relationFileStem(path);
+  for (const [index, sourceRelation] of sourceBinding.relations.entries()) {
+    const sourceStem = relationFileStems(sourceRelation).find((candidate) => candidate === stem);
+    if (!sourceStem) {
+      continue;
+    }
+
+    const targetRelation = targetBinding.relations[index];
+    if (!targetRelation) {
+      throw new Error(`target storage binding is missing relation at index ${index}`);
+    }
+
+    const targetStem = relationFileStems(targetRelation)[0];
+    if (!targetStem) {
+      throw new Error(`target storage binding is missing a storage path for relation at index ${index}`);
+    }
+    return `${targetStem}${path.slice(sourceStem.length)}`;
+  }
+
+  throw new Error(`data-only snapshot file does not match source storage binding: ${path}`);
+}
+
+function isDataComponentMetadataFile(path: string): boolean {
+  return (
+    path.startsWith("pg_xact/")
+    || path.startsWith("pg_subtrans/")
+    || path.startsWith("pg_multixact/")
+    || path.startsWith("pg_commit_ts/")
+    || path.startsWith("pg_serial/")
+    || path.startsWith("pg_twophase/")
+  );
 }

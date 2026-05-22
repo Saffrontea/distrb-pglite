@@ -1,8 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
-import { copyFile, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { BlobRef, SnapshotFile, SnapshotFilesystemManifest } from "@distrb-pglite/core";
 import { inventoryDataDir, type DataDirInventory, type FileInventoryEntry } from "./inventory.js";
+import { loadZstd } from "./zstd.js";
 
 export type CasBlock = BlobRef;
 
@@ -17,21 +18,36 @@ export type CasFileManifest = SnapshotFile<CasBlock> & {
 export type CasManifest = SnapshotFilesystemManifest<CasFileManifest> & {
   snapshotId: string;
   parentSnapshotIds: string[];
+  compression?: "zstd";
+  chunking?: CasChunking;
 };
 
 export type CasSnapshotFilter = {
   includeFile(file: FileInventoryEntry): boolean;
 };
 
+export type CasChunking =
+  | { strategy: "fixed"; chunkSize: number }
+  | { strategy: "page-aligned"; pageSize: number; maxChunkSize: number };
+
+export type CasGcResult = {
+  referenced: string[];
+  deleted: string[];
+  retained: string[];
+};
+
 export async function snapshotToCas(options: {
   dataDir: string;
   casDir: string;
   chunkSize?: number;
+  chunking?: CasChunking;
   snapshotId?: string;
   parentSnapshotIds?: string[];
   filter?: CasSnapshotFilter;
+  compress?: boolean;
 }): Promise<CasManifest> {
-  const chunkSize = options.chunkSize ?? 64 * 1024;
+  const chunking = options.chunking ?? fixedChunking(options.chunkSize ?? 64 * 1024);
+  const chunkSize = manifestChunkSize(chunking);
   const inventory = await inventoryDataDir(options.dataDir);
   const selectedFiles = options.filter
     ? inventory.files.filter((file) => options.filter?.includeFile(file) ?? false)
@@ -40,9 +56,12 @@ export async function snapshotToCas(options: {
 
   await mkdir(options.casDir, { recursive: true });
 
+  const zstd = options.compress ? await loadZstd() : undefined;
+  const compress = zstd ? zstd.compress.bind(zstd) : undefined;
+
   for (const file of selectedFiles) {
     const content = await readFile(join(options.dataDir, file.path));
-    const blocks = await writeBlocks(options.casDir, content, chunkSize);
+    const blocks = await writeBlocks(options.casDir, content, chunking, compress);
     files.push({ ...file, blocks });
   }
 
@@ -51,10 +70,48 @@ export async function snapshotToCas(options: {
     snapshotId: options.snapshotId ?? randomUUID(),
     parentSnapshotIds: options.parentSnapshotIds ?? [],
     chunkSize,
+    chunking,
+    ...(options.compress ? { compression: "zstd" as const } : {}),
     directories: options.filter
       ? selectedDirectories(inventory.directories, selectedFiles)
       : inventory.directories,
     files,
+  };
+}
+
+export async function gcCasBlocks(options: {
+  casDir: string;
+  retainedManifests: readonly CasManifest[];
+  dryRun?: boolean;
+}): Promise<CasGcResult> {
+  const referenced = new Set<string>();
+  for (const manifest of options.retainedManifests) {
+    for (const file of manifest.files) {
+      for (const block of file.blocks) {
+        referenced.add(block.hash);
+      }
+    }
+  }
+
+  const available = await listCasBlockHashes(options.casDir);
+  const deleted: string[] = [];
+  const retained: string[] = [];
+  for (const hash of [...available].sort()) {
+    if (referenced.has(hash)) {
+      retained.push(hash);
+      continue;
+    }
+
+    deleted.push(hash);
+    if (!options.dryRun) {
+      await rm(blockPath(options.casDir, hash), { force: true });
+    }
+  }
+
+  return {
+    referenced: [...referenced].sort(),
+    deleted,
+    retained,
   };
 }
 
@@ -65,6 +122,9 @@ export async function restoreFromCas(options: {
 }): Promise<void> {
   await mkdir(options.targetDir, { recursive: true });
 
+  const zstd = options.manifest.compression === "zstd" ? await loadZstd() : undefined;
+  const decompress = zstd ? zstd.decompress.bind(zstd) : undefined;
+
   for (const directory of options.manifest.directories) {
     await mkdir(join(options.targetDir, directory), { recursive: true });
   }
@@ -72,11 +132,11 @@ export async function restoreFromCas(options: {
   for (const file of options.manifest.files) {
     const chunks: Uint8Array[] = [];
     for (const block of file.blocks) {
-      const content = await readFile(blockPath(options.casDir, block.hash));
-      if (content.length !== block.size || sha256(content) !== block.hash) {
+      const stored = await readFile(blockPath(options.casDir, block.hash));
+      if (stored.length !== block.size || sha256(stored) !== block.hash) {
         throw new Error(`CAS block integrity check failed: ${block.hash}`);
       }
-      chunks.push(content);
+      chunks.push(decompress ? decompress(stored) : stored);
     }
 
     const restored = Buffer.concat(chunks);
@@ -169,21 +229,43 @@ export function manifestFilesEqualInventory(
 async function writeBlocks(
   casDir: string,
   content: Uint8Array,
-  chunkSize: number,
+  chunking: CasChunking,
+  compress?: (data: Uint8Array) => Uint8Array,
 ): Promise<CasBlock[]> {
   const blocks: CasBlock[] = [];
-  for (let offset = 0; offset < content.length || (content.length === 0 && offset === 0); offset += chunkSize) {
-    const chunk = content.subarray(offset, Math.min(offset + chunkSize, content.length));
-    const hash = sha256(chunk);
-    await writeFile(blockPath(casDir, hash), chunk);
-    blocks.push({ hash, size: chunk.length });
-
-    if (content.length === 0) {
-      break;
-    }
+  for (const [start, end] of chunkRanges(content.length, chunking)) {
+    const chunk = content.subarray(start, end);
+    const stored = compress ? compress(chunk) : chunk;
+    const hash = sha256(stored);
+    await writeFile(blockPath(casDir, hash), stored);
+    blocks.push({ hash, size: stored.length });
   }
 
   return blocks;
+}
+
+function chunkRanges(size: number, chunking: CasChunking): Array<[number, number]> {
+  if (size === 0) {
+    return [[0, 0]];
+  }
+
+  const chunkSize = manifestChunkSize(chunking);
+  const ranges: Array<[number, number]> = [];
+  for (let offset = 0; offset < size; offset += chunkSize) {
+    ranges.push([offset, Math.min(offset + chunkSize, size)]);
+  }
+  return ranges;
+}
+
+function fixedChunking(chunkSize: number): CasChunking {
+  return { strategy: "fixed", chunkSize };
+}
+
+function manifestChunkSize(chunking: CasChunking): number {
+  if (chunking.strategy === "fixed") {
+    return chunking.chunkSize;
+  }
+  return Math.max(chunking.pageSize, Math.floor(chunking.maxChunkSize / chunking.pageSize) * chunking.pageSize);
 }
 
 function blockPath(casDir: string, hash: string): string {

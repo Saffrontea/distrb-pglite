@@ -9,6 +9,7 @@ export type {
 } from "./inventory.js";
 export {
   diffMissingBlocks,
+  gcCasBlocks,
   listCasBlockHashes,
   manifestFilesEqualInventory,
   restoreFromCas,
@@ -17,7 +18,9 @@ export {
 } from "./cas.js";
 export type {
   CasBlock,
+  CasChunking,
   CasFileManifest,
+  CasGcResult,
   CasManifest,
   CasSnapshotFilter,
 } from "./cas.js";
@@ -28,6 +31,7 @@ export {
   listEventsAfterPartitionSnapshot,
   replayEventsAfterPartitionSnapshot,
   restorePartitionCasSnapshot,
+  restorePartitionDataOnlyCasSnapshot,
   restorePartitionFilesystemSnapshot,
   storageBindingSnapshotFilter,
 } from "./partition-snapshot.js";

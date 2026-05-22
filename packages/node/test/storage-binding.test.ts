@@ -74,9 +74,10 @@ describe("discoverStoragePartitionBinding", () => {
     await db.close();
 
     expect(snapshot.manifest.files.length).toBeGreaterThan(0);
-    expect(snapshot.manifest.files.every((file) =>
+    expect(snapshot.manifest.files.some((file) =>
       file.path.startsWith(binding.relations[0]?.storagePath ?? "missing"),
     )).toBe(true);
+    expect(snapshot.manifest.files.some((file) => file.path.startsWith("pg_xact/"))).toBe(true);
   }, 120_000);
 
   it("rejects unknown relations", async () => {

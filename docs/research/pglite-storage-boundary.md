@@ -43,9 +43,11 @@ Without this binding, a filesystem-level CAS layer cannot decide which blocks be
 
 The partition snapshot path now uses this binding during CAS acquisition:
 
-- `data-only` includes only files matching `base/<databaseOid>/<relfilenode>` plus segment and fork variants such as `.1`, `_fsm`, `_vm`, and `_init`.
+- `data-only` includes files matching `base/<databaseOid>/<relfilenode>` plus segment and fork variants such as `.1`, `_fsm`, `_vm`, and `_init`, plus transaction status metadata such as `pg_xact/` that relation pages need for visibility checks.
 - `catalog-and-data` keeps the full closed data directory in this prototype, including empty directories, because that is the restorable bootstrap format until catalog-page selection is made precise.
 - a snapshot request is rejected if the requested `partitionId` and `storageBinding.partitionId` differ.
+
+PGlite's `relaxedDurability: false` is useful for waiting on storage flushes before a query returns, but it did not make relation-file-only transfer readable by itself in the Node adapter tests. The current data-only pull test uses `VACUUM <root relation>` as the handoff point before CAS acquisition. Including `pg_wal/` in the data-only component caused restored PGlite directories to fail at open time, so WAL shipping is intentionally outside this prototype pull path.
 
 The Node adapter can now discover this binding from PGlite catalog state. `discoverStoragePartitionBinding` reads `pg_class`, `pg_database`, `pg_relation_filenode()`, and `pg_relation_filepath()` for a relation name such as `public.sensor_readings`. The resulting `storagePath` is preferred by the snapshot filter so CAS acquisition is tied to the actual relation file path rather than only reconstructing a path from OIDs.
 

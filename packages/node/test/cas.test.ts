@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   diffMissingBlocks,
+  gcCasBlocks,
   inventoryDataDir,
   listCasBlockHashes,
   manifestFilesEqualInventory,
@@ -47,6 +48,79 @@ describe("CAS snapshots", () => {
     expect(diffMissingBlocks(manifest, new Set()).map((block) => block.hash)).toEqual(
       [...allBlockHashes].sort(),
     );
+  });
+
+  it("compresses blocks with zstd and restores the original files", async () => {
+    const root = await makeTempDir("cas-zstd");
+    const dataDir = join(root, "data");
+    const casDir = join(root, "cas");
+    const restoreDir = join(root, "restore");
+    await mkdir(join(dataDir, "nested"), { recursive: true });
+    await writeFile(join(dataDir, "a.txt"), "abcdefghijabcdefghij");
+    await writeFile(join(dataDir, "nested", "b.txt"), "abcdefghijXYZ");
+
+    const manifest = await snapshotToCas({ dataDir, casDir, chunkSize: 10, compress: true });
+    const inventory = await inventoryDataDir(dataDir);
+    await restoreFromCas({ manifest, casDir, targetDir: restoreDir });
+    const restoredInventory = await inventoryDataDir(restoreDir);
+
+    expect(manifest.compression).toBe("zstd");
+    expect(manifestFilesEqualInventory(manifest, inventory.files)).toBe(true);
+    expect(restoredInventory.files).toEqual(inventory.files);
+  });
+
+  it("chunks files on page-aligned boundaries", async () => {
+    const root = await makeTempDir("cas-page-aligned");
+    const dataDir = join(root, "data");
+    const casDir = join(root, "cas");
+    await mkdir(dataDir, { recursive: true });
+    await writeFile(join(dataDir, "pages.bin"), Buffer.alloc(10 * 1024, 7));
+
+    const manifest = await snapshotToCas({
+      dataDir,
+      casDir,
+      chunking: { strategy: "page-aligned", pageSize: 4096, maxChunkSize: 6144 },
+    });
+
+    expect(manifest.chunkSize).toBe(4096);
+    expect(manifest.chunking).toEqual({
+      strategy: "page-aligned",
+      pageSize: 4096,
+      maxChunkSize: 6144,
+    });
+    expect(manifest.files[0]?.blocks).toHaveLength(3);
+  });
+
+  it("garbage collects CAS blocks not referenced by retained manifests", async () => {
+    const root = await makeTempDir("cas-gc");
+    const dataDir = join(root, "data");
+    const casDir = join(root, "cas");
+    await mkdir(dataDir, { recursive: true });
+    await writeFile(join(dataDir, "a.txt"), "cccccddddd");
+
+    const first = await snapshotToCas({
+      dataDir,
+      casDir,
+      chunkSize: 5,
+      snapshotId: "snapshot-1",
+    });
+    await writeFile(join(dataDir, "a.txt"), "aaaaabbbbb");
+    const second = await snapshotToCas({
+      dataDir,
+      casDir,
+      chunkSize: 5,
+      snapshotId: "snapshot-2",
+      parentSnapshotIds: [first.snapshotId],
+    });
+
+    const before = await listCasBlockHashes(casDir);
+    const gc = await gcCasBlocks({ casDir, retainedManifests: [second] });
+    const after = await listCasBlockHashes(casDir);
+    const secondHashes = new Set(second.files.flatMap((file) => file.blocks.map((block) => block.hash)));
+
+    expect(before.size).toBeGreaterThan(after.size);
+    expect(gc.deleted.length).toBeGreaterThan(0);
+    expect(after).toEqual(secondHashes);
   });
 
   it("transfers only missing blocks between parented snapshots and restores a readable PGlite data directory", async () => {

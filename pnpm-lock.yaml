@@ -28,6 +28,9 @@ importers:
       '@electric-sql/pglite':
         specifier: ^0.3.4
         version: 0.3.16
+      '@hpcc-js/wasm-zstd':
+        specifier: ^1.12.5
+        version: 1.12.5
       ws:
         specifier: ^8.18.0
         version: 8.20.1
@@ -184,6 +187,9 @@ packages:
     engines: {node: '>=12'}
     cpu: [x64]
     os: [win32]
+
+  '@hpcc-js/wasm-zstd@1.12.5':
+    resolution: {integrity: sha512-yFCLKgrOL1vfXJFhEkWEK84rH9mMTKP6O/1eYum2W2A69eLrSAeWXv3eh4PPscT6V1QGazr7GZ86gDVilc4JHg==}
 
   '@jridgewell/sourcemap-codec@1.5.5':
     resolution: {integrity: sha512-cYQ9310grqxueWbl+WuIUIaiUaDcj7WOq5fVhEljNVgRfOUhY9fy2zTvfoqWsnebh8Sl70VScFbICvJnLKB0Og==}
@@ -625,6 +631,8 @@ snapshots:
 
   '@esbuild/win32-x64@0.21.5':
     optional: true
+
+  '@hpcc-js/wasm-zstd@1.12.5': {}
 
   '@jridgewell/sourcemap-codec@1.5.5': {}
 
