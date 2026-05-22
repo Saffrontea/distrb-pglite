@@ -41,6 +41,8 @@ export { NodeFileBlobStore } from "./node-blob-store.js";
 export { runNodeDemo } from "./demo.js";
 export type { NodeDemoSummary } from "./demo.js";
 export {
+  bindStoragePartition,
+  createStorageBindingGroup,
   discoverStoragePartitionBinding,
   loadStorageBindingGroup,
   loadStoragePartitionBinding,

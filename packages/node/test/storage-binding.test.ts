@@ -2,6 +2,8 @@ import { PGlite } from "@electric-sql/pglite";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  bindStoragePartition,
+  createStorageBindingGroup,
   createPartitionCasSnapshot,
   discoverStoragePartitionBinding,
   loadStorageBindingGroup,
@@ -173,5 +175,94 @@ describe("discoverStoragePartitionBinding", () => {
 
     expect(snapshot.storageBinding).toEqual(loadedBinding);
     expect(snapshot.manifest.files.length).toBeGreaterThan(0);
+  }, 120_000);
+
+  it("simulates extension DDL by grouping child relations under one root relation", async () => {
+    const root = await makeTempDir("storage-binding-ddl");
+    const dataDir = join(root, "data");
+    const db = new PGlite(dataDir);
+
+    await db.exec(`
+      CREATE TABLE sensor_readings (
+        tenant_id text NOT NULL,
+        sensor_id text NOT NULL,
+        reading integer NOT NULL
+      );
+      CREATE TABLE sensor_readings_tenant_jp (
+        tenant_id text NOT NULL,
+        sensor_id text NOT NULL,
+        reading integer NOT NULL
+      );
+      CREATE TABLE sensor_readings_tenant_us (
+        tenant_id text NOT NULL,
+        sensor_id text NOT NULL,
+        reading integer NOT NULL
+      );
+    `);
+
+    const created = await createStorageBindingGroup({
+      db,
+      groupId: "sensor_readings",
+      rootRelation: "public.sensor_readings",
+      vacuumPolicy: {
+        retainSnapshotGenerations: 3,
+        gcAfterGeneration: 8,
+      },
+    });
+    expect(created.ddlGeneration).toBe(1);
+    expect(created.bindings).toEqual([]);
+
+    const withJp = await bindStoragePartition({
+      db,
+      groupId: "sensor_readings",
+      partitionId: "tenant:jp",
+      relations: ["public.sensor_readings_tenant_jp"],
+      snapshotScope: "data-only",
+    });
+    expect(withJp.ddlGeneration).toBe(2);
+    expect(withJp.bindings).toHaveLength(1);
+    expect(withJp.bindings[0]).toMatchObject({
+      partitionId: "tenant:jp",
+      rootRelationOid: created.rootRelationOid,
+      ddlGeneration: 2,
+      snapshotComponents: ["data"],
+      pullRequires: ["data"],
+    });
+    expect(withJp.bindings[0]?.relations[0]).toMatchObject({
+      role: "child",
+      parentRelationOid: created.rootRelationOid,
+      storagePath: expect.stringMatching(/^base\/\d+\/\d+/),
+    });
+
+    const withUs = await bindStoragePartition({
+      db,
+      groupId: "sensor_readings",
+      partitionId: "tenant:us",
+      relations: ["public.sensor_readings_tenant_us"],
+      snapshotScope: "catalog-and-data",
+      snapshotComponents: ["catalog", "data"],
+      pullRequires: ["catalog", "data"],
+    });
+    expect(withUs.ddlGeneration).toBe(3);
+    expect(withUs.bindings.map((binding) => binding.partitionId)).toEqual([
+      "tenant:jp",
+      "tenant:us",
+    ]);
+
+    await db.close();
+
+    const reopened = new PGlite(dataDir);
+    const reloaded = await loadStorageBindingGroup(reopened, "sensor_readings");
+    await reopened.close();
+
+    expect(reloaded?.ddlGeneration).toBe(3);
+    expect(reloaded?.vacuumPolicy).toEqual({
+      retainSnapshotGenerations: 3,
+      gcAfterGeneration: 8,
+    });
+    expect(reloaded?.bindings).toHaveLength(2);
+    expect(reloaded?.bindings.every((binding) =>
+      binding.relations.every((relation) => relation.parentRelationOid === created.rootRelationOid),
+    )).toBe(true);
   }, 120_000);
 });

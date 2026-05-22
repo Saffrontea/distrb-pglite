@@ -54,6 +54,8 @@ SELECT distrb_snapshot_policy(
 
 The early implementation can simulate this with ordinary SQL tables and Node helpers. The extension version should later enforce dependency tracking and DDL generation increments.
 
+Prototype status: Node helpers now simulate the first two DDL operations. `createStorageBindingGroup` records a root relation and initial DDL generation. `bindStoragePartition` attaches one or more child relations to a partition, increments the group DDL generation, records relation roles and parent relation OIDs, and persists the updated group.
+
 ## 4. Child Relation Groups
 
 A single logical partition may map to multiple physical relations:
@@ -64,6 +66,8 @@ A single logical partition may map to multiple physical relations:
 - future side relations owned by extension features.
 
 `StorageBindingGroup` groups those bindings under one root relation and DDL generation. Each `StorageRelationLocator` can carry a role and parent relation OID so snapshot selection and replay can include all required child files.
+
+Prototype status: child table relations are now discovered from PGlite catalog metadata and stored with `role: "child"` and `parentRelationOid`.
 
 ## 5. Vacuum And GC Coordination
 

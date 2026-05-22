@@ -2,6 +2,9 @@ import type {
   PartitionId,
   StorageBindingGroup,
   StoragePartitionBinding,
+  StorageRelationLocator,
+  StorageRelationRole,
+  StorageSnapshotComponent,
   StorageSnapshotScope,
 } from "@distrb-pglite/core";
 import type { PGliteClient } from "./pglite-store.js";
@@ -138,6 +141,78 @@ export async function loadStoragePartitionBinding(options: {
   return group?.bindings.find((binding) => binding.partitionId === options.partitionId);
 }
 
+export async function createStorageBindingGroup(options: {
+  db: PGliteClient;
+  groupId: string;
+  rootRelation: string;
+  ddlGeneration?: number;
+  vacuumPolicy?: StorageBindingGroup["vacuumPolicy"];
+}): Promise<StorageBindingGroup> {
+  const root = await discoverRelationLocator(options.db, options.rootRelation, "root");
+  const group: StorageBindingGroup = {
+    groupId: options.groupId,
+    rootRelationOid: root.relationOid,
+    ddlGeneration: options.ddlGeneration ?? 1,
+    vacuumPolicy: options.vacuumPolicy,
+    bindings: [],
+  };
+  await saveStorageBindingGroup(options.db, group);
+  return group;
+}
+
+export async function bindStoragePartition(options: {
+  db: PGliteClient;
+  groupId: string;
+  partitionId: PartitionId;
+  relations: string[];
+  snapshotScope: StorageSnapshotScope;
+  snapshotComponents?: StorageSnapshotComponent[];
+  pullRequires?: StorageSnapshotComponent[];
+}): Promise<StorageBindingGroup> {
+  if (options.relations.length === 0) {
+    throw new Error("at least one relation is required to bind a storage partition");
+  }
+
+  const group = await loadStorageBindingGroup(options.db, options.groupId);
+  if (!group) {
+    throw new Error(`storage binding group not found: ${options.groupId}`);
+  }
+
+  const nextGeneration = group.ddlGeneration + 1;
+  const relations: StorageRelationLocator[] = [];
+  for (const relationName of options.relations) {
+    relations.push(await discoverRelationLocator(
+      options.db,
+      relationName,
+      "child",
+      group.rootRelationOid,
+    ));
+  }
+
+  const binding: StoragePartitionBinding = {
+    partitionId: options.partitionId,
+    rootRelationOid: group.rootRelationOid,
+    relations,
+    snapshotScope: options.snapshotScope,
+    snapshotComponents: options.snapshotComponents ?? defaultComponents(options.snapshotScope),
+    pullRequires: options.pullRequires ?? defaultComponents(options.snapshotScope),
+    ddlGeneration: nextGeneration,
+  };
+
+  const bindings = [
+    ...group.bindings.filter((existing) => existing.partitionId !== options.partitionId),
+    binding,
+  ].sort((left, right) => left.partitionId.localeCompare(right.partitionId));
+
+  const updated: StorageBindingGroup = {
+    ...group,
+    ddlGeneration: nextGeneration,
+    bindings,
+  };
+  await saveStorageBindingGroup(options.db, updated);
+  return updated;
+}
+
 export async function discoverStoragePartitionBinding(options: {
   db: PGliteClient;
   partitionId: PartitionId;
@@ -148,35 +223,10 @@ export async function discoverStoragePartitionBinding(options: {
   const relationNames = options.relations?.length
     ? options.relations
     : [options.rootRelation];
-  const relations = [];
+  const relations: StorageRelationLocator[] = [];
 
   for (const relationName of relationNames) {
-    const result = await options.db.query<RelationIdentityRow>(
-      `
-        SELECT
-          d.oid::int AS database_oid,
-          COALESCE(NULLIF(c.reltablespace, 0), d.dattablespace)::int AS tablespace_oid,
-          c.oid::int AS relation_oid,
-          NULLIF(pg_relation_filenode(c.oid), 0)::int AS relfilenode,
-          pg_relation_filepath(c.oid) AS storage_path
-        FROM pg_class c
-        JOIN pg_database d ON d.datname = current_database()
-        WHERE c.oid = to_regclass($1)
-      `,
-      [relationName],
-    );
-    const row = result.rows[0];
-    if (!row) {
-      throw new Error(`relation not found for storage binding: ${relationName}`);
-    }
-
-    relations.push({
-      databaseOid: row.database_oid,
-      tablespaceOid: row.tablespace_oid,
-      relationOid: row.relation_oid,
-      relfilenode: row.relfilenode ?? row.relation_oid,
-      storagePath: row.storage_path ?? undefined,
-    });
+    relations.push(await discoverRelationLocator(options.db, relationName));
   }
 
   return {
@@ -185,4 +235,44 @@ export async function discoverStoragePartitionBinding(options: {
     relations,
     snapshotScope: options.snapshotScope,
   };
+}
+
+async function discoverRelationLocator(
+  db: PGliteClient,
+  relationName: string,
+  role?: StorageRelationRole,
+  parentRelationOid?: number,
+): Promise<StorageRelationLocator> {
+  const result = await db.query<RelationIdentityRow>(
+    `
+      SELECT
+        d.oid::int AS database_oid,
+        COALESCE(NULLIF(c.reltablespace, 0), d.dattablespace)::int AS tablespace_oid,
+        c.oid::int AS relation_oid,
+        NULLIF(pg_relation_filenode(c.oid), 0)::int AS relfilenode,
+        pg_relation_filepath(c.oid) AS storage_path
+      FROM pg_class c
+      JOIN pg_database d ON d.datname = current_database()
+      WHERE c.oid = to_regclass($1)
+    `,
+    [relationName],
+  );
+  const row = result.rows[0];
+  if (!row) {
+    throw new Error(`relation not found for storage binding: ${relationName}`);
+  }
+
+  return {
+    databaseOid: row.database_oid,
+    tablespaceOid: row.tablespace_oid,
+    relationOid: row.relation_oid,
+    relfilenode: row.relfilenode ?? row.relation_oid,
+    storagePath: row.storage_path ?? undefined,
+    role,
+    parentRelationOid,
+  };
+}
+
+function defaultComponents(scope: StorageSnapshotScope): StorageSnapshotComponent[] {
+  return scope === "catalog-and-data" ? ["catalog", "data"] : ["data"];
 }

@@ -104,6 +104,7 @@ Replication uses source-node-local event streams. Event IDs are UUID v7, but cor
 - Define vacuum and CAS GC retention from DDL generation, active pulls, and retained snapshot manifests.
 - Acceptance: binding groups survive restart, can be used to derive partition snapshots without CLI JSON, and expose enough metadata to decide whether a pull needs catalog, data, or both.
 - Current prototype: PGlite tables persist storage binding groups, relation locators, DDL generation, component requirements, and vacuum/GC policy.
+- Current prototype: Node helpers simulate binding-group DDL by creating root groups, binding child relations, and incrementing DDL generation.
 
 ## Phase 11: Postgres smgr Research Track
 
