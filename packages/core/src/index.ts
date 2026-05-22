@@ -12,7 +12,11 @@ export type {
   SnapshotId,
   SnapshotMetadata,
   StoragePartitionBinding,
+  StorageBindingGroup,
   StorageRelationLocator,
+  StorageRelationRole,
+  StoragePullRequirement,
+  StorageSnapshotComponent,
   StorageSnapshotScope,
 } from "./types.js";
 export { compareEventIds, isUuidV7, UuidV7Factory } from "./uuid-v7.js";

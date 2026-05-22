@@ -53,7 +53,7 @@ The Phase 9 pull path is now explicit for `catalog-and-data` snapshots: restore 
 
 ## smgr Track
 
-smgr-level work remains a research track, not the next implementation step.
+smgr-level work remains a research track, not the next implementation step. Before smgr, finish the storage catalog plan in `pre-smgr-storage-catalog.md`.
 
 It becomes justified only if the filesystem adapter cannot provide:
 

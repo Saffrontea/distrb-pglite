@@ -5,6 +5,9 @@ export type SnapshotId = string;
 export type PgOid = number;
 
 export type StorageSnapshotScope = "data-only" | "catalog-and-data";
+export type StorageSnapshotComponent = "catalog" | "data";
+export type StoragePullRequirement = "bootstrap" | "catalog-refresh" | "data-refresh";
+export type StorageRelationRole = "root" | "child" | "index" | "toast";
 
 export type StorageRelationLocator = {
   databaseOid: PgOid;
@@ -12,6 +15,8 @@ export type StorageRelationLocator = {
   relationOid: PgOid;
   relfilenode?: PgOid;
   storagePath?: string;
+  role?: StorageRelationRole;
+  parentRelationOid?: PgOid;
 };
 
 export type StoragePartitionBinding = {
@@ -19,6 +24,20 @@ export type StoragePartitionBinding = {
   rootRelationOid: PgOid;
   relations: StorageRelationLocator[];
   snapshotScope: StorageSnapshotScope;
+  snapshotComponents?: StorageSnapshotComponent[];
+  pullRequires?: StorageSnapshotComponent[];
+  ddlGeneration?: number;
+};
+
+export type StorageBindingGroup = {
+  groupId: string;
+  rootRelationOid: PgOid;
+  bindings: StoragePartitionBinding[];
+  ddlGeneration: number;
+  vacuumPolicy?: {
+    retainSnapshotGenerations: number;
+    gcAfterGeneration: number;
+  };
 };
 
 export type EventCursor = {

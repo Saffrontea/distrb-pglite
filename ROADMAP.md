@@ -95,6 +95,15 @@ Replication uses source-node-local event streams. Event IDs are UUID v7, but cor
 - Acceptance: the same sync and snapshot tests pass when PGlite persists through the CoW/CAS-backed filesystem adapter.
 - Current prototype: `PGliteCasFilesystem` runs PGlite partition snapshot restore/replay tests and rejects missing CAS blocks or corrupted manifests.
 
+## Phase 10.5: Storage Catalog Before smgr
+
+- Split snapshot metadata into produced components (`catalog`, `data`) and pull requirements.
+- Persist storage binding groups, relation locators, DDL generation, and snapshot manifest roots.
+- Sketch Postgres extension DDL for creating binding groups and binding child relations.
+- Represent child tables, indexes, and TOAST relations under one root relation binding group.
+- Define vacuum and CAS GC retention from DDL generation, active pulls, and retained snapshot manifests.
+- Acceptance: binding groups survive restart, can be used to derive partition snapshots without CLI JSON, and expose enough metadata to decide whether a pull needs catalog, data, or both.
+
 ## Phase 11: Postgres smgr Research Track
 
 - Study where PGlite’s embedded Postgres build exposes or can be patched around storage manager behavior.
