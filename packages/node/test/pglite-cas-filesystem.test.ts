@@ -49,6 +49,35 @@ describe("PGliteCasFilesystem", () => {
     expect(new Set(manifest.files.flatMap((file) => file.blocks.map((block) => block.hash))).size)
       .toBeLessThan(4);
   });
+
+  it("fails restore when a required CAS block is unavailable", async () => {
+    const source = new PGliteCasFilesystem(createBlobStore(), 4);
+    source.writeFile("/base/a", "aaaabbbb");
+    const manifest = await source.snapshot();
+
+    const restored = new PGliteCasFilesystem(createBlobStore(), 4);
+
+    await expect(restored.restore(manifest)).rejects.toThrow("blob not found");
+  });
+
+  it("rejects corrupted filesystem snapshot manifests", async () => {
+    const blobs = createBlobStore();
+    const source = new PGliteCasFilesystem(blobs, 4);
+    source.writeFile("/base/a", "aaaabbbb");
+    const manifest = await source.snapshot();
+    const corrupted = {
+      ...manifest,
+      files: [
+        {
+          ...manifest.files[0]!,
+          size: manifest.files[0]!.size + 1,
+        },
+      ],
+    };
+    const restored = new PGliteCasFilesystem(blobs, 4);
+
+    await expect(restored.restore(corrupted)).rejects.toThrow("file size mismatch");
+  });
 });
 
 function createFs(): PGliteCasFilesystem {

@@ -72,6 +72,8 @@ Proceed with custom filesystem integration first. Do not fork PGlite or patch sm
 
 `PGliteCasFilesystem` now implements the Node-like synchronous methods required by PGlite's `BaseFilesystem` shape and can snapshot/restore its state through CAS blobs. The next step is to pass it into `new PGlite({ fs })` and close any compatibility gaps against PGlite's runtime expectations.
 
+The adapter now runs the same partition snapshot restore/replay flow as the host data-directory path for `catalog-and-data` snapshots. A PGlite database can run on `PGliteCasFilesystem`, produce a filesystem snapshot, restore that snapshot into a second adapter, and replay only same-partition events after the snapshot high-watermark. Restore also fails explicitly when required CAS blocks are unavailable or the filesystem manifest is corrupted.
+
 ## Phase 7 File Snapshot Contract
 
 The early file-boundary snapshot contract is intentionally conservative: export only a closed or otherwise quiesced PGlite data directory. The inventory records each regular file by relative path, size, and sha256. A copied import is valid only when the target inventory exactly matches the source inventory before the imported database is opened.

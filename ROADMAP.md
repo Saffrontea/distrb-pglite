@@ -93,6 +93,7 @@ Replication uses source-node-local event streams. Event IDs are UUID v7, but cor
 - Replace opaque directory copying with a managed snapshot filesystem adapter.
 - Add failure tests for interrupted writes, partial block availability, duplicate block fetches, and manifest corruption.
 - Acceptance: the same sync and snapshot tests pass when PGlite persists through the CoW/CAS-backed filesystem adapter.
+- Current prototype: `PGliteCasFilesystem` runs PGlite partition snapshot restore/replay tests and rejects missing CAS blocks or corrupted manifests.
 
 ## Phase 11: Postgres smgr Research Track
 

@@ -23,13 +23,19 @@ export type {
 } from "./cas.js";
 export {
   createPartitionCasSnapshot,
+  createPartitionFilesystemSnapshot,
   highWatermarkMap,
   listEventsAfterPartitionSnapshot,
   replayEventsAfterPartitionSnapshot,
   restorePartitionCasSnapshot,
+  restorePartitionFilesystemSnapshot,
   storageBindingSnapshotFilter,
 } from "./partition-snapshot.js";
-export type { PartitionCasSnapshot } from "./partition-snapshot.js";
+export type {
+  PartitionCasSnapshot,
+  PartitionFilesystemSnapshot,
+  PartitionSnapshotCursor,
+} from "./partition-snapshot.js";
 export { PGliteCasFilesystem } from "./pglite-cas-filesystem.js";
 export { NodeFileBlobStore } from "./node-blob-store.js";
 export { runNodeDemo } from "./demo.js";

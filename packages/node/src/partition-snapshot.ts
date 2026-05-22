@@ -5,6 +5,8 @@ import type {
   PartitionId,
   PartitionStore,
   SnapshotId,
+  SnapshotFilesystem,
+  SnapshotFilesystemManifest,
   StoragePartitionBinding,
   StorageRelationLocator,
 } from "@distrb-pglite/core";
@@ -26,6 +28,18 @@ export type PartitionCasSnapshot = {
   manifest: CasManifest;
 };
 
+export type PartitionSnapshotCursor = {
+  partitionId: PartitionId;
+  highWatermark: [NodeId, EventId][];
+};
+
+export type PartitionFilesystemSnapshot = PartitionSnapshotCursor & {
+  version: 1;
+  snapshotId: SnapshotId;
+  storageBinding: StoragePartitionBinding;
+  manifest: SnapshotFilesystemManifest;
+};
+
 export async function createPartitionCasSnapshot(options: {
   store: PartitionStore;
   partitionId: PartitionId;
@@ -36,11 +50,7 @@ export async function createPartitionCasSnapshot(options: {
   ids?: UuidV7Factory;
   beforeStorageSnapshot?: () => Promise<void>;
 }): Promise<PartitionCasSnapshot> {
-  if (options.storageBinding.partitionId !== options.partitionId) {
-    throw new Error(
-      `storage binding partition mismatch: ${options.storageBinding.partitionId} !== ${options.partitionId}`,
-    );
-  }
+  validateStorageBinding(options.partitionId, options.storageBinding);
 
   const ids = options.ids ?? new UuidV7Factory();
   const snapshotId = `partition-snapshot:${options.partitionId}:${ids.next()}`;
@@ -59,23 +69,63 @@ export async function createPartitionCasSnapshot(options: {
     snapshotId,
     partitionId: options.partitionId,
     storageBinding: options.storageBinding,
-    highWatermark: [...highWatermark].sort(([left], [right]) => left.localeCompare(right)),
+    highWatermark: sortedHighWatermark(highWatermark),
     manifest,
   };
 }
 
-export function highWatermarkMap(snapshot: PartitionCasSnapshot): ReadonlyMap<NodeId, EventId> {
+export async function createPartitionFilesystemSnapshot(options: {
+  store: PartitionStore;
+  partitionId: PartitionId;
+  storageBinding: StoragePartitionBinding;
+  fs: Pick<SnapshotFilesystem, "snapshot">;
+  ids?: UuidV7Factory;
+  beforeStorageSnapshot?: () => Promise<void>;
+}): Promise<PartitionFilesystemSnapshot> {
+  validateStorageBinding(options.partitionId, options.storageBinding);
+  if (options.storageBinding.snapshotScope !== "catalog-and-data") {
+    throw new Error("filesystem snapshots currently require catalog-and-data scope");
+  }
+
+  const ids = options.ids ?? new UuidV7Factory();
+  const snapshotId = `partition-fs-snapshot:${options.partitionId}:${ids.next()}`;
+  const highWatermark = await options.store.getHighWatermark(options.partitionId);
+  await options.beforeStorageSnapshot?.();
+  const manifest = await options.fs.snapshot();
+
+  return {
+    version: 1,
+    snapshotId,
+    partitionId: options.partitionId,
+    storageBinding: options.storageBinding,
+    highWatermark: sortedHighWatermark(highWatermark),
+    manifest,
+  };
+}
+
+export function highWatermarkMap(snapshot: PartitionSnapshotCursor): ReadonlyMap<NodeId, EventId> {
   return new Map(snapshot.highWatermark);
 }
 
 export async function listEventsAfterPartitionSnapshot(
   store: PartitionStore,
-  snapshot: PartitionCasSnapshot,
+  snapshot: PartitionSnapshotCursor,
 ): Promise<EventEnvelope[]> {
   return store.listEventsAfterCursors(
     snapshot.partitionId,
     highWatermarkMap(snapshot),
   );
+}
+
+export async function restorePartitionFilesystemSnapshot(options: {
+  snapshot: PartitionFilesystemSnapshot;
+  fs: Pick<SnapshotFilesystem, "restore">;
+}): Promise<void> {
+  if (options.snapshot.storageBinding.snapshotScope !== "catalog-and-data") {
+    throw new Error("only catalog-and-data partition filesystem snapshots can restore a full filesystem");
+  }
+
+  await options.fs.restore(options.snapshot.manifest);
 }
 
 export async function restorePartitionCasSnapshot(options: {
@@ -97,7 +147,7 @@ export async function restorePartitionCasSnapshot(options: {
 export async function replayEventsAfterPartitionSnapshot(options: {
   sourceStore: PartitionStore;
   targetStore: PartitionStore;
-  snapshot: PartitionCasSnapshot;
+  snapshot: PartitionSnapshotCursor;
 }): Promise<number> {
   await options.targetStore.registerPartition(options.snapshot.partitionId);
   const events = await listEventsAfterPartitionSnapshot(
@@ -131,6 +181,21 @@ export function storageBindingSnapshotFilter(
       return relationFiles.has(relationFileStem(file.path));
     },
   };
+}
+
+function validateStorageBinding(
+  partitionId: PartitionId,
+  storageBinding: StoragePartitionBinding,
+): void {
+  if (storageBinding.partitionId !== partitionId) {
+    throw new Error(
+      `storage binding partition mismatch: ${storageBinding.partitionId} !== ${partitionId}`,
+    );
+  }
+}
+
+function sortedHighWatermark(highWatermark: ReadonlyMap<NodeId, EventId>): [NodeId, EventId][] {
+  return [...highWatermark].sort(([left], [right]) => left.localeCompare(right));
 }
 
 function relationFileStems(relation: StorageRelationLocator): string[] {
