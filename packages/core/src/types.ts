@@ -40,6 +40,14 @@ export type StorageBindingGroup = {
   };
 };
 
+export type StorageGcPlan = {
+  ddlGeneration: number;
+  retainFromGeneration: number;
+  protectedGenerations: number[];
+  gcAllowedThroughGeneration: number;
+  canGcGeneration: (generation: number) => boolean;
+};
+
 export type EventCursor = {
   sourceNodeId: NodeId;
   eventId: EventId;

@@ -15,6 +15,7 @@ export type {
   StorageBindingGroup,
   StorageRelationLocator,
   StorageRelationRole,
+  StorageGcPlan,
   StoragePullRequirement,
   StorageSnapshotComponent,
   StorageSnapshotScope,
@@ -33,3 +34,13 @@ export type {
   SnapshotFilesystem,
   SnapshotFilesystemManifest,
 } from "./snapshot-fs.js";
+export {
+  canSatisfyStoragePull,
+  componentsForPullRequirement,
+  componentsForSnapshotScope,
+  missingStorageSnapshotComponents,
+  planStorageGc,
+  producedStorageSnapshotComponents,
+  requiredStorageSnapshotComponents,
+} from "./storage-policy.js";
+export type { StorageGcPlanOptions } from "./storage-policy.js";
