@@ -45,6 +45,14 @@ export { NodeFileBlobStore } from "./node-blob-store.js";
 export { runNodeDemo } from "./demo.js";
 export type { NodeDemoSummary } from "./demo.js";
 export {
+  createManagedPartitionCasSnapshot,
+  pullPartitionCasSnapshot,
+} from "./storage-orchestration.js";
+export type {
+  ManagedPartitionCasSnapshot,
+  PulledPartitionCasSnapshot,
+} from "./storage-orchestration.js";
+export {
   bindStoragePartition,
   applyStorageCatalogManifest,
   createStorageBindingGroup,

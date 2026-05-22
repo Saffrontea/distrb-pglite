@@ -86,6 +86,7 @@ Replication uses source-node-local event streams. Event IDs are UUID v7, but cor
 - Current prototype: storage bindings can be discovered from PGlite catalog metadata and `pg_relation_filepath()`.
 - Current prototype: `catalog-and-data` partition snapshots can be restored to a new PGlite data directory and replay only same-partition events after the snapshot high-watermark.
 - Current prototype: `StorageCatalogManifest` can be applied to a receiving SQL catalog, and CAS GC can execute physical block deletion from snapshot catalog retention policy.
+- Current prototype: managed snapshot/pull orchestration fixes the ordering for drift refresh, snapshot fence, CAS snapshot acquisition, catalog persistence, catalog-manifest apply, snapshot selection, block transfer, and restore.
 
 ## Phase 10: PGlite Fork / Custom Filesystem Integration
 

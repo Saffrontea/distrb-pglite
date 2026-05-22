@@ -53,6 +53,8 @@ The handoff is exposed through SQL metadata rather than as an external conventio
 
 `StorageCatalogManifest` now has an apply path through `applyStorageCatalogManifest()`, which reconstructs the binding catalog on a receiving node. `runStorageCasGcFromCatalog()` connects retention policy, snapshot catalog entries, and physical CAS block deletion.
 
+The product-facing Node entry points are orchestration helpers rather than the low-level pieces. `createManagedPartitionCasSnapshot()` runs drift detection, binding refresh, storage fence, CAS snapshot acquisition, and snapshot catalog persistence in order. `pullPartitionCasSnapshot()` applies a pulled catalog manifest, selects a snapshot entry for the requested pull requirement, transfers missing CAS blocks, and restores the selected snapshot.
+
 The Node adapter can now discover this binding from PGlite catalog state. `discoverStoragePartitionBinding` reads `pg_class`, `pg_database`, `pg_relation_filenode()`, and `pg_relation_filepath()` for a relation name such as `public.sensor_readings`. The resulting `storagePath` is preferred by the snapshot filter so CAS acquisition is tied to the actual relation file path rather than only reconstructing a path from OIDs.
 
 The Phase 9 pull path is now explicit for `catalog-and-data` snapshots: restore the snapshot CAS manifest into a new PGlite data directory, open the restored node, then replay only events for the snapshot partition after the per-source high-watermark. This keeps unrelated partition events out of replay even when the source has advanced other partitions after the snapshot.

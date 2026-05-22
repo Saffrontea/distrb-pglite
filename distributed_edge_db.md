@@ -187,6 +187,8 @@ PGliteの`relaxedDurability: false`はquery完了前のstorage flush待ちには
 
 `StorageCatalogManifest`はpull先のSQL catalogへ`applyStorageCatalogManifest()`で適用できる。CAS GCは`runStorageCasGcFromCatalog()`がsnapshot catalogとretention policyから保持すべきCAS manifestを選び、`gcCasBlocks()`まで実行する。
 
+利用側の入口は低レベル関数を直接並べるのではなく、snapshot取得では`createManagedPartitionCasSnapshot()`を使う。この関数はsnapshot前にDDL drift検出、binding refresh、storage fence、CAS snapshot作成、snapshot catalog保存を順に実行する。pull側は`pullPartitionCasSnapshot()`が`StorageCatalogManifest`の適用、pull requirementに合うsnapshot entry選択、CAS block転送、restoreまでをまとめる。
+
 また、PGlite上の`pg_class`、`pg_database`、`pg_relation_filenode()`、`pg_relation_filepath()`からbindingを生成できる。`storagePath`が得られる場合は、それを優先して実ファイルと`PartitionId`を結合する。
 
 ---
