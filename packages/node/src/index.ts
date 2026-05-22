@@ -40,4 +40,10 @@ export { PGliteCasFilesystem } from "./pglite-cas-filesystem.js";
 export { NodeFileBlobStore } from "./node-blob-store.js";
 export { runNodeDemo } from "./demo.js";
 export type { NodeDemoSummary } from "./demo.js";
-export { discoverStoragePartitionBinding } from "./storage-binding.js";
+export {
+  discoverStoragePartitionBinding,
+  loadStorageBindingGroup,
+  loadStoragePartitionBinding,
+  migrateStorageBindingCatalog,
+  saveStorageBindingGroup,
+} from "./storage-binding.js";
