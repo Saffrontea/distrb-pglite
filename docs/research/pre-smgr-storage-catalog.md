@@ -25,7 +25,7 @@ Minimum catalog tables:
 
 This can start as PGlite application tables, then move into a Postgres extension catalog once the DDL surface stabilizes.
 
-Prototype status: `distrb_storage_binding_groups` and `distrb_storage_bindings` now persist binding groups and JSON binding metadata in PGlite. Node can reload a binding group after reopening PGlite and use the stored binding to create a partition snapshot without CLI JSON.
+Prototype status: `distrb_storage_binding_groups` and `distrb_storage_bindings` now persist binding groups and JSON binding metadata in PGlite. Node can reload a binding group after reopening PGlite and use the stored binding to create a partition snapshot without CLI JSON. `distrb_storage_snapshots` now records snapshot ids, component sets, high-watermarks, DDL generations, manifest kind, and manifest JSON for produced partition snapshots.
 
 ## 3. Postgres Extension DDL
 

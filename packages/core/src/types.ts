@@ -48,6 +48,19 @@ export type StorageGcPlan = {
   canGcGeneration: (generation: number) => boolean;
 };
 
+export type StorageSnapshotManifestKind = "cas" | "filesystem";
+
+export type StorageSnapshotCatalogEntry<TManifest = unknown> = {
+  groupId: string;
+  partitionId: PartitionId;
+  snapshotId: SnapshotId;
+  components: StorageSnapshotComponent[];
+  highWatermark: [NodeId, EventId][];
+  ddlGeneration: number;
+  manifestKind: StorageSnapshotManifestKind;
+  manifest: TManifest;
+};
+
 export type EventCursor = {
   sourceNodeId: NodeId;
   eventId: EventId;

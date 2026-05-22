@@ -17,7 +17,9 @@ export type {
   StorageRelationRole,
   StorageGcPlan,
   StoragePullRequirement,
+  StorageSnapshotCatalogEntry,
   StorageSnapshotComponent,
+  StorageSnapshotManifestKind,
   StorageSnapshotScope,
 } from "./types.js";
 export { compareEventIds, isUuidV7, UuidV7Factory } from "./uuid-v7.js";

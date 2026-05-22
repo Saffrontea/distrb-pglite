@@ -46,6 +46,11 @@ export {
   discoverStoragePartitionBinding,
   loadStorageBindingGroup,
   loadStoragePartitionBinding,
+  loadStorageSnapshotCatalogEntry,
+  listStorageSnapshotCatalogEntries,
   migrateStorageBindingCatalog,
+  savePartitionCasSnapshotCatalogEntry,
+  savePartitionFilesystemSnapshotCatalogEntry,
   saveStorageBindingGroup,
+  saveStorageSnapshotCatalogEntry,
 } from "./storage-binding.js";

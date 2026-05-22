@@ -8,7 +8,10 @@ import {
   discoverStoragePartitionBinding,
   loadStorageBindingGroup,
   loadStoragePartitionBinding,
+  loadStorageSnapshotCatalogEntry,
+  listStorageSnapshotCatalogEntries,
   PGlitePartitionStore,
+  savePartitionCasSnapshotCatalogEntry,
   saveStorageBindingGroup,
 } from "../src/index.js";
 import { makeTempDir } from "./temp-dir.js";
@@ -171,10 +174,31 @@ describe("discoverStoragePartitionBinding", () => {
       dataDir,
       casDir,
     });
+    await savePartitionCasSnapshotCatalogEntry({
+      db,
+      groupId: "sensor_readings",
+      snapshot,
+    });
+    const persistedSnapshot = await loadStorageSnapshotCatalogEntry({
+      db,
+      groupId: "sensor_readings",
+      partitionId: "tenant:jp",
+      snapshotId: snapshot.snapshotId,
+    });
     await db.close();
 
     expect(snapshot.storageBinding).toEqual(loadedBinding);
     expect(snapshot.manifest.files.length).toBeGreaterThan(0);
+    expect(persistedSnapshot).toMatchObject({
+      groupId: "sensor_readings",
+      partitionId: "tenant:jp",
+      snapshotId: snapshot.snapshotId,
+      components: ["data"],
+      ddlGeneration: 1,
+      manifestKind: "cas",
+      manifest: snapshot.manifest,
+    });
+    expect(persistedSnapshot?.highWatermark).toEqual(snapshot.highWatermark);
   }, 120_000);
 
   it("simulates extension DDL by grouping child relations under one root relation", async () => {
@@ -264,5 +288,106 @@ describe("discoverStoragePartitionBinding", () => {
     expect(reloaded?.bindings.every((binding) =>
       binding.relations.every((relation) => relation.parentRelationOid === created.rootRelationOid),
     )).toBe(true);
+  }, 120_000);
+
+  it("lists persisted snapshot catalog entries by group and partition", async () => {
+    const root = await makeTempDir("storage-snapshot-catalog");
+    const dataDir = join(root, "data");
+    const casDir = join(root, "cas");
+    const db = new PGlite(dataDir);
+    const store = new PGlitePartitionStore("node-a", db);
+    await store.migrate();
+    await db.exec(`
+      CREATE TABLE sensor_readings (
+        tenant_id text NOT NULL,
+        sensor_id text NOT NULL,
+        reading integer NOT NULL
+      );
+      CREATE TABLE sensor_readings_tenant_jp (
+        tenant_id text NOT NULL,
+        sensor_id text NOT NULL,
+        reading integer NOT NULL
+      );
+      CREATE TABLE sensor_readings_tenant_us (
+        tenant_id text NOT NULL,
+        sensor_id text NOT NULL,
+        reading integer NOT NULL
+      );
+    `);
+    await createStorageBindingGroup({
+      db,
+      groupId: "sensor_readings",
+      rootRelation: "public.sensor_readings",
+    });
+
+    const withJp = await bindStoragePartition({
+      db,
+      groupId: "sensor_readings",
+      partitionId: "tenant:jp",
+      relations: ["public.sensor_readings_tenant_jp"],
+      snapshotScope: "data-only",
+    });
+    const withUs = await bindStoragePartition({
+      db,
+      groupId: "sensor_readings",
+      partitionId: "tenant:us",
+      relations: ["public.sensor_readings_tenant_us"],
+      snapshotScope: "data-only",
+    });
+
+    const jpBinding = withJp.bindings.find((binding) => binding.partitionId === "tenant:jp")!;
+    const usBinding = withUs.bindings.find((binding) => binding.partitionId === "tenant:us")!;
+    for (const partitionId of ["tenant:jp", "tenant:us"]) {
+      await store.appendLocal({
+        partitionId,
+        schemaVersion: 1,
+        payload: { sensorId: partitionId, reading: 42 },
+      });
+    }
+
+    const jpSnapshot = await createPartitionCasSnapshot({
+      store,
+      partitionId: "tenant:jp",
+      storageBinding: jpBinding,
+      dataDir,
+      casDir,
+    });
+    const usSnapshot = await createPartitionCasSnapshot({
+      store,
+      partitionId: "tenant:us",
+      storageBinding: usBinding,
+      dataDir,
+      casDir,
+    });
+    await savePartitionCasSnapshotCatalogEntry({
+      db,
+      groupId: "sensor_readings",
+      snapshot: jpSnapshot,
+    });
+    await savePartitionCasSnapshotCatalogEntry({
+      db,
+      groupId: "sensor_readings",
+      snapshot: usSnapshot,
+    });
+
+    const allEntries = await listStorageSnapshotCatalogEntries({
+      db,
+      groupId: "sensor_readings",
+    });
+    const jpEntries = await listStorageSnapshotCatalogEntries({
+      db,
+      groupId: "sensor_readings",
+      partitionId: "tenant:jp",
+    });
+    await db.close();
+
+    expect(allEntries.map((entry) => entry.partitionId)).toEqual(["tenant:jp", "tenant:us"]);
+    expect(jpEntries).toHaveLength(1);
+    expect(jpEntries[0]).toMatchObject({
+      partitionId: "tenant:jp",
+      snapshotId: jpSnapshot.snapshotId,
+      ddlGeneration: jpBinding.ddlGeneration,
+      components: ["data"],
+    });
   }, 120_000);
 });

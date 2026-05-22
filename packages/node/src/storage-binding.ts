@@ -4,9 +4,11 @@ import type {
   StoragePartitionBinding,
   StorageRelationLocator,
   StorageRelationRole,
+  StorageSnapshotCatalogEntry,
   StorageSnapshotComponent,
   StorageSnapshotScope,
 } from "@distrb-pglite/core";
+import type { PartitionCasSnapshot, PartitionFilesystemSnapshot } from "./partition-snapshot.js";
 import type { PGliteClient } from "./pglite-store.js";
 
 type RelationIdentityRow = {
@@ -29,6 +31,17 @@ type BindingRow = {
   binding: unknown;
 };
 
+type SnapshotCatalogRow = {
+  group_id: string;
+  partition_id: string;
+  snapshot_id: string;
+  components: unknown;
+  high_watermark: unknown;
+  ddl_generation: number;
+  manifest_kind: string;
+  manifest: unknown;
+};
+
 export async function migrateStorageBindingCatalog(db: PGliteClient): Promise<void> {
   await db.exec(`
     CREATE TABLE IF NOT EXISTS distrb_storage_binding_groups (
@@ -43,6 +56,19 @@ export async function migrateStorageBindingCatalog(db: PGliteClient): Promise<vo
       partition_id text NOT NULL,
       binding jsonb NOT NULL,
       PRIMARY KEY (group_id, partition_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS distrb_storage_snapshots (
+      group_id text NOT NULL REFERENCES distrb_storage_binding_groups(group_id) ON DELETE CASCADE,
+      partition_id text NOT NULL,
+      snapshot_id text NOT NULL,
+      components jsonb NOT NULL,
+      high_watermark jsonb NOT NULL,
+      ddl_generation integer NOT NULL,
+      manifest_kind text NOT NULL,
+      manifest jsonb NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (group_id, partition_id, snapshot_id)
     );
   `);
 }
@@ -139,6 +165,137 @@ export async function loadStoragePartitionBinding(options: {
 }): Promise<StoragePartitionBinding | undefined> {
   const group = await loadStorageBindingGroup(options.db, options.groupId);
   return group?.bindings.find((binding) => binding.partitionId === options.partitionId);
+}
+
+export async function saveStorageSnapshotCatalogEntry<TManifest>(
+  db: PGliteClient,
+  entry: StorageSnapshotCatalogEntry<TManifest>,
+): Promise<void> {
+  await migrateStorageBindingCatalog(db);
+  await db.query(
+    `
+      INSERT INTO distrb_storage_snapshots (
+        group_id,
+        partition_id,
+        snapshot_id,
+        components,
+        high_watermark,
+        ddl_generation,
+        manifest_kind,
+        manifest
+      )
+      VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $8::jsonb)
+      ON CONFLICT (group_id, partition_id, snapshot_id) DO UPDATE SET
+        components = EXCLUDED.components,
+        high_watermark = EXCLUDED.high_watermark,
+        ddl_generation = EXCLUDED.ddl_generation,
+        manifest_kind = EXCLUDED.manifest_kind,
+        manifest = EXCLUDED.manifest
+    `,
+    [
+      entry.groupId,
+      entry.partitionId,
+      entry.snapshotId,
+      JSON.stringify(entry.components),
+      JSON.stringify(entry.highWatermark),
+      entry.ddlGeneration,
+      entry.manifestKind,
+      JSON.stringify(entry.manifest),
+    ],
+  );
+}
+
+export async function savePartitionCasSnapshotCatalogEntry(options: {
+  db: PGliteClient;
+  groupId: string;
+  snapshot: PartitionCasSnapshot;
+  components?: StorageSnapshotComponent[];
+}): Promise<void> {
+  await saveStorageSnapshotCatalogEntry(options.db, {
+    groupId: options.groupId,
+    partitionId: options.snapshot.partitionId,
+    snapshotId: options.snapshot.snapshotId,
+    components: options.components ?? defaultComponents(options.snapshot.storageBinding.snapshotScope),
+    highWatermark: options.snapshot.highWatermark,
+    ddlGeneration: options.snapshot.storageBinding.ddlGeneration ?? 0,
+    manifestKind: "cas",
+    manifest: options.snapshot.manifest,
+  });
+}
+
+export async function savePartitionFilesystemSnapshotCatalogEntry(options: {
+  db: PGliteClient;
+  groupId: string;
+  snapshot: PartitionFilesystemSnapshot;
+  components?: StorageSnapshotComponent[];
+}): Promise<void> {
+  await saveStorageSnapshotCatalogEntry(options.db, {
+    groupId: options.groupId,
+    partitionId: options.snapshot.partitionId,
+    snapshotId: options.snapshot.snapshotId,
+    components: options.components ?? defaultComponents(options.snapshot.storageBinding.snapshotScope),
+    highWatermark: options.snapshot.highWatermark,
+    ddlGeneration: options.snapshot.storageBinding.ddlGeneration ?? 0,
+    manifestKind: "filesystem",
+    manifest: options.snapshot.manifest,
+  });
+}
+
+export async function loadStorageSnapshotCatalogEntry<TManifest = unknown>(options: {
+  db: PGliteClient;
+  groupId: string;
+  partitionId: PartitionId;
+  snapshotId: string;
+}): Promise<StorageSnapshotCatalogEntry<TManifest> | undefined> {
+  await migrateStorageBindingCatalog(options.db);
+  const result = await options.db.query<SnapshotCatalogRow>(
+    `
+      SELECT
+        group_id,
+        partition_id,
+        snapshot_id,
+        components,
+        high_watermark,
+        ddl_generation,
+        manifest_kind,
+        manifest
+      FROM distrb_storage_snapshots
+      WHERE group_id = $1
+        AND partition_id = $2
+        AND snapshot_id = $3
+    `,
+    [options.groupId, options.partitionId, options.snapshotId],
+  );
+
+  return result.rows[0] ? snapshotCatalogEntryFromRow<TManifest>(result.rows[0]) : undefined;
+}
+
+export async function listStorageSnapshotCatalogEntries<TManifest = unknown>(options: {
+  db: PGliteClient;
+  groupId: string;
+  partitionId?: PartitionId;
+}): Promise<StorageSnapshotCatalogEntry<TManifest>[]> {
+  await migrateStorageBindingCatalog(options.db);
+  const result = await options.db.query<SnapshotCatalogRow>(
+    `
+      SELECT
+        group_id,
+        partition_id,
+        snapshot_id,
+        components,
+        high_watermark,
+        ddl_generation,
+        manifest_kind,
+        manifest
+      FROM distrb_storage_snapshots
+      WHERE group_id = $1
+        AND ($2::text IS NULL OR partition_id = $2)
+      ORDER BY partition_id, ddl_generation, snapshot_id
+    `,
+    [options.groupId, options.partitionId ?? null],
+  );
+
+  return result.rows.map((row) => snapshotCatalogEntryFromRow<TManifest>(row));
 }
 
 export async function createStorageBindingGroup(options: {
@@ -275,4 +432,19 @@ async function discoverRelationLocator(
 
 function defaultComponents(scope: StorageSnapshotScope): StorageSnapshotComponent[] {
   return scope === "catalog-and-data" ? ["catalog", "data"] : ["data"];
+}
+
+function snapshotCatalogEntryFromRow<TManifest>(
+  row: SnapshotCatalogRow,
+): StorageSnapshotCatalogEntry<TManifest> {
+  return {
+    groupId: row.group_id,
+    partitionId: row.partition_id,
+    snapshotId: row.snapshot_id,
+    components: row.components as StorageSnapshotComponent[],
+    highWatermark: row.high_watermark as StorageSnapshotCatalogEntry<TManifest>["highWatermark"],
+    ddlGeneration: row.ddl_generation,
+    manifestKind: row.manifest_kind as StorageSnapshotCatalogEntry<TManifest>["manifestKind"],
+    manifest: row.manifest as TManifest,
+  };
 }
