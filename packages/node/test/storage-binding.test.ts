@@ -1,6 +1,4 @@
 import { PGlite } from "@electric-sql/pglite";
-import { mkdtemp } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
@@ -8,10 +6,11 @@ import {
   discoverStoragePartitionBinding,
   PGlitePartitionStore,
 } from "../src/index.js";
+import { makeTempDir } from "./temp-dir.js";
 
 describe("discoverStoragePartitionBinding", () => {
   it("binds a partition to PGlite catalog relation identity and matching files", async () => {
-    const root = await mkdtemp(join(tmpdir(), "distrb-pglite-storage-binding-"));
+    const root = await makeTempDir("storage-binding");
     const dataDir = join(root, "data");
     const casDir = join(root, "cas");
 
@@ -69,7 +68,7 @@ describe("discoverStoragePartitionBinding", () => {
   }, 120_000);
 
   it("rejects unknown relations", async () => {
-    const root = await mkdtemp(join(tmpdir(), "distrb-pglite-storage-binding-missing-"));
+    const root = await makeTempDir("storage-binding-missing");
     const db = new PGlite(join(root, "data"));
 
     await expect(discoverStoragePartitionBinding({

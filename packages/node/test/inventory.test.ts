@@ -1,17 +1,16 @@
 import { PGlite } from "@electric-sql/pglite";
-import { mkdtemp } from "node:fs/promises";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
 import {
   copyDataDirSnapshot,
   inventoryDataDir,
   PGlitePartitionStore,
 } from "../src/index.js";
+import { makeTempDir } from "./temp-dir.js";
 
 describe("inventoryDataDir", () => {
   it("lists PGlite data directory files with deterministic hashes", async () => {
-    const dataDir = await mkdtemp(join(tmpdir(), "distrb-pglite-inventory-"));
+    const dataDir = await makeTempDir("inventory");
     const db = new PGlite(dataDir);
     const store = new PGlitePartitionStore("node-a", db);
     await store.migrate();
@@ -37,7 +36,7 @@ describe("inventoryDataDir", () => {
   }, 120_000);
 
   it("copies a closed PGlite data directory and imports application data plus event metadata", async () => {
-    const root = await mkdtemp(join(tmpdir(), "distrb-pglite-import-"));
+    const root = await makeTempDir("import");
     const sourceDir = join(root, "source");
     const targetDir = join(root, "target");
 

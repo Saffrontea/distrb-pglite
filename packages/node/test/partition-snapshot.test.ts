@@ -1,7 +1,6 @@
 import { InMemoryPartitionStore } from "@distrb-pglite/core";
 import { PGlite } from "@electric-sql/pglite";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
@@ -13,10 +12,11 @@ import {
   replayEventsAfterPartitionSnapshot,
   restorePartitionCasSnapshot,
 } from "../src/index.js";
+import { makeTempDir } from "./temp-dir.js";
 
 describe("partition CAS snapshots", () => {
   it("binds a CAS manifest to a partition high-watermark vector", async () => {
-    const root = await mkdtemp(join(tmpdir(), "distrb-pglite-partition-snapshot-"));
+    const root = await makeTempDir("partition-snapshot");
     const dataDir = join(root, "data");
     const casDir = join(root, "cas");
     await mkdir(dataDir, { recursive: true });
@@ -67,7 +67,7 @@ describe("partition CAS snapshots", () => {
   });
 
   it("uses snapshot high-watermarks as replay cursors for the same partition", async () => {
-    const root = await mkdtemp(join(tmpdir(), "distrb-pglite-partition-replay-"));
+    const root = await makeTempDir("partition-replay");
     const dataDir = join(root, "data");
     const casDir = join(root, "cas");
     await mkdir(dataDir, { recursive: true });
@@ -132,7 +132,7 @@ describe("partition CAS snapshots", () => {
   });
 
   it("uses data-only storage bindings to snapshot matching relation files", async () => {
-    const root = await mkdtemp(join(tmpdir(), "distrb-pglite-partition-data-only-"));
+    const root = await makeTempDir("partition-data-only");
     const dataDir = join(root, "data");
     const casDir = join(root, "cas");
     await mkdir(join(dataDir, "base", "5"), { recursive: true });
@@ -169,7 +169,7 @@ describe("partition CAS snapshots", () => {
   });
 
   it("rejects a storage binding for a different partition", async () => {
-    const root = await mkdtemp(join(tmpdir(), "distrb-pglite-partition-mismatch-"));
+    const root = await makeTempDir("partition-mismatch");
     const dataDir = join(root, "data");
     const casDir = join(root, "cas");
     await mkdir(dataDir, { recursive: true });
@@ -188,7 +188,7 @@ describe("partition CAS snapshots", () => {
   });
 
   it("restores a catalog-and-data snapshot and replays only events after its high-watermark", async () => {
-    const root = await mkdtemp(join(tmpdir(), "distrb-pglite-partition-pull-"));
+    const root = await makeTempDir("partition-pull");
     const sourceDir = join(root, "source");
     const casDir = join(root, "cas");
     const targetDir = join(root, "target");

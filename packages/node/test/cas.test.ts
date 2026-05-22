@@ -1,8 +1,6 @@
 import { PGlite } from "@electric-sql/pglite";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
-import { mkdtemp } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import {
   diffMissingBlocks,
@@ -14,10 +12,11 @@ import {
   snapshotToCas,
   transferMissingBlocks,
 } from "../src/index.js";
+import { makeTempDir } from "./temp-dir.js";
 
 describe("CAS snapshots", () => {
   it("chunks a data directory, deduplicates blocks, and restores it", async () => {
-    const root = await mkdtemp(join(tmpdir(), "distrb-pglite-cas-"));
+    const root = await makeTempDir("cas");
     const dataDir = join(root, "data");
     const casDir = join(root, "cas");
     const restoreDir = join(root, "restore");
@@ -51,7 +50,7 @@ describe("CAS snapshots", () => {
   });
 
   it("transfers only missing blocks between parented snapshots and restores a readable PGlite data directory", async () => {
-    const root = await mkdtemp(join(tmpdir(), "distrb-pglite-cas-diff-"));
+    const root = await makeTempDir("cas-diff");
     const dataDir = join(root, "data");
     const sourceCasDir = join(root, "source-cas");
     const targetCasDir = join(root, "target-cas");

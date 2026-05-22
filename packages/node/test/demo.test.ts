@@ -1,9 +1,7 @@
-import { mkdtemp } from "node:fs/promises";
 import { createServer } from "node:net";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { runNodeDemo } from "../src/index.js";
+import { makeTempDir } from "./temp-dir.js";
 
 describe("Phase 6 node demo", () => {
   it("demonstrates local write/read, subscription filtering, offline recovery, and WebSocket catch-up", async () => {
@@ -12,7 +10,7 @@ describe("Phase 6 node demo", () => {
       return;
     }
 
-    const baseDir = await mkdtemp(join(tmpdir(), "distrb-pglite-phase6-"));
+    const baseDir = await makeTempDir("phase6");
     const summary = await runNodeDemo({ baseDir, port });
 
     expect(summary.baseDir).toBe(baseDir);

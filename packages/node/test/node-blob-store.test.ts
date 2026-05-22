@@ -1,12 +1,11 @@
-import { mkdtemp } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { NodeFileBlobStore } from "../src/index.js";
+import { makeTempDir } from "./temp-dir.js";
 
 describe("NodeFileBlobStore", () => {
   it("stores content-addressed blobs on the host filesystem", async () => {
-    const root = await mkdtemp(join(tmpdir(), "distrb-pglite-blobs-"));
+    const root = await makeTempDir("blobs");
     const store = new NodeFileBlobStore(root);
     const content = new TextEncoder().encode("blob content");
 
