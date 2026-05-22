@@ -15,6 +15,8 @@ import {
   migrateStorageBindingCatalog,
   PGlitePartitionStore,
   planStorageGcFromCatalog,
+  planStorageSnapshotFence,
+  prepareStorageSnapshotFence,
   savePartitionCasSnapshotCatalogEntry,
   saveStorageBindingGroup,
 } from "../src/index.js";
@@ -540,6 +542,66 @@ describe("discoverStoragePartitionBinding", () => {
       parentRelationOid: group.rootRelationOid,
       storagePath: expect.stringMatching(/^base\/\d+\/\d+/),
     });
+  }, 120_000);
+
+  it("plans and applies SQL-backed snapshot fences for data-only bindings", async () => {
+    const root = await makeTempDir("storage-binding-fence");
+    const dataDir = join(root, "data");
+    const db = new PGlite(dataDir);
+    await migrateStorageBindingCatalog(db);
+
+    await db.exec(`
+      CREATE TABLE sensor_readings (
+        tenant_id text NOT NULL,
+        sensor_id text NOT NULL,
+        reading integer NOT NULL
+      );
+      CREATE TABLE sensor_readings_tenant_jp (
+        tenant_id text NOT NULL,
+        sensor_id text NOT NULL,
+        reading integer NOT NULL
+      );
+      CREATE INDEX sensor_readings_tenant_jp_sensor_id
+        ON sensor_readings_tenant_jp (sensor_id);
+    `);
+    await createStorageBindingGroup({
+      db,
+      groupId: "sensor_readings",
+      rootRelation: "public.sensor_readings",
+    });
+    await bindStoragePartition({
+      db,
+      groupId: "sensor_readings",
+      partitionId: "tenant:jp",
+      relations: ["public.sensor_readings_tenant_jp"],
+      snapshotScope: "data-only",
+    });
+    await db.query(
+      "INSERT INTO sensor_readings_tenant_jp (tenant_id, sensor_id, reading) VALUES ($1, $2, $3)",
+      ["tenant:jp", "tokyo-1", 42],
+    );
+
+    const planned = await planStorageSnapshotFence({
+      db,
+      groupId: "sensor_readings",
+      partitionId: "tenant:jp",
+    });
+    const applied = await prepareStorageSnapshotFence({
+      db,
+      groupId: "sensor_readings",
+      partitionId: "tenant:jp",
+    });
+    await db.close();
+
+    expect(planned).toEqual([
+      expect.objectContaining({
+        partitionId: "tenant:jp",
+        relationOrdinal: 0,
+        relationName: "sensor_readings_tenant_jp",
+        relationRole: "child",
+      }),
+    ]);
+    expect(applied).toEqual(planned);
   }, 120_000);
 
   it("lists persisted snapshot catalog entries by group and partition", async () => {

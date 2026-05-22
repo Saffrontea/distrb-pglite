@@ -67,6 +67,22 @@ type CatalogManifestRow = {
   manifest: unknown;
 };
 
+type SnapshotFenceTargetRow = {
+  partition_id: string;
+  relation_ordinal: number;
+  relation_oid: number;
+  relation_name: string;
+  relation_role: string;
+};
+
+export type StorageSnapshotFenceTarget = {
+  partitionId: PartitionId;
+  relationOrdinal: number;
+  relationOid: number;
+  relationName: string;
+  relationRole: StorageRelationRole;
+};
+
 export async function migrateStorageBindingCatalog(db: PGliteClient): Promise<void> {
   await db.exec(`
     CREATE TABLE IF NOT EXISTS distrb_storage_binding_groups (
@@ -614,6 +630,36 @@ export async function migrateStorageBindingCatalog(db: PGliteClient): Promise<vo
       FROM distrb_storage_binding_groups g
       WHERE g.group_id = group_name
     $$;
+
+    CREATE OR REPLACE FUNCTION distrb_storage_snapshot_fence_plan(
+      group_name text,
+      partition_name text DEFAULT NULL
+    )
+    RETURNS TABLE(
+      partition_id text,
+      relation_ordinal integer,
+      relation_oid integer,
+      relation_name text,
+      relation_role text
+    )
+    LANGUAGE sql
+    AS $$
+      SELECT
+        r.partition_id,
+        r.relation_ordinal,
+        r.relation_oid,
+        r.relation_oid::oid::regclass::text AS relation_name,
+        r.relation_role
+      FROM distrb_storage_binding_relations r
+      JOIN distrb_storage_bindings b
+        ON b.group_id = r.group_id
+       AND b.partition_id = r.partition_id
+      WHERE r.group_id = group_name
+        AND (partition_name IS NULL OR r.partition_id = partition_name)
+        AND b.binding->>'snapshotScope' = 'data-only'
+        AND r.relation_role IN ('root', 'child')
+      ORDER BY r.partition_id, r.relation_ordinal
+    $$;
   `);
 }
 
@@ -910,6 +956,46 @@ export async function loadStorageSnapshotCatalogEntryForPull<TManifest = unknown
     partitionId: options.partitionId,
   });
   return selectStorageSnapshotCatalogEntryForPull(entries, options.requirement);
+}
+
+export async function planStorageSnapshotFence(options: {
+  db: PGliteClient;
+  groupId: string;
+  partitionId?: PartitionId;
+}): Promise<StorageSnapshotFenceTarget[]> {
+  await migrateStorageBindingCatalog(options.db);
+  const result = await options.db.query<SnapshotFenceTargetRow>(
+    `
+      SELECT
+        partition_id,
+        relation_ordinal,
+        relation_oid,
+        relation_name,
+        relation_role
+      FROM distrb_storage_snapshot_fence_plan($1, $2)
+    `,
+    [options.groupId, options.partitionId ?? null],
+  );
+
+  return result.rows.map((row) => ({
+    partitionId: row.partition_id,
+    relationOrdinal: row.relation_ordinal,
+    relationOid: row.relation_oid,
+    relationName: row.relation_name,
+    relationRole: row.relation_role as StorageRelationRole,
+  }));
+}
+
+export async function prepareStorageSnapshotFence(options: {
+  db: PGliteClient;
+  groupId: string;
+  partitionId?: PartitionId;
+}): Promise<StorageSnapshotFenceTarget[]> {
+  const targets = await planStorageSnapshotFence(options);
+  for (const target of targets) {
+    await options.db.exec(`VACUUM ${target.relationName}`);
+  }
+  return targets;
 }
 
 export async function loadStorageCatalogManifest(options: {

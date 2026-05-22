@@ -4,11 +4,15 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  bindStoragePartition,
+  createStorageBindingGroup,
   createPartitionCasSnapshot,
   discoverStoragePartitionBinding,
   highWatermarkMap,
   listEventsAfterPartitionSnapshot,
+  loadStoragePartitionBinding,
   PGlitePartitionStore,
+  prepareStorageSnapshotFence,
   replayEventsAfterPartitionSnapshot,
   restorePartitionCasSnapshot,
   restorePartitionDataOnlyCasSnapshot,
@@ -334,6 +338,18 @@ describe("partition CAS snapshots", () => {
     sourceDb = new PGlite(sourceDir, { relaxedDurability: false });
     sourceStore = new PGlitePartitionStore("node-source", sourceDb);
     await sourceStore.migrate();
+    await createStorageBindingGroup({
+      db: sourceDb,
+      groupId: "sensor_readings",
+      rootRelation: "public.sensor_readings",
+    });
+    await bindStoragePartition({
+      db: sourceDb,
+      groupId: "sensor_readings",
+      partitionId: "tenant:jp",
+      relations: ["public.sensor_readings"],
+      snapshotScope: "data-only",
+    });
     await sourceDb.query(
       "INSERT INTO sensor_readings (tenant_id, sensor_id, reading) VALUES ($1, $2, $3)",
       ["tenant:jp", "tokyo-1", 42],
@@ -343,27 +359,47 @@ describe("partition CAS snapshots", () => {
       schemaVersion: 1,
       payload: { sensorId: "tokyo-1", reading: 42 },
     });
-    await sourceDb.exec("VACUUM sensor_readings");
+    await expect(prepareStorageSnapshotFence({
+      db: sourceDb,
+      groupId: "sensor_readings",
+      partitionId: "tenant:jp",
+    })).resolves.toEqual([
+      expect.objectContaining({
+        partitionId: "tenant:jp",
+        relationName: "sensor_readings",
+        relationRole: "child",
+      }),
+    ]);
 
     const targetDb = new PGlite(targetDir, { relaxedDurability: false });
-    const targetBinding = await discoverStoragePartitionBinding({
+    await createStorageBindingGroup({
       db: targetDb,
-      partitionId: "tenant:jp",
+      groupId: "sensor_readings",
       rootRelation: "public.sensor_readings",
+    });
+    await bindStoragePartition({
+      db: targetDb,
+      groupId: "sensor_readings",
+      partitionId: "tenant:jp",
+      relations: ["public.sensor_readings"],
       snapshotScope: "data-only",
+    });
+    const targetBinding = await loadStoragePartitionBinding({
+      db: targetDb,
+      groupId: "sensor_readings",
+      partitionId: "tenant:jp",
     });
     await targetDb.close();
 
-    const binding = await discoverStoragePartitionBinding({
+    const binding = await loadStoragePartitionBinding({
       db: sourceDb,
+      groupId: "sensor_readings",
       partitionId: "tenant:jp",
-      rootRelation: "public.sensor_readings",
-      snapshotScope: "data-only",
     });
     const snapshot = await createPartitionCasSnapshot({
       store: sourceStore,
       partitionId: "tenant:jp",
-      storageBinding: binding,
+      storageBinding: binding!,
       dataDir: sourceDir,
       casDir,
       chunking: { strategy: "page-aligned", pageSize: 4096, maxChunkSize: 16 * 1024 },
@@ -378,7 +414,7 @@ describe("partition CAS snapshots", () => {
       snapshot,
       casDir,
       targetDir,
-      targetStorageBinding: targetBinding,
+      targetStorageBinding: targetBinding!,
     });
 
     const pulledDb = new PGlite(targetDir, { relaxedDurability: false });

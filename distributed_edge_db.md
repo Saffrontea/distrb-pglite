@@ -183,6 +183,8 @@ PartitionId -> {
 
 PGliteの`relaxedDurability: false`はquery完了前のstorage flush待ちには効くが、relation fileへdata-onlyで読める形に反映されることまでは保証しない。現prototypeの検証では、catalog-compatibleなtargetへdata-only snapshotを適用する前にsource側で`VACUUM <root relation>`を実行し、relation fileのhandoff pointを作る必要があった。`pg_wal`をdata-only componentに混ぜるとPGlite起動時に壊れるため、WAL転送はこのprototypeのdata-only pull pathには含めない。
 
+このhandoffは利用者が手で`VACUUM`を覚える形にはせず、SQL catalog側の`distrb_storage_snapshot_fence_plan(group_name, partition_name)`で対象relationを決める。Node adapterの`prepareStorageSnapshotFence({ groupId, partitionId })`はそのplanを実行し、data-only snapshot取得前に必要な`VACUUM`を発行する。
+
 また、PGlite上の`pg_class`、`pg_database`、`pg_relation_filenode()`、`pg_relation_filepath()`からbindingを生成できる。`storagePath`が得られる場合は、それを優先して実ファイルと`PartitionId`を結合する。
 
 ---

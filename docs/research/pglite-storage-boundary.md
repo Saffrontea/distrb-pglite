@@ -49,6 +49,8 @@ The partition snapshot path now uses this binding during CAS acquisition:
 
 PGlite's `relaxedDurability: false` is useful for waiting on storage flushes before a query returns, but it did not make relation-file-only transfer readable by itself in the Node adapter tests. The current data-only pull test uses `VACUUM <root relation>` as the handoff point before CAS acquisition. Including `pg_wal/` in the data-only component caused restored PGlite directories to fail at open time, so WAL shipping is intentionally outside this prototype pull path.
 
+The handoff is exposed through SQL metadata rather than as an external convention. `distrb_storage_snapshot_fence_plan(group_name, partition_name)` returns the data-only relations that need a storage fence, and the Node adapter's `prepareStorageSnapshotFence({ groupId, partitionId })` executes the plan before snapshot acquisition.
+
 The Node adapter can now discover this binding from PGlite catalog state. `discoverStoragePartitionBinding` reads `pg_class`, `pg_database`, `pg_relation_filenode()`, and `pg_relation_filepath()` for a relation name such as `public.sensor_readings`. The resulting `storagePath` is preferred by the snapshot filter so CAS acquisition is tied to the actual relation file path rather than only reconstructing a path from OIDs.
 
 The Phase 9 pull path is now explicit for `catalog-and-data` snapshots: restore the snapshot CAS manifest into a new PGlite data directory, open the restored node, then replay only events for the snapshot partition after the per-source high-watermark. This keeps unrelated partition events out of replay even when the source has advanced other partitions after the snapshot.

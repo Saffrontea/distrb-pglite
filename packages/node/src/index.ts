@@ -56,8 +56,11 @@ export {
   listStorageSnapshotCatalogEntries,
   migrateStorageBindingCatalog,
   planStorageGcFromCatalog,
+  planStorageSnapshotFence,
+  prepareStorageSnapshotFence,
   savePartitionCasSnapshotCatalogEntry,
   savePartitionFilesystemSnapshotCatalogEntry,
   saveStorageBindingGroup,
   saveStorageSnapshotCatalogEntry,
 } from "./storage-binding.js";
+export type { StorageSnapshotFenceTarget } from "./storage-binding.js";
