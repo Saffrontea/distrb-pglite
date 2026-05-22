@@ -39,10 +39,23 @@ SELECT distrb_create_binding_group(
   root_relation => 'public.sensor_readings'
 );
 
+SELECT distrb_create_root_table(
+  group_name => 'sensor_readings',
+  root_relation_name => 'public.sensor_readings',
+  table_definition => 'tenant_id text NOT NULL, sensor_id text NOT NULL, reading integer NOT NULL'
+);
+
 SELECT distrb_bind_partition(
   group_name => 'sensor_readings',
   partition_id => 'tenant:jp',
   child_relation => 'public.sensor_readings_tenant_jp'
+);
+
+SELECT distrb_create_bound_table(
+  group_name => 'sensor_readings',
+  partition_id => 'tenant:jp',
+  child_relation_name => 'public.sensor_readings_tenant_jp',
+  table_definition => 'LIKE public.sensor_readings INCLUDING ALL'
 );
 
 SELECT distrb_snapshot_policy(
@@ -54,7 +67,7 @@ SELECT distrb_snapshot_policy(
 
 The early implementation can simulate this with ordinary SQL tables and SQL functions. Node helpers may call those functions for tests and demos, but the catalog contract must remain SQL-owned so it can move into a Postgres extension without becoming a Node API.
 
-Prototype status: PGlite now installs `distrb_create_binding_group` and `distrb_bind_partition` functions. `distrb_create_binding_group` records a root relation and initial DDL generation. `distrb_bind_partition` attaches one or more child relations to a partition, increments the group DDL generation, records relation roles and parent relation OIDs in normalized relation rows, and persists the updated binding. Node helpers are wrappers around these SQL functions.
+Prototype status: PGlite now installs `distrb_create_binding_group`, `distrb_bind_partition`, `distrb_create_root_table`, and `distrb_create_bound_table` functions. `distrb_create_binding_group` records an existing root relation and initial DDL generation. `distrb_create_root_table` creates the root table and records the group in one SQL call. `distrb_bind_partition` attaches one or more existing child relations to a partition, increments the group DDL generation, records relation roles and parent relation OIDs in normalized relation rows, and persists the updated binding. `distrb_create_bound_table` creates a child table and binds it in one SQL call. Node helpers are wrappers around these SQL functions where possible.
 
 ## 4. Child Relation Groups
 

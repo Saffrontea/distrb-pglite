@@ -116,6 +116,23 @@ export async function migrateStorageBindingCatalog(db: PGliteClient): Promise<vo
     END;
     $$;
 
+    CREATE OR REPLACE FUNCTION distrb_relation_sql_name(relation_name text)
+    RETURNS text
+    LANGUAGE plpgsql
+    AS $$
+    DECLARE
+      parts text[] := parse_ident(relation_name, false);
+    BEGIN
+      IF array_length(parts, 1) = 1 THEN
+        RETURN format('%I', parts[1]);
+      ELSIF array_length(parts, 1) = 2 THEN
+        RETURN format('%I.%I', parts[1], parts[2]);
+      END IF;
+
+      RAISE EXCEPTION 'relation name must be unqualified or schema-qualified: %', relation_name;
+    END;
+    $$;
+
     CREATE OR REPLACE FUNCTION distrb_bind_partition(
       group_name text,
       partition_name text,
@@ -259,6 +276,60 @@ export async function migrateStorageBindingCatalog(db: PGliteClient): Promise<vo
       WHERE group_id = group_name;
 
       RETURN next_generation;
+    END;
+    $$;
+
+    CREATE OR REPLACE FUNCTION distrb_create_root_table(
+      group_name text,
+      root_relation_name text,
+      table_definition text,
+      vacuum_policy jsonb DEFAULT NULL
+    )
+    RETURNS integer
+    LANGUAGE plpgsql
+    AS $$
+    BEGIN
+      EXECUTE format(
+        'CREATE TABLE %s (%s)',
+        distrb_relation_sql_name(root_relation_name),
+        table_definition
+      );
+
+      RETURN distrb_create_binding_group(
+        group_name,
+        root_relation_name::regclass,
+        vacuum_policy
+      );
+    END;
+    $$;
+
+    CREATE OR REPLACE FUNCTION distrb_create_bound_table(
+      group_name text,
+      partition_name text,
+      child_relation_name text,
+      table_definition text,
+      snapshot_scope text DEFAULT 'data-only',
+      snapshot_components text[] DEFAULT NULL,
+      pull_requires text[] DEFAULT NULL
+    )
+    RETURNS integer
+    LANGUAGE plpgsql
+    AS $$
+    BEGIN
+      EXECUTE format(
+        'CREATE TABLE %s (%s)',
+        distrb_relation_sql_name(child_relation_name),
+        table_definition
+      );
+
+      RETURN distrb_bind_partition(
+        group_name,
+        partition_name,
+        ARRAY[child_relation_name::regclass],
+        snapshot_scope,
+        snapshot_components,
+        pull_requires
+      );
     END;
     $$;
   `);

@@ -400,6 +400,91 @@ describe("discoverStoragePartitionBinding", () => {
     )).toBe(true);
   }, 120_000);
 
+  it("creates root and bound tables through the PGlite SQL interface", async () => {
+    const root = await makeTempDir("storage-binding-sql-create");
+    const dataDir = join(root, "data");
+    const db = new PGlite(dataDir);
+    await migrateStorageBindingCatalog(db);
+
+    await db.query(
+      `
+        SELECT distrb_create_root_table(
+          $1,
+          $2,
+          $3,
+          $4::jsonb
+        )
+      `,
+      [
+        "sensor_readings",
+        "public.sensor_readings",
+        "tenant_id text NOT NULL, sensor_id text NOT NULL, reading integer NOT NULL",
+        JSON.stringify({ retainSnapshotGenerations: 2, gcAfterGeneration: 7 }),
+      ],
+    );
+    await db.query(
+      `
+        SELECT distrb_create_bound_table(
+          $1,
+          $2,
+          $3,
+          $4,
+          $5,
+          $6::text[],
+          $7::text[]
+        )
+      `,
+      [
+        "sensor_readings",
+        "tenant:jp",
+        "public.sensor_readings_tenant_jp",
+        "LIKE public.sensor_readings INCLUDING ALL",
+        "catalog-and-data",
+        ["catalog", "data"],
+        ["data"],
+      ],
+    );
+    await db.query(
+      "INSERT INTO sensor_readings_tenant_jp (tenant_id, sensor_id, reading) VALUES ($1, $2, $3)",
+      ["tenant:jp", "tokyo-1", 42],
+    );
+
+    const tables = await db.query<{ root_exists: string; child_exists: string }>(
+      `
+        SELECT
+          to_regclass('public.sensor_readings')::text AS root_exists,
+          to_regclass('public.sensor_readings_tenant_jp')::text AS child_exists
+      `,
+    );
+    const group = await loadStorageBindingGroup(db, "sensor_readings");
+    const row = await db.query<{ reading: number }>(
+      "SELECT reading FROM sensor_readings_tenant_jp WHERE tenant_id = $1",
+      ["tenant:jp"],
+    );
+    await db.close();
+
+    expect(tables.rows[0]).toEqual({
+      root_exists: "sensor_readings",
+      child_exists: "sensor_readings_tenant_jp",
+    });
+    expect(row.rows[0]?.reading).toBe(42);
+    expect(group).toMatchObject({
+      groupId: "sensor_readings",
+      ddlGeneration: 2,
+    });
+    expect(group?.bindings[0]).toMatchObject({
+      partitionId: "tenant:jp",
+      snapshotScope: "catalog-and-data",
+      snapshotComponents: ["catalog", "data"],
+      pullRequires: ["data"],
+      ddlGeneration: 2,
+    });
+    expect(group?.bindings[0]?.relations[0]).toMatchObject({
+      parentRelationOid: group.rootRelationOid,
+      storagePath: expect.stringMatching(/^base\/\d+\/\d+/),
+    });
+  }, 120_000);
+
   it("lists persisted snapshot catalog entries by group and partition", async () => {
     const root = await makeTempDir("storage-snapshot-catalog");
     const dataDir = join(root, "data");
