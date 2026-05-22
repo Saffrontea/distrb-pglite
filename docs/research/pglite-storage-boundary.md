@@ -44,12 +44,14 @@ Without this binding, a filesystem-level CAS layer cannot decide which blocks be
 The partition snapshot path now uses this binding during CAS acquisition:
 
 - `data-only` includes files matching `base/<databaseOid>/<relfilenode>` plus segment and fork variants such as `.1`, `_fsm`, `_vm`, and `_init`, plus transaction status metadata such as `pg_xact/` that relation pages need for visibility checks.
-- `catalog-and-data` keeps the full closed data directory in this prototype, including empty directories, because that is the restorable bootstrap format until catalog-page selection is made precise.
+- `catalog-and-data` keeps the full closed data directory in this prototype, including empty directories, because that is the restorable bootstrap format until catalog-page selection is made precise. CAS file entries are still tagged as `catalog` or `data`, so pull policy can distinguish bootstrap, catalog refresh, and data refresh even before smgr page selection exists.
 - a snapshot request is rejected if the requested `partitionId` and `storageBinding.partitionId` differ.
 
 PGlite's `relaxedDurability: false` is useful for waiting on storage flushes before a query returns, but it did not make relation-file-only transfer readable by itself in the Node adapter tests. The current data-only pull test uses `VACUUM <root relation>` as the handoff point before CAS acquisition. Including `pg_wal/` in the data-only component caused restored PGlite directories to fail at open time, so WAL shipping is intentionally outside this prototype pull path.
 
 The handoff is exposed through SQL metadata rather than as an external convention. `distrb_storage_snapshot_fence_plan(group_name, partition_name)` returns the data-only relations that need a storage fence, and the Node adapter's `prepareStorageSnapshotFence({ groupId, partitionId })` executes the plan before snapshot acquisition.
+
+`StorageCatalogManifest` now has an apply path through `applyStorageCatalogManifest()`, which reconstructs the binding catalog on a receiving node. `runStorageCasGcFromCatalog()` connects retention policy, snapshot catalog entries, and physical CAS block deletion.
 
 The Node adapter can now discover this binding from PGlite catalog state. `discoverStoragePartitionBinding` reads `pg_class`, `pg_database`, `pg_relation_filenode()`, and `pg_relation_filepath()` for a relation name such as `public.sensor_readings`. The resulting `storagePath` is preferred by the snapshot filter so CAS acquisition is tied to the actual relation file path rather than only reconstructing a path from OIDs.
 

@@ -196,19 +196,25 @@ export async function replayEventsAfterPartitionSnapshot(options: {
 export function storageBindingSnapshotFilter(
   binding: StoragePartitionBinding,
 ): CasSnapshotFilter | undefined {
-  if (binding.snapshotScope === "catalog-and-data") {
-    return undefined;
-  }
-
   const relationFiles = new Set(
     binding.relations.flatMap((relation) => relationFileStems(relation)),
   );
 
-  return {
+  const filter: CasSnapshotFilter = {
     includeFile(file: FileInventoryEntry): boolean {
-      return relationFiles.has(relationFileStem(file.path)) || isDataComponentMetadataFile(file.path);
+      if (binding.snapshotScope === "catalog-and-data") {
+        return true;
+      }
+      return isDataComponentFile(file.path, relationFiles);
+    },
+    componentsForFile(file: FileInventoryEntry) {
+      return [isDataComponentFile(file.path, relationFiles) ? "data" : "catalog"];
     },
   };
+  if (binding.snapshotScope === "catalog-and-data") {
+    filter.includeDirectory = () => true;
+  }
+  return filter;
 }
 
 function validateStorageBinding(
@@ -294,4 +300,8 @@ function isDataComponentMetadataFile(path: string): boolean {
     || path.startsWith("pg_serial/")
     || path.startsWith("pg_twophase/")
   );
+}
+
+function isDataComponentFile(path: string, relationFiles: ReadonlySet<string>): boolean {
+  return relationFiles.has(relationFileStem(path)) || isDataComponentMetadataFile(path);
 }

@@ -18,6 +18,7 @@ import type {
 } from "@distrb-pglite/core";
 import type { PartitionCasSnapshot, PartitionFilesystemSnapshot } from "./partition-snapshot.js";
 import type { PGliteClient } from "./pglite-store.js";
+import { gcCasBlocks, type CasGcResult, type CasManifest } from "./cas.js";
 
 type RelationIdentityRow = {
   database_oid: number;
@@ -81,6 +82,13 @@ export type StorageSnapshotFenceTarget = {
   relationOid: number;
   relationName: string;
   relationRole: StorageRelationRole;
+};
+
+export type StorageCasGcExecution = {
+  plan: StorageGcPlan;
+  gc: CasGcResult;
+  retainedSnapshotIds: string[];
+  gcEligibleSnapshotIds: string[];
 };
 
 export async function migrateStorageBindingCatalog(db: PGliteClient): Promise<void> {
@@ -1013,6 +1021,33 @@ export async function loadStorageCatalogManifest(options: {
   return result.rows[0]?.manifest as StorageCatalogManifest | undefined;
 }
 
+export async function applyStorageCatalogManifest(options: {
+  db: PGliteClient;
+  manifest: StorageCatalogManifest;
+}): Promise<StorageBindingGroup> {
+  await migrateStorageBindingCatalog(options.db);
+  await options.db.query(
+    `
+      DELETE FROM distrb_storage_binding_groups
+      WHERE group_id = $1
+    `,
+    [options.manifest.groupId],
+  );
+  await saveStorageBindingGroup(options.db, {
+    groupId: options.manifest.groupId,
+    rootRelationOid: options.manifest.rootRelationOid,
+    ddlGeneration: options.manifest.ddlGeneration,
+    vacuumPolicy: options.manifest.vacuumPolicy,
+    bindings: options.manifest.bindings,
+  });
+
+  const group = await loadStorageBindingGroup(options.db, options.manifest.groupId);
+  if (!group) {
+    throw new Error(`storage binding group not found after applying catalog manifest: ${options.manifest.groupId}`);
+  }
+  return group;
+}
+
 export async function planStorageGcFromCatalog(options: {
   db: PGliteClient;
   groupId: string;
@@ -1035,6 +1070,44 @@ export async function planStorageGcFromCatalog(options: {
     activePullGenerations: options.activePullGenerations,
     retainedSnapshotGenerations: snapshotGenerations.rows.map((row) => row.ddl_generation),
   });
+}
+
+export async function runStorageCasGcFromCatalog(options: {
+  db: PGliteClient;
+  groupId: string;
+  casDir: string;
+  activePullGenerations?: StorageGcPlanOptions["activePullGenerations"];
+  dryRun?: boolean;
+}): Promise<StorageCasGcExecution | undefined> {
+  const group = await loadStorageBindingGroup(options.db, options.groupId);
+  if (!group) {
+    return undefined;
+  }
+  const plan = planStorageGc(group, {
+    activePullGenerations: options.activePullGenerations,
+  });
+
+  const entries = await listStorageSnapshotCatalogEntries<CasManifest>({
+    db: options.db,
+    groupId: options.groupId,
+  });
+  const retainedEntries = entries.filter((entry) =>
+    entry.manifestKind === "cas" && !plan.canGcGeneration(entry.ddlGeneration)
+  );
+  const gcEligibleEntries = entries.filter((entry) =>
+    entry.manifestKind === "cas" && plan.canGcGeneration(entry.ddlGeneration)
+  );
+
+  return {
+    plan,
+    gc: await gcCasBlocks({
+      casDir: options.casDir,
+      retainedManifests: retainedEntries.map((entry) => entry.manifest),
+      dryRun: options.dryRun,
+    }),
+    retainedSnapshotIds: retainedEntries.map((entry) => entry.snapshotId).sort(),
+    gcEligibleSnapshotIds: gcEligibleEntries.map((entry) => entry.snapshotId).sort(),
+  };
 }
 
 export async function createStorageBindingGroup(options: {

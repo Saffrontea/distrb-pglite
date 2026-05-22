@@ -1,7 +1,9 @@
 import { PGlite } from "@electric-sql/pglite";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  applyStorageCatalogManifest,
   bindStoragePartition,
   createStorageBindingGroup,
   createPartitionCasSnapshot,
@@ -17,8 +19,10 @@ import {
   planStorageGcFromCatalog,
   planStorageSnapshotFence,
   prepareStorageSnapshotFence,
+  runStorageCasGcFromCatalog,
   savePartitionCasSnapshotCatalogEntry,
   saveStorageBindingGroup,
+  saveStorageSnapshotCatalogEntry,
 } from "../src/index.js";
 import { makeTempDir } from "./temp-dir.js";
 
@@ -762,4 +766,156 @@ describe("discoverStoragePartitionBinding", () => {
       && binding.relations.some((relation) => relation.role === "toast")
     )).toBe(true);
   }, 120_000);
+
+  it("applies pulled storage catalog manifests to a local catalog", async () => {
+    const sourceRoot = await makeTempDir("storage-catalog-source");
+    const targetRoot = await makeTempDir("storage-catalog-target");
+    const sourceDb = new PGlite(join(sourceRoot, "data"));
+    const targetDb = new PGlite(join(targetRoot, "data"));
+
+    await sourceDb.exec(`
+      CREATE TABLE sensor_readings (
+        tenant_id text NOT NULL,
+        sensor_id text NOT NULL,
+        reading integer NOT NULL
+      );
+      CREATE TABLE sensor_readings_tenant_jp (
+        tenant_id text NOT NULL,
+        sensor_id text NOT NULL,
+        reading integer NOT NULL
+      );
+    `);
+    await createStorageBindingGroup({
+      db: sourceDb,
+      groupId: "sensor_readings",
+      rootRelation: "public.sensor_readings",
+      vacuumPolicy: { retainSnapshotGenerations: 2, gcAfterGeneration: 9 },
+    });
+    await bindStoragePartition({
+      db: sourceDb,
+      groupId: "sensor_readings",
+      partitionId: "tenant:jp",
+      relations: ["public.sensor_readings_tenant_jp"],
+      snapshotScope: "catalog-and-data",
+      snapshotComponents: ["catalog", "data"],
+      pullRequires: ["catalog", "data"],
+    });
+
+    const manifest = await loadStorageCatalogManifest({
+      db: sourceDb,
+      groupId: "sensor_readings",
+    });
+    const applied = await applyStorageCatalogManifest({
+      db: targetDb,
+      manifest: manifest!,
+    });
+    const loaded = await loadStorageBindingGroup(targetDb, "sensor_readings");
+    await sourceDb.close();
+    await targetDb.close();
+
+    expect(applied).toEqual(loaded);
+    expect(loaded).toMatchObject({
+      groupId: "sensor_readings",
+      ddlGeneration: 2,
+      vacuumPolicy: { retainSnapshotGenerations: 2, gcAfterGeneration: 9 },
+    });
+    expect(loaded?.bindings).toHaveLength(1);
+    expect(loaded?.bindings[0]).toMatchObject({
+      partitionId: "tenant:jp",
+      snapshotScope: "catalog-and-data",
+      snapshotComponents: ["catalog", "data"],
+      pullRequires: ["catalog", "data"],
+    });
+  }, 120_000);
+
+  it("executes CAS block GC from snapshot catalog policy", async () => {
+    const root = await makeTempDir("storage-cas-gc");
+    const dataDir = join(root, "data");
+    const casDir = join(root, "cas");
+    await mkdir(casDir, { recursive: true });
+    const oldHash = "a".repeat(64);
+    const newHash = "b".repeat(64);
+    await writeFile(join(casDir, oldHash), "old");
+    await writeFile(join(casDir, newHash), "new");
+
+    const db = new PGlite(dataDir);
+    await db.exec(`
+      CREATE TABLE sensor_readings (
+        tenant_id text NOT NULL,
+        sensor_id text NOT NULL,
+        reading integer NOT NULL
+      );
+      CREATE TABLE sensor_readings_tenant_jp (
+        tenant_id text NOT NULL,
+        sensor_id text NOT NULL,
+        reading integer NOT NULL
+      );
+    `);
+    await createStorageBindingGroup({
+      db,
+      groupId: "sensor_readings",
+      rootRelation: "public.sensor_readings",
+      vacuumPolicy: { retainSnapshotGenerations: 1, gcAfterGeneration: 9 },
+    });
+    await bindStoragePartition({
+      db,
+      groupId: "sensor_readings",
+      partitionId: "tenant:jp",
+      relations: ["public.sensor_readings_tenant_jp"],
+      snapshotScope: "data-only",
+    });
+    await saveStorageSnapshotCatalogEntry(db, {
+      groupId: "sensor_readings",
+      partitionId: "tenant:jp",
+      snapshotId: "old",
+      components: ["data"],
+      highWatermark: [],
+      ddlGeneration: 1,
+      manifestKind: "cas",
+      manifest: casManifest("old", oldHash, 3),
+    });
+    await saveStorageSnapshotCatalogEntry(db, {
+      groupId: "sensor_readings",
+      partitionId: "tenant:jp",
+      snapshotId: "new",
+      components: ["data"],
+      highWatermark: [],
+      ddlGeneration: 2,
+      manifestKind: "cas",
+      manifest: casManifest("new", newHash, 3),
+    });
+
+    const result = await runStorageCasGcFromCatalog({
+      db,
+      groupId: "sensor_readings",
+      casDir,
+    });
+    await db.close();
+
+    expect(result).toMatchObject({
+      retainedSnapshotIds: ["new"],
+      gcEligibleSnapshotIds: ["old"],
+      gc: {
+        retained: [newHash],
+        deleted: [oldHash],
+      },
+    });
+  }, 120_000);
 });
+
+function casManifest(snapshotId: string, hash: string, size: number) {
+  return {
+    version: 1 as const,
+    snapshotId,
+    parentSnapshotIds: [],
+    chunkSize: 64 * 1024,
+    directories: [],
+    files: [{
+      path: `${snapshotId}.bin`,
+      size,
+      sha256: hash,
+      components: ["data" as const],
+      blocks: [{ hash, size }],
+    }],
+  };
+}

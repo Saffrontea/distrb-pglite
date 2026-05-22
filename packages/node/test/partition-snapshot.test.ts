@@ -234,6 +234,8 @@ describe("partition CAS snapshots", () => {
         await sourceDb.close();
       },
     });
+    expect(snapshot.manifest.files.some((file) => file.components?.includes("data"))).toBe(true);
+    expect(snapshot.manifest.files.some((file) => file.components?.includes("catalog"))).toBe(true);
 
     sourceDb = new PGlite(sourceDir);
     sourceStore = new PGlitePartitionStore("node-a", sourceDb);

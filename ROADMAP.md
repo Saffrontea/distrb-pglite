@@ -82,9 +82,10 @@ Replication uses source-node-local event streams. Event IDs are UUID v7, but cor
 - Define how `PartitionId` maps to storage identity: root relation OID, relation OID, relfilenode, database OID, and tablespace OID.
 - Make snapshot scope explicit: `data-only` or `catalog-and-data`.
 - Acceptance: a node can pull a partition snapshot, replay only events after the per-source high-watermarks, and avoid receiving unrelated partitions.
-- Current prototype: `data-only` filters CAS acquisition to matching relation files plus transaction status metadata and can be applied to a catalog-compatible PGlite data directory after a storage handoff fence; `catalog-and-data` captures the full closed data directory for restorable bootstrap snapshots.
+- Current prototype: `data-only` filters CAS acquisition to matching relation files plus transaction status metadata and can be applied to a catalog-compatible PGlite data directory after a storage handoff fence; `catalog-and-data` captures the full closed data directory for restorable bootstrap snapshots and tags CAS files as catalog/data components.
 - Current prototype: storage bindings can be discovered from PGlite catalog metadata and `pg_relation_filepath()`.
 - Current prototype: `catalog-and-data` partition snapshots can be restored to a new PGlite data directory and replay only same-partition events after the snapshot high-watermark.
+- Current prototype: `StorageCatalogManifest` can be applied to a receiving SQL catalog, and CAS GC can execute physical block deletion from snapshot catalog retention policy.
 
 ## Phase 10: PGlite Fork / Custom Filesystem Integration
 

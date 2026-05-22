@@ -1,7 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
 import { copyFile, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import type { BlobRef, SnapshotFile, SnapshotFilesystemManifest } from "@distrb-pglite/core";
+import type {
+  BlobRef,
+  SnapshotFile,
+  SnapshotFilesystemManifest,
+  StorageSnapshotComponent,
+} from "@distrb-pglite/core";
 import { inventoryDataDir, type DataDirInventory, type FileInventoryEntry } from "./inventory.js";
 import { loadZstd } from "./zstd.js";
 
@@ -11,6 +16,7 @@ export type CasBlock = BlobRef;
 // then add per-file hashes so copied/restored host files can be verified.
 export type CasFileManifest = SnapshotFile<CasBlock> & {
   sha256: string;
+  components?: StorageSnapshotComponent[];
 };
 
 // External data-directory snapshot graph. This is not the in-memory filesystem
@@ -24,6 +30,8 @@ export type CasManifest = SnapshotFilesystemManifest<CasFileManifest> & {
 
 export type CasSnapshotFilter = {
   includeFile(file: FileInventoryEntry): boolean;
+  includeDirectory?(directory: string): boolean;
+  componentsForFile?(file: FileInventoryEntry): StorageSnapshotComponent[];
 };
 
 export type CasChunking =
@@ -62,7 +70,12 @@ export async function snapshotToCas(options: {
   for (const file of selectedFiles) {
     const content = await readFile(join(options.dataDir, file.path));
     const blocks = await writeBlocks(options.casDir, content, chunking, compress);
-    files.push({ ...file, blocks });
+    const components = options.filter?.componentsForFile?.(file);
+    files.push({
+      ...file,
+      ...(components ? { components } : {}),
+      blocks,
+    });
   }
 
   return {
@@ -73,7 +86,7 @@ export async function snapshotToCas(options: {
     chunking,
     ...(options.compress ? { compression: "zstd" as const } : {}),
     directories: options.filter
-      ? selectedDirectories(inventory.directories, selectedFiles)
+      ? selectedDirectories(inventory.directories, selectedFiles, options.filter)
       : inventory.directories,
     files,
   };
@@ -293,7 +306,12 @@ function isFileInventoryEntries(
 function selectedDirectories(
   directories: readonly string[],
   files: readonly FileInventoryEntry[],
+  filter: CasSnapshotFilter,
 ): string[] {
+  if (filter.includeDirectory) {
+    return directories.filter((directory) => filter.includeDirectory?.(directory) ?? false);
+  }
+
   const required = new Set<string>();
   for (const file of files) {
     let path = dirname(file.path);

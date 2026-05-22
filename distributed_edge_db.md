@@ -179,11 +179,13 @@ PartitionId -> {
 - `catalog-and-data`は新規ノードのpull、DDL変更後、またはpartition定義自体の同期向け。
 - この対応がないと、FS/CAS層はどのページがどのpartitionに属するか判断できず、分散差分同期を正しく切れない。
 
-現在のprototypeでは、このbindingをpartition snapshot取得に接続している。`data-only`では`base/<databaseOid>/<relfilenode>`に一致するrelation本体、segment、FSM/VM/init forkと、可視性判定に必要なtransaction status系metadataをCAS manifestへ入れる。`catalog-and-data`では復元可能性を優先し、closed data directory全体をCAS manifestへ入れる。
+現在のprototypeでは、このbindingをpartition snapshot取得に接続している。`data-only`では`base/<databaseOid>/<relfilenode>`に一致するrelation本体、segment、FSM/VM/init forkと、可視性判定に必要なtransaction status系metadataをCAS manifestへ入れる。`catalog-and-data`では復元可能性を優先し、closed data directory全体をCAS manifestへ入れるが、manifest内の各fileには`catalog`/`data` componentを付与する。これによりpull側はbootstrap、catalog refresh、data refreshの要求を同じsnapshot catalog上で判定できる。catalog page単位の選択はsmgr trackで扱う。
 
 PGliteの`relaxedDurability: false`はquery完了前のstorage flush待ちには効くが、relation fileへdata-onlyで読める形に反映されることまでは保証しない。現prototypeの検証では、catalog-compatibleなtargetへdata-only snapshotを適用する前にsource側で`VACUUM <root relation>`を実行し、relation fileのhandoff pointを作る必要があった。`pg_wal`をdata-only componentに混ぜるとPGlite起動時に壊れるため、WAL転送はこのprototypeのdata-only pull pathには含めない。
 
 このhandoffは利用者が手で`VACUUM`を覚える形にはせず、SQL catalog側の`distrb_storage_snapshot_fence_plan(group_name, partition_name)`で対象relationを決める。Node adapterの`prepareStorageSnapshotFence({ groupId, partitionId })`はそのplanを実行し、data-only snapshot取得前に必要な`VACUUM`を発行する。
+
+`StorageCatalogManifest`はpull先のSQL catalogへ`applyStorageCatalogManifest()`で適用できる。CAS GCは`runStorageCasGcFromCatalog()`がsnapshot catalogとretention policyから保持すべきCAS manifestを選び、`gcCasBlocks()`まで実行する。
 
 また、PGlite上の`pg_class`、`pg_database`、`pg_relation_filenode()`、`pg_relation_filepath()`からbindingを生成できる。`storagePath`が得られる場合は、それを優先して実ファイルと`PartitionId`を結合する。
 

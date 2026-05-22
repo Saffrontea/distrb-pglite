@@ -46,6 +46,7 @@ export { runNodeDemo } from "./demo.js";
 export type { NodeDemoSummary } from "./demo.js";
 export {
   bindStoragePartition,
+  applyStorageCatalogManifest,
   createStorageBindingGroup,
   discoverStoragePartitionBinding,
   loadStorageBindingGroup,
@@ -58,9 +59,10 @@ export {
   planStorageGcFromCatalog,
   planStorageSnapshotFence,
   prepareStorageSnapshotFence,
+  runStorageCasGcFromCatalog,
   savePartitionCasSnapshotCatalogEntry,
   savePartitionFilesystemSnapshotCatalogEntry,
   saveStorageBindingGroup,
   saveStorageSnapshotCatalogEntry,
 } from "./storage-binding.js";
-export type { StorageSnapshotFenceTarget } from "./storage-binding.js";
+export type { StorageCasGcExecution, StorageSnapshotFenceTarget } from "./storage-binding.js";
