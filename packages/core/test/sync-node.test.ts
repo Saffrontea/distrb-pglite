@@ -140,6 +140,108 @@ describe("SyncNode", () => {
     ]);
   });
 
+  it("keeps high-watermarks partition-scoped and source-scoped when events arrive out of order", async () => {
+    const store = new InMemoryPartitionStore("node-c");
+    await store.registerPartition("tenant:jp");
+    await store.registerPartition("tenant:us");
+
+    await store.applyRemote({
+      eventId: "018bcfe5-6800-7003-8000-000000000003",
+      sourceNodeId: "node-a",
+      partitionId: "tenant:jp",
+      schemaVersion: 1,
+      payload: { value: "a3" },
+    });
+    await store.applyRemote({
+      eventId: "018bcfe5-6800-7001-8000-000000000001",
+      sourceNodeId: "node-a",
+      partitionId: "tenant:jp",
+      schemaVersion: 1,
+      payload: { value: "a1-late" },
+    });
+    await store.applyRemote({
+      eventId: "018bcfe5-6800-7002-8000-000000000002",
+      sourceNodeId: "node-b",
+      partitionId: "tenant:jp",
+      schemaVersion: 1,
+      payload: { value: "b2" },
+    });
+    await store.applyRemote({
+      eventId: "018bcfe5-6800-7009-8000-000000000009",
+      sourceNodeId: "node-a",
+      partitionId: "tenant:us",
+      schemaVersion: 1,
+      payload: { value: "us-a9" },
+    });
+
+    await expect(store.getHighWatermark("tenant:jp")).resolves.toEqual(
+      new Map([
+        ["node-a", "018bcfe5-6800-7003-8000-000000000003"],
+        ["node-b", "018bcfe5-6800-7002-8000-000000000002"],
+      ]),
+    );
+    await expect(store.getHighWatermark("tenant:us")).resolves.toEqual(
+      new Map([["node-a", "018bcfe5-6800-7009-8000-000000000009"]]),
+    );
+  });
+
+  it("catch-up sends the receiver high-watermark so peers only replay missing source streams", async () => {
+    const transport = new MemoryTransport();
+    const sourceStore = new InMemoryPartitionStore("source");
+    const targetStore = new InMemoryPartitionStore("target");
+    await sourceStore.registerPartition("tenant:jp");
+    await targetStore.registerPartition("tenant:jp");
+
+    await sourceStore.applyRemote({
+      eventId: "018bcfe5-6800-7001-8000-000000000001",
+      sourceNodeId: "node-a",
+      partitionId: "tenant:jp",
+      schemaVersion: 1,
+      payload: { value: "a1" },
+    });
+    await sourceStore.applyRemote({
+      eventId: "018bcfe5-6800-7002-8000-000000000002",
+      sourceNodeId: "node-a",
+      partitionId: "tenant:jp",
+      schemaVersion: 1,
+      payload: { value: "a2" },
+    });
+    await sourceStore.applyRemote({
+      eventId: "018bcfe5-6800-7001-8000-000000000003",
+      sourceNodeId: "node-b",
+      partitionId: "tenant:jp",
+      schemaVersion: 1,
+      payload: { value: "b1" },
+    });
+
+    await targetStore.applyRemote({
+      eventId: "018bcfe5-6800-7001-8000-000000000001",
+      sourceNodeId: "node-a",
+      partitionId: "tenant:jp",
+      schemaVersion: 1,
+      payload: { value: "a1" },
+    });
+    await targetStore.applyRemote({
+      eventId: "018bcfe5-6800-7001-8000-000000000003",
+      sourceNodeId: "node-b",
+      partitionId: "tenant:jp",
+      schemaVersion: 1,
+      payload: { value: "b1" },
+    });
+
+    const source = new SyncNode("source", sourceStore, transport);
+    const target = new SyncNode("target", targetStore, transport);
+    await source.start();
+    await target.start();
+
+    await expect(target.catchUpFrom("source", "tenant:jp")).resolves.toBe(1);
+    await expect(targetStore.listEventsAfterCursors("tenant:jp", new Map())).resolves.toMatchObject([
+      { sourceNodeId: "node-a", payload: { value: "a1" } },
+      { sourceNodeId: "node-a", payload: { value: "a2" } },
+      { sourceNodeId: "node-b", payload: { value: "b1" } },
+    ]);
+  });
+
   it("does not apply remote events for unregistered partitions", async () => {
     const store = new InMemoryPartitionStore("node-b");
 
