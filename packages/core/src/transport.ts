@@ -10,6 +10,7 @@ import type {
 export type TransportHandlers = {
   onEvent(event: EventEnvelope): Promise<void> | void;
   onReplayRequest?(request: ReplayRequest): Promise<ReplayResponse> | ReplayResponse;
+  onReconnect?(partitionIds: ReadonlySet<PartitionId>): Promise<void> | void;
 };
 
 export type TransportConnection = {

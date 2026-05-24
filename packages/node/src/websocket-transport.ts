@@ -169,11 +169,33 @@ export class WebSocketHub {
     return JSON.parse(data.toString()) as WireMessage;
   }
 }
+export type WebSocketTransportReconnectOptions = {
+  maxAttempts?: number;
+  baseDelayMs?: number;
+  maxDelayMs?: number;
+};
+
+export type WebSocketTransportOptions = {
+  url: string;
+  compress?: boolean;
+  reconnect?: WebSocketTransportReconnectOptions;
+};
+
 export class WebSocketTransport implements Transport {
-  constructor(
-    private readonly url: string,
-    private readonly compress?: boolean,
-  ) {}
+  private readonly url: string;
+  private readonly compress: boolean;
+  private readonly reconnectOptions?: WebSocketTransportReconnectOptions;
+
+  constructor(urlOrOptions: string | WebSocketTransportOptions, compress?: boolean) {
+    if (typeof urlOrOptions === "string") {
+      this.url = urlOrOptions;
+      this.compress = compress ?? false;
+    } else {
+      this.url = urlOrOptions.url;
+      this.compress = urlOrOptions.compress ?? false;
+      this.reconnectOptions = urlOrOptions.reconnect;
+    }
+  }
 
   async connect(nodeId: NodeId, handlers: TransportHandlers): Promise<TransportConnection> {
     const socket = new WebSocket(this.url);
@@ -183,29 +205,75 @@ export class WebSocketTransport implements Transport {
     });
 
     const zstd = this.compress ? await loadZstd() : undefined;
-    return new WebSocketTransportConnection(nodeId, socket, handlers, zstd);
+    return new WebSocketTransportConnection(nodeId, socket, handlers, zstd, this.reconnectOptions, this.url);
   }
 }
 
 class WebSocketTransportConnection implements TransportConnection {
-  private readonly pendingReplay = new Map<
-    string,
-    (response: ReplayResponse) => void
-  >();
+  private socket: WebSocket;
+  private readonly subscriptions = new Set<PartitionId>();
+  private readonly pendingReplay = new Map<string, (response: ReplayResponse) => void>();
+  private closed = false;
 
   constructor(
     private readonly nodeId: NodeId,
-    private readonly socket: WebSocket,
+    socket: WebSocket,
     private readonly handlers: TransportHandlers,
     private readonly zstd?: Awaited<ReturnType<typeof loadZstd>>,
+    private readonly reconnectOptions?: WebSocketTransportReconnectOptions,
+    private readonly url?: string,
   ) {
-    this.socket.on("message", (data) => {
-      void this.handleMessage(this.decode(data as Buffer));
-    });
+    this.socket = socket;
+    this.attach(socket);
     this.send({ type: "hello", nodeId });
   }
 
+  private attach(socket: WebSocket): void {
+    socket.on("message", (data) => {
+      void this.handleMessage(this.decode(data as Buffer));
+    });
+    socket.on("close", () => {
+      if (!this.closed && this.reconnectOptions && this.url) {
+        void this.attemptReconnect();
+      }
+    });
+  }
+
+  private async attemptReconnect(): Promise<void> {
+    const maxAttempts = this.reconnectOptions?.maxAttempts ?? 8;
+    const baseDelayMs = this.reconnectOptions?.baseDelayMs ?? 500;
+    const maxDelayMs = this.reconnectOptions?.maxDelayMs ?? 30_000;
+
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      await sleep(Math.min(baseDelayMs * 2 ** attempt, maxDelayMs));
+      if (this.closed) return;
+
+      try {
+        const socket = new WebSocket(this.url!);
+        await new Promise<void>((resolve, reject) => {
+          socket.once("open", resolve);
+          socket.once("error", reject);
+        });
+
+        this.socket = socket;
+        this.attach(socket);
+        this.send({ type: "hello", nodeId: this.nodeId });
+        for (const partitionId of this.subscriptions) {
+          this.send({ type: "subscribe", partitionId });
+        }
+
+        if (this.handlers.onReconnect) {
+          await this.handlers.onReconnect(new Set(this.subscriptions));
+        }
+        return;
+      } catch {
+        // next attempt
+      }
+    }
+  }
+
   async subscribe(partitionId: PartitionId): Promise<void> {
+    this.subscriptions.add(partitionId);
     this.send({ type: "subscribe", partitionId });
   }
 
@@ -235,6 +303,11 @@ class WebSocketTransportConnection implements TransportConnection {
     return response;
   }
 
+  async close(): Promise<void> {
+    this.closed = true;
+    this.socket.close();
+  }
+
   private send(message: WireMessage): void {
     if (this.socket.readyState !== WebSocket.OPEN) {
       return;
@@ -251,10 +324,6 @@ class WebSocketTransportConnection implements TransportConnection {
       return JSON.parse(Buffer.from(this.zstd.decompress(new Uint8Array(data))).toString()) as WireMessage;
     }
     return JSON.parse(data.toString()) as WireMessage;
-  }
-
-  async close(): Promise<void> {
-    this.socket.close();
   }
 
   private async handleMessage(message: WireMessage): Promise<void> {
@@ -294,4 +363,8 @@ class WebSocketTransportConnection implements TransportConnection {
         break;
     }
   }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

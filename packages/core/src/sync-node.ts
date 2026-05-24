@@ -9,8 +9,17 @@ import type {
 } from "./types.js";
 import type { Transport, TransportConnection } from "./transport.js";
 
+export type SyncNodeStartOptions = {
+  autoRecoverSubscriptions?: boolean;
+};
+
+export type SubscribeOptions = {
+  recoverFrom?: NodeId;
+};
+
 export class SyncNode {
   private connection?: TransportConnection;
+  private readonly recoverFrom = new Map<PartitionId, NodeId>();
 
   constructor(
     readonly nodeId: NodeId,
@@ -18,7 +27,7 @@ export class SyncNode {
     private readonly transport: Transport,
   ) {}
 
-  async start(): Promise<void> {
+  async start(options?: SyncNodeStartOptions): Promise<void> {
     this.connection = await this.transport.connect(this.nodeId, {
       onEvent: async (event) => {
         await this.store.applyRemote(event);
@@ -30,10 +39,23 @@ export class SyncNode {
         );
         return { partitionId: request.partitionId, events };
       },
+      onReconnect: options?.autoRecoverSubscriptions
+        ? async (partitionIds) => {
+            for (const partitionId of partitionIds) {
+              const peer = this.recoverFrom.get(partitionId);
+              if (peer) {
+                await this.catchUpFrom(peer, partitionId);
+              }
+            }
+          }
+        : undefined,
     });
   }
 
-  async subscribe(partitionId: PartitionId): Promise<void> {
+  async subscribe(partitionId: PartitionId, options?: SubscribeOptions): Promise<void> {
+    if (options?.recoverFrom) {
+      this.recoverFrom.set(partitionId, options.recoverFrom);
+    }
     await this.requireConnection().subscribe(partitionId);
     await this.store.registerPartition(partitionId);
   }
