@@ -96,6 +96,25 @@ Replication uses source-node-local event streams. Event IDs are UUID v7, but cor
 - Add failure tests for interrupted writes, partial block availability, duplicate block fetches, and manifest corruption.
 - Acceptance: the same sync and snapshot tests pass when PGlite persists through the CoW/CAS-backed filesystem adapter.
 - Current prototype: `PGliteCasFilesystem` runs PGlite partition snapshot restore/replay tests and rejects missing CAS blocks or corrupted manifests.
+- Current prototype: data-directory snapshot logic is split behind `SnapshotDataFilesystem`, and CAS block persistence is split behind `CasBlockStore`; Node FS is now one implementation rather than the storage contract.
+
+## Phase 10.1: Browser-Only OPFS Storage Track
+
+- Build browser implementations of the storage abstractions before touching smgr:
+  - `SnapshotDataFilesystem` backed by OPFS, compatible with the logical data-directory paths used by the Node adapter and PGlite filesystem hooks.
+  - `CasBlockStore` backed by OPFS, with the same block hash, integrity check, GC, and transfer semantics as `NodeCasBlockStore`.
+- Verify whether Node FS data directories and OPFS-backed PGlite data directories can share the same logical manifest format without conversion.
+- Keep IndexedDB as a fallback investigation, but prefer OPFS for file-like PGlite persistence because the current architecture expects filesystem-style directory and file operations.
+- Add a browser playground that can create a PGlite database, run SQL, snapshot to OPFS CAS blocks, restore into a second logical data directory, and compare query results.
+- Acceptance: snapshot, restore, diff transfer, and GC pass using only browser storage APIs and no Node filesystem access.
+
+## Phase 10.2: Browser Sync And Relay Track
+
+- Treat browsers as clients, not WebSocket servers.
+- Keep direct browser-to-browser sync out of scope until a relay protocol is defined.
+- Add a small relay/hub protocol that lets browser nodes exchange event streams, snapshot manifests, and missing CAS blocks through a server-controlled rendezvous point.
+- Ensure the relay only needs transport and authorization responsibilities; storage semantics stay in manifests, event logs, and CAS block stores.
+- Acceptance: two browser nodes can sync through a relay, pull a snapshot, fetch only missing blocks, replay events after high-watermarks, and converge.
 
 ## Phase 10.5: Storage Catalog Before smgr
 
@@ -105,8 +124,11 @@ Replication uses source-node-local event streams. Event IDs are UUID v7, but cor
 - Represent child tables, indexes, and TOAST relations under one root relation binding group.
 - Define vacuum and CAS GC retention from DDL generation, active pulls, and retained snapshot manifests.
 - Acceptance: binding groups survive restart, can be used to derive partition snapshots without CLI JSON, and expose enough metadata to decide whether a pull needs catalog, data, or both.
+- Status: prototype complete. This phase is no longer a blocker before the browser/OPFS track or smgr research.
 - Current prototype: PGlite tables persist storage binding groups, relation locators, DDL generation, component requirements, and vacuum/GC policy.
 - Current prototype: Node helpers simulate binding-group DDL by creating root groups, binding child relations, and incrementing DDL generation.
+- Current prototype: storage catalog manifests can be exported, applied to a receiving catalog, and used by managed snapshot/pull orchestration.
+- Current prototype: CAS GC can be planned and executed from catalog retention policy.
 
 ## Phase 11: Postgres smgr Research Track
 
@@ -128,5 +150,6 @@ Replication uses source-node-local event streams. Event IDs are UUID v7, but cor
 - Custom WASM beyond PGlite.
 - MQTT transport adapter.
 - Production-grade GC and vacuum policy.
+- Production-grade storage catalog migration and compatibility policy.
 - Full Postgres extension packaging.
 - Cross-version manifest compatibility.
