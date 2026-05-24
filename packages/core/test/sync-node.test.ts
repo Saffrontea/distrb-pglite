@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   InMemoryPartitionStore,
+  compareHighWatermarks,
   isUuidV7,
   MemoryTransport,
   SyncNode,
@@ -286,6 +287,44 @@ describe("SyncNode", () => {
     expect(watermark.has("node-a")).toBe(true);
   });
 
+  it("can reconcile a partition to recover older events hidden behind a newer high-watermark", async () => {
+    const transport = new MemoryTransport();
+    const sourceStore = new InMemoryPartitionStore("source");
+    const targetStore = new InMemoryPartitionStore("target");
+    await sourceStore.registerPartition("tenant:jp");
+    await targetStore.registerPartition("tenant:jp");
+
+    const older = {
+      eventId: "018bcfe5-6800-7001-8000-000000000001",
+      sourceNodeId: "node-a",
+      partitionId: "tenant:jp",
+      schemaVersion: 1,
+      payload: { value: "older" },
+    };
+    const newer = {
+      eventId: "018bcfe5-6800-7002-8000-000000000002",
+      sourceNodeId: "node-a",
+      partitionId: "tenant:jp",
+      schemaVersion: 1,
+      payload: { value: "newer" },
+    };
+    await sourceStore.applyRemote(older);
+    await sourceStore.applyRemote(newer);
+    await targetStore.applyRemote(newer);
+
+    const source = new SyncNode("source", sourceStore, transport);
+    const target = new SyncNode("target", targetStore, transport);
+    await source.start();
+    await target.start();
+
+    await expect(target.catchUpFrom("source", "tenant:jp")).resolves.toBe(0);
+    await expect(target.reconcileFrom("source", "tenant:jp")).resolves.toBe(1);
+    await expect(targetStore.listEventsAfterCursors("tenant:jp", new Map())).resolves.toMatchObject([
+      { payload: { value: "older" } },
+      { payload: { value: "newer" } },
+    ]);
+  });
+
   it("captures snapshot metadata as a source-node high-watermark vector", async () => {
     const store = new InMemoryPartitionStore("node-c");
     await store.registerPartition("tenant:jp");
@@ -320,5 +359,98 @@ describe("SyncNode", () => {
         ["node-b", "018bcfe5-6800-7001-8000-000000000003"],
       ]),
     );
+  });
+
+  it("reports convergence gaps and plans catch-up from remote cursors", async () => {
+    const local = new Map([
+      ["node-a", "018bcfe5-6800-7001-8000-000000000001"],
+      ["node-c", "018bcfe5-6800-7009-8000-000000000009"],
+    ]);
+    const remote = new Map([
+      ["node-a", "018bcfe5-6800-7002-8000-000000000002"],
+      ["node-b", "018bcfe5-6800-7001-8000-000000000003"],
+      ["node-c", "018bcfe5-6800-7009-8000-000000000009"],
+    ]);
+
+    expect(compareHighWatermarks(local, remote)).toEqual([
+      {
+        sourceNodeId: "node-a",
+        localEventId: "018bcfe5-6800-7001-8000-000000000001",
+        remoteEventId: "018bcfe5-6800-7002-8000-000000000002",
+        comparison: "local-behind",
+      },
+      {
+        sourceNodeId: "node-b",
+        localEventId: undefined,
+        remoteEventId: "018bcfe5-6800-7001-8000-000000000003",
+        comparison: "local-behind",
+      },
+      {
+        sourceNodeId: "node-c",
+        localEventId: "018bcfe5-6800-7009-8000-000000000009",
+        remoteEventId: "018bcfe5-6800-7009-8000-000000000009",
+        comparison: "equal",
+      },
+    ]);
+
+    const node = new SyncNode("node-local", new InMemoryPartitionStore("node-local"), new MemoryTransport());
+    const status = await node.convergenceStatus("tenant:jp", remote);
+    const plan = await node.catchupPlan("tenant:jp", remote);
+
+    expect(status.missingSources).toEqual(["node-a", "node-b", "node-c"]);
+    expect(plan).toMatchObject({
+      partitionId: "tenant:jp",
+      shouldRequestReplay: true,
+      missingSources: ["node-a", "node-b", "node-c"],
+    });
+  });
+
+  it("converges under duplicated, out-of-order, and lost event delivery after catch-up", async () => {
+    const stores = new Map([
+      ["node-a", new InMemoryPartitionStore("node-a")],
+      ["node-b", new InMemoryPartitionStore("node-b")],
+      ["node-c", new InMemoryPartitionStore("node-c")],
+    ]);
+    for (const store of stores.values()) {
+      await store.registerPartition("tenant:jp");
+    }
+
+    const produced = [
+      await stores.get("node-a")!.appendLocal({ partitionId: "tenant:jp", schemaVersion: 1, payload: { n: 1 } }),
+      await stores.get("node-b")!.appendLocal({ partitionId: "tenant:jp", schemaVersion: 1, payload: { n: 2 } }),
+      await stores.get("node-c")!.appendLocal({ partitionId: "tenant:jp", schemaVersion: 1, payload: { n: 3 } }),
+      await stores.get("node-a")!.appendLocal({ partitionId: "tenant:jp", schemaVersion: 1, payload: { n: 4 } }),
+    ];
+
+    const deliveries = [
+      [stores.get("node-b")!, produced[3]],
+      [stores.get("node-c")!, produced[0]],
+      [stores.get("node-b")!, produced[0]],
+      [stores.get("node-b")!, produced[0]],
+      [stores.get("node-a")!, produced[1]],
+      [stores.get("node-a")!, produced[2]],
+    ] as const;
+    for (const [store, event] of deliveries) {
+      await store.applyRemote(event);
+    }
+
+    for (const target of stores.values()) {
+      const cursors = await target.getHighWatermark("tenant:jp");
+      for (const source of stores.values()) {
+        const replay = await source.listEventsAfterCursors("tenant:jp", cursors);
+        for (const event of replay) {
+          await target.applyRemote(event);
+        }
+      }
+    }
+
+    const eventSets = await Promise.all([...stores.values()].map(async (store) =>
+      (await store.listEventsAfterCursors("tenant:jp", new Map()))
+        .map((event) => `${event.sourceNodeId}/${event.eventId}`)
+        .sort()
+    ));
+    expect(eventSets[1]).toEqual(eventSets[0]);
+    expect(eventSets[2]).toEqual(eventSets[0]);
+    expect(eventSets[0]).toHaveLength(4);
   });
 });

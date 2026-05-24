@@ -141,6 +141,7 @@ export async function pullPartitionCasSnapshot(options: {
       binding.partitionId === options.partitionId
     ),
   );
+  validatePullStorageCompatibility(entry, snapshot.storageBinding);
   if (snapshot.storageBinding.snapshotScope === "catalog-and-data") {
     await restorePartitionCasSnapshot({
       snapshot,
@@ -157,6 +158,24 @@ export async function pullPartitionCasSnapshot(options: {
   }
 
   return { entry, transferredBlocks };
+}
+
+function validatePullStorageCompatibility(
+  entry: StorageSnapshotCatalogEntry<CasManifest>,
+  storageBinding: StoragePartitionBinding,
+): void {
+  const bindingGeneration = storageBinding.ddlGeneration ?? 0;
+  if (bindingGeneration !== entry.ddlGeneration) {
+    throw new Error(
+      `storage binding DDL generation mismatch for ${entry.groupId}/${entry.partitionId}: snapshot=${entry.ddlGeneration} target=${bindingGeneration}`,
+    );
+  }
+
+  if (storageBinding.snapshotScope === "data-only" && entry.components.includes("catalog")) {
+    throw new Error(
+      `data-only storage binding cannot apply catalog snapshot components: ${entry.groupId}/${entry.partitionId}`,
+    );
+  }
 }
 
 function catalogEntryToPartitionCasSnapshot(

@@ -124,6 +124,21 @@ export type StorageCasGcExecution = {
   gcEligibleSnapshotIds: string[];
 };
 
+export type StorageCasAutoGcPolicy = {
+  enabled: boolean;
+  dryRun?: boolean;
+  activePullGenerations?: StorageGcPlanOptions["activePullGenerations"];
+};
+
+export type StorageCasAutoGcExecution = StorageCasGcExecution & {
+  skipped: false;
+};
+
+export type StorageCasAutoGcSkipped = {
+  skipped: true;
+  reason: "disabled" | "missing-group";
+};
+
 export async function migrateStorageBindingCatalog(db: PGliteClient): Promise<void> {
   await db.exec(`
     CREATE TABLE IF NOT EXISTS distrb_storage_binding_groups (
@@ -1542,6 +1557,33 @@ export async function runStorageCasGcFromCatalog(options: {
     }),
     retainedSnapshotIds: retainedEntries.map((entry) => entry.snapshotId).sort(),
     gcEligibleSnapshotIds: gcEligibleEntries.map((entry) => entry.snapshotId).sort(),
+  };
+}
+
+export async function runStorageCasAutoGcFromCatalog(options: {
+  db: PGliteClient;
+  groupId: string;
+  casDir: string;
+  policy: StorageCasAutoGcPolicy;
+}): Promise<StorageCasAutoGcExecution | StorageCasAutoGcSkipped> {
+  if (!options.policy.enabled) {
+    return { skipped: true, reason: "disabled" };
+  }
+
+  const result = await runStorageCasGcFromCatalog({
+    db: options.db,
+    groupId: options.groupId,
+    casDir: options.casDir,
+    activePullGenerations: options.policy.activePullGenerations,
+    dryRun: options.policy.dryRun,
+  });
+  if (!result) {
+    return { skipped: true, reason: "missing-group" };
+  }
+
+  return {
+    skipped: false,
+    ...result,
   };
 }
 

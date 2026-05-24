@@ -180,6 +180,60 @@ describe("storage orchestration", () => {
     });
     expect(restored).toBe("snapshot payload");
   }, 120_000);
+
+  it("rejects data-only pulls when the target storage binding is on a different DDL generation", async () => {
+    const root = await makeTempDir("managed-pull-ddl-mismatch");
+    const targetCasDir = join(root, "target-cas");
+    const targetDir = join(root, "target");
+    const content = Buffer.from("snapshot payload");
+    const hash = sha256(content);
+    const manifest: CasManifest = {
+      version: 1,
+      snapshotId: "newer",
+      parentSnapshotIds: [],
+      chunkSize: 64 * 1024,
+      directories: [],
+      files: [{
+        path: "payload.txt",
+        size: content.length,
+        sha256: hash,
+        components: ["data"],
+        blocks: [{ hash, size: content.length }],
+      }],
+    };
+
+    await expect(pullPartitionCasSnapshot({
+      snapshotEntries: [{
+        groupId: "files",
+        partitionId: "tenant:jp",
+        snapshotId: "newer",
+        components: ["data"],
+        highWatermark: [],
+        ddlGeneration: 3,
+        manifestKind: "cas",
+        manifest,
+      }],
+      groupId: "files",
+      partitionId: "tenant:jp",
+      requirement: "data-refresh",
+      targetCasDir,
+      targetDir,
+      storageBinding: {
+        partitionId: "tenant:jp",
+        rootRelationOid: 1,
+        relations: [{
+          databaseOid: 1,
+          tablespaceOid: 1,
+          relationOid: 1,
+          relfilenode: 1,
+          storagePath: "payload.txt",
+          role: "child",
+        }],
+        snapshotScope: "data-only",
+        ddlGeneration: 2,
+      },
+    })).rejects.toThrow("storage binding DDL generation mismatch");
+  });
 });
 
 function sha256(content: Uint8Array): string {

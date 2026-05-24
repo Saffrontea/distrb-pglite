@@ -8,6 +8,12 @@ import type {
   ReplayResponse,
 } from "./types.js";
 import type { Transport, TransportConnection } from "./transport.js";
+import {
+  convergenceStatus,
+  planCatchupFromStatus,
+  type CatchupPlan,
+  type PartitionConvergenceStatus,
+} from "./convergence.js";
 
 export type SyncNodeStartOptions = {
   autoRecoverSubscriptions?: boolean;
@@ -70,6 +76,18 @@ export class SyncNode {
 
   async catchUpFrom(peerNodeId: NodeId, partitionId: PartitionId): Promise<number> {
     const cursors = await this.store.getHighWatermark(partitionId);
+    return this.applyReplayFrom(peerNodeId, partitionId, cursors);
+  }
+
+  async reconcileFrom(peerNodeId: NodeId, partitionId: PartitionId): Promise<number> {
+    return this.applyReplayFrom(peerNodeId, partitionId, new Map());
+  }
+
+  private async applyReplayFrom(
+    peerNodeId: NodeId,
+    partitionId: PartitionId,
+    cursors: ReadonlyMap<NodeId, EventId>,
+  ): Promise<number> {
     const response = await this.requireConnection().requestReplay(
       peerNodeId,
       partitionId,
@@ -90,6 +108,24 @@ export class SyncNode {
     return this.store.getHighWatermark(partitionId);
   }
 
+  async convergenceStatus(
+    partitionId: PartitionId,
+    remote?: ReadonlyMap<NodeId, EventId>,
+  ): Promise<PartitionConvergenceStatus> {
+    return convergenceStatus({
+      partitionId,
+      local: await this.store.getHighWatermark(partitionId),
+      remote,
+    });
+  }
+
+  async catchupPlan(
+    partitionId: PartitionId,
+    remote: ReadonlyMap<NodeId, EventId>,
+  ): Promise<CatchupPlan> {
+    return planCatchupFromStatus(await this.convergenceStatus(partitionId, remote));
+  }
+
   async stop(): Promise<void> {
     await this.connection?.close();
     this.connection = undefined;
@@ -103,4 +139,3 @@ export class SyncNode {
     return this.connection;
   }
 }
-

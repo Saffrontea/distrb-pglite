@@ -86,6 +86,7 @@ export {
   planStorageSnapshotFence,
   prepareStorageSnapshotFence,
   refreshStorageBindingGeneration,
+  runStorageCasAutoGcFromCatalog,
   runStorageCasGcFromCatalog,
   savePartitionCasSnapshotCatalogEntry,
   savePartitionFilesystemSnapshotCatalogEntry,
@@ -94,6 +95,9 @@ export {
 } from "./storage-binding.js";
 export type {
   StorageBindingDrift,
+  StorageCasAutoGcExecution,
+  StorageCasAutoGcPolicy,
+  StorageCasAutoGcSkipped,
   StorageCasGcExecution,
   StorageSnapshotFenceTarget,
 } from "./storage-binding.js";
