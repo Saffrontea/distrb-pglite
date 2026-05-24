@@ -8,6 +8,9 @@ import {
   type TransportSetup,
 } from "./transport-contract.js";
 
+const meshSettleMs = 50;
+const restartSettleMs = 20;
+
 // ─── contract テスト ──────────────────────────────────────────────────────────
 
 describeTransportContract("P2PWebSocketTransport", async () => {
@@ -28,7 +31,7 @@ describeTransportContract("P2PWebSocketTransport", async () => {
       nodes.push(node);
       return { node, store };
     },
-    settle: () => new Promise<void>((r) => setTimeout(r, 200)),
+    settle: () => new Promise<void>((r) => setTimeout(r, meshSettleMs)),
     teardown: async () => {
       await Promise.all(nodes.splice(0).map((n) => n.stop().catch(() => {})));
       allocatedPorts.length = 0;
@@ -65,7 +68,7 @@ describe("P2PWebSocketTransport (P2P 固有)", () => {
     await nodeC.subscribe("tenant:jp");
 
     // gossip が落ち着くまで少し待つ
-    await new Promise((r) => setTimeout(r, 200));
+    await new Promise((r) => setTimeout(r, meshSettleMs));
 
     // B からイベントを書く → C（B を seed にしていない）にも届く
     await nodeB.write({ partitionId: "tenant:jp", schemaVersion: 1, payload: { gossip: true } });
@@ -90,18 +93,18 @@ describe("P2PWebSocketTransport (P2P 固有)", () => {
 
     const nodeA = new SyncNode("node-a", storeA, new P2PWebSocketTransport({
       publicUrl: urlA, port: portA, seeds: [urlB],
-      reconnectBaseDelayMs: 50, reconnectMaxDelayMs: 200,
+      reconnectBaseDelayMs: 10, reconnectMaxDelayMs: 50,
     }));
     const nodeB = new SyncNode("node-b", storeB, new P2PWebSocketTransport({
       publicUrl: urlB, port: portB, seeds: [urlA],
-      reconnectBaseDelayMs: 50, reconnectMaxDelayMs: 200,
+      reconnectBaseDelayMs: 10, reconnectMaxDelayMs: 50,
     }));
 
     await nodeA.start();
     await nodeA.subscribe("tenant:jp");
     await nodeB.start();
     await nodeB.subscribe("tenant:jp");
-    await new Promise((r) => setTimeout(r, 200));
+    await new Promise((r) => setTimeout(r, meshSettleMs));
 
     // 初回イベント
     await nodeA.write({ partitionId: "tenant:jp", schemaVersion: 1, payload: { n: 1 } });
@@ -111,17 +114,17 @@ describe("P2PWebSocketTransport (P2P 固有)", () => {
 
     // B を一度停止して再起動
     await nodeB.stop();
-    await new Promise((r) => setTimeout(r, 100));
+    await new Promise((r) => setTimeout(r, restartSettleMs));
 
     const storeBNew = new InMemoryPartitionStore("node-b");
     const nodeBNew  = new SyncNode("node-b", storeBNew, new P2PWebSocketTransport({
       publicUrl: urlB, port: portB, seeds: [urlA],
-      reconnectBaseDelayMs: 50, reconnectMaxDelayMs: 200,
+      reconnectBaseDelayMs: 10, reconnectMaxDelayMs: 50,
     }));
     await nodeBNew.start();
     await nodeBNew.subscribe("tenant:jp");
     // 再接続ハンドシェイク完了を待つ
-    await new Promise((r) => setTimeout(r, 200));
+    await new Promise((r) => setTimeout(r, meshSettleMs));
 
     // 再接続後のイベント
     await nodeA.write({ partitionId: "tenant:jp", schemaVersion: 1, payload: { n: 2 } });
@@ -175,7 +178,7 @@ describe("P2PWebSocketTransport (P2P 固有)", () => {
     await nodeA.subscribe("tenant:jp");
     await nodeB.start();
     await nodeB.subscribe("tenant:jp");
-    await new Promise((r) => setTimeout(r, 200));
+    await new Promise((r) => setTimeout(r, meshSettleMs));
 
     await nodeA.write({ partitionId: "tenant:jp", schemaVersion: 1, payload: { compressed: true } });
 
@@ -205,7 +208,7 @@ describe("P2PWebSocketTransport (P2P 固有)", () => {
     await Promise.all([nodeA.subscribe("tenant:jp"), nodeB.subscribe("tenant:jp")]);
 
     // gossip の落ち着きを待ってからイベント送受信確認
-    await new Promise((r) => setTimeout(r, 200));
+    await new Promise((r) => setTimeout(r, meshSettleMs));
 
     await nodeA.write({ partitionId: "tenant:jp", schemaVersion: 1, payload: { dedup: true } });
     await waitFor(async () => {
