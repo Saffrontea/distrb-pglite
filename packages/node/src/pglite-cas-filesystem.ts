@@ -4,6 +4,7 @@ import {
   type SnapshotFilesystemManifest,
 } from "@distrb-pglite/core";
 import { BaseFilesystem, type FsStats } from "@electric-sql/pglite/basefs";
+import type { SnapshotDataFilesystem } from "./filesystem.js";
 
 type OpenFile = {
   path: string;
@@ -62,6 +63,26 @@ export class PGliteCasFilesystem extends BaseFilesystem {
       this.mkdir(dirname(file.path), { recursive: true });
       this.writeFile(file.path, await fs.readFile(file.path));
     }
+  }
+
+  asSnapshotDataFilesystem(): SnapshotDataFilesystem {
+    return {
+      listDir: async (path) => this.readdir(path).map((name) => {
+        const childPath = joinPath(path, name);
+        const node = this.requireNode(childPath);
+        return {
+          name,
+          type: node.kind === "dir" ? "directory" as const : "file" as const,
+        };
+      }),
+      readFile: async (path) => new Uint8Array(this.requireFile(path).content),
+      writeFile: async (path, data) => {
+        this.writeFile(path, data);
+      },
+      mkdir: async (path) => {
+        this.mkdir(path || "/", { recursive: true });
+      },
+    };
   }
 
   chmod(path: string, mode: number): void {
@@ -318,6 +339,11 @@ function dirname(path: string): string {
     return "/";
   }
   return normalized.slice(0, index);
+}
+
+function joinPath(dir: string, name: string): string {
+  const normalized = normalizePath(dir || "/");
+  return normalized === "/" ? `/${name}` : `${normalized}/${name}`;
 }
 
 function normalizePath(path: string): string {

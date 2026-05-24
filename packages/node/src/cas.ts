@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { copyFile, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type {
   BlobRef,
@@ -7,10 +7,64 @@ import type {
   SnapshotFilesystemManifest,
   StorageSnapshotComponent,
 } from "@distrb-pglite/core";
-import { inventoryDataDir, type DataDirInventory, type FileInventoryEntry } from "./inventory.js";
+import {
+  NodeDataDirFilesystem,
+  inventoryFilesystem,
+  type DataDirInventory,
+  type FileInventoryEntry,
+  type SnapshotDataFilesystem,
+} from "./inventory.js";
 import { loadZstd } from "./zstd.js";
 
 export type CasBlock = BlobRef;
+
+export type CasBlockStore = {
+  readBlock(hash: string): Promise<Uint8Array>;
+  writeBlock(hash: string, content: Uint8Array): Promise<void>;
+  listBlockHashes(): Promise<Set<string>>;
+  deleteBlock(hash: string): Promise<void>;
+};
+
+export class NodeCasBlockStore implements CasBlockStore {
+  constructor(readonly root: string) {}
+
+  async readBlock(hash: string): Promise<Uint8Array> {
+    return readFile(this.blockPath(hash));
+  }
+
+  async writeBlock(hash: string, content: Uint8Array): Promise<void> {
+    await mkdir(this.root, { recursive: true });
+    await writeFile(this.blockPath(hash), content);
+  }
+
+  async listBlockHashes(): Promise<Set<string>> {
+    const hashes = new Set<string>();
+    let entries: string[];
+    try {
+      entries = await readdir(this.root);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        return hashes;
+      }
+      throw error;
+    }
+
+    for (const entry of entries) {
+      if (/^[0-9a-f]{64}$/.test(entry)) {
+        hashes.add(entry);
+      }
+    }
+    return hashes;
+  }
+
+  async deleteBlock(hash: string): Promise<void> {
+    await rm(this.blockPath(hash), { force: true });
+  }
+
+  private blockPath(hash: string): string {
+    return join(this.root, hash);
+  }
+}
 
 // Node data-directory CAS snapshots use the core filesystem manifest shape,
 // then add per-file hashes so copied/restored host files can be verified.
@@ -44,6 +98,10 @@ export type CasGcResult = {
   retained: string[];
 };
 
+type CasBlockStoreOption =
+  | { casDir: string; casStore?: never }
+  | { casStore: CasBlockStore; casDir?: never };
+
 export async function snapshotToCas(options: {
   dataDir: string;
   casDir: string;
@@ -54,22 +112,42 @@ export async function snapshotToCas(options: {
   filter?: CasSnapshotFilter;
   compress?: boolean;
 }): Promise<CasManifest> {
+  return snapshotFilesystemToCas({
+    fs: new NodeDataDirFilesystem(options.dataDir),
+    casStore: new NodeCasBlockStore(options.casDir),
+    chunkSize: options.chunkSize,
+    chunking: options.chunking,
+    snapshotId: options.snapshotId,
+    parentSnapshotIds: options.parentSnapshotIds,
+    filter: options.filter,
+    compress: options.compress,
+  });
+}
+
+export async function snapshotFilesystemToCas(options: {
+  fs: SnapshotDataFilesystem;
+  chunkSize?: number;
+  chunking?: CasChunking;
+  snapshotId?: string;
+  parentSnapshotIds?: string[];
+  filter?: CasSnapshotFilter;
+  compress?: boolean;
+} & CasBlockStoreOption): Promise<CasManifest> {
+  const casStore = resolveCasBlockStore(options);
   const chunking = options.chunking ?? fixedChunking(options.chunkSize ?? 64 * 1024);
   const chunkSize = manifestChunkSize(chunking);
-  const inventory = await inventoryDataDir(options.dataDir);
+  const inventory = await inventoryFilesystem({ fs: options.fs });
   const selectedFiles = options.filter
     ? inventory.files.filter((file) => options.filter?.includeFile(file) ?? false)
     : inventory.files;
   const files: CasFileManifest[] = [];
 
-  await mkdir(options.casDir, { recursive: true });
-
   const zstd = options.compress ? await loadZstd() : undefined;
   const compress = zstd ? zstd.compress.bind(zstd) : undefined;
 
   for (const file of selectedFiles) {
-    const content = await readFile(join(options.dataDir, file.path));
-    const blocks = await writeBlocks(options.casDir, content, chunking, compress);
+    const content = await options.fs.readFile(file.path);
+    const blocks = await writeBlocks(casStore, content, chunking, compress);
     const components = options.filter?.componentsForFile?.(file);
     files.push({
       ...file,
@@ -97,6 +175,18 @@ export async function gcCasBlocks(options: {
   retainedManifests: readonly CasManifest[];
   dryRun?: boolean;
 }): Promise<CasGcResult> {
+  return gcCasBlockStore({
+    casStore: new NodeCasBlockStore(options.casDir),
+    retainedManifests: options.retainedManifests,
+    dryRun: options.dryRun,
+  });
+}
+
+export async function gcCasBlockStore(options: {
+  casStore: CasBlockStore;
+  retainedManifests: readonly CasManifest[];
+  dryRun?: boolean;
+}): Promise<CasGcResult> {
   const referenced = new Set<string>();
   for (const manifest of options.retainedManifests) {
     for (const file of manifest.files) {
@@ -106,7 +196,7 @@ export async function gcCasBlocks(options: {
     }
   }
 
-  const available = await listCasBlockHashes(options.casDir);
+  const available = await options.casStore.listBlockHashes();
   const deleted: string[] = [];
   const retained: string[] = [];
   for (const hash of [...available].sort()) {
@@ -117,7 +207,7 @@ export async function gcCasBlocks(options: {
 
     deleted.push(hash);
     if (!options.dryRun) {
-      await rm(blockPath(options.casDir, hash), { force: true });
+      await options.casStore.deleteBlock(hash);
     }
   }
 
@@ -133,19 +223,31 @@ export async function restoreFromCas(options: {
   casDir: string;
   targetDir: string;
 }): Promise<void> {
-  await mkdir(options.targetDir, { recursive: true });
+  await restoreFilesystemFromCas({
+    manifest: options.manifest,
+    casStore: new NodeCasBlockStore(options.casDir),
+    fs: new NodeDataDirFilesystem(options.targetDir),
+  });
+}
+
+export async function restoreFilesystemFromCas(options: {
+  manifest: CasManifest;
+  fs: SnapshotDataFilesystem;
+} & CasBlockStoreOption): Promise<void> {
+  const casStore = resolveCasBlockStore(options);
+  await options.fs.mkdir("");
 
   const zstd = options.manifest.compression === "zstd" ? await loadZstd() : undefined;
   const decompress = zstd ? zstd.decompress.bind(zstd) : undefined;
 
   for (const directory of options.manifest.directories) {
-    await mkdir(join(options.targetDir, directory), { recursive: true });
+    await options.fs.mkdir(directory);
   }
 
   for (const file of options.manifest.files) {
     const chunks: Uint8Array[] = [];
     for (const block of file.blocks) {
-      const stored = await readFile(blockPath(options.casDir, block.hash));
+      const stored = await casStore.readBlock(block.hash);
       if (stored.length !== block.size || sha256(stored) !== block.hash) {
         throw new Error(`CAS block integrity check failed: ${block.hash}`);
       }
@@ -157,9 +259,7 @@ export async function restoreFromCas(options: {
       throw new Error(`CAS file integrity check failed: ${file.path}`);
     }
 
-    const target = join(options.targetDir, file.path);
-    await mkdir(dirname(target), { recursive: true });
-    await writeFile(target, restored);
+    await options.fs.writeFile(file.path, restored);
   }
 }
 
@@ -180,23 +280,7 @@ export function diffMissingBlocks(
 }
 
 export async function listCasBlockHashes(casDir: string): Promise<Set<string>> {
-  const hashes = new Set<string>();
-  let entries: string[];
-  try {
-    entries = await readdir(casDir);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      return hashes;
-    }
-    throw error;
-  }
-
-  for (const entry of entries) {
-    if (/^[0-9a-f]{64}$/.test(entry)) {
-      hashes.add(entry);
-    }
-  }
-  return hashes;
+  return new NodeCasBlockStore(casDir).listBlockHashes();
 }
 
 export async function transferMissingBlocks(options: {
@@ -205,18 +289,29 @@ export async function transferMissingBlocks(options: {
   targetCasDir: string;
   availableBlockHashes?: ReadonlySet<string>;
 }): Promise<CasBlock[]> {
-  const available = options.availableBlockHashes ?? await listCasBlockHashes(options.targetCasDir);
+  return transferMissingBlocksBetweenStores({
+    manifest: options.manifest,
+    sourceCasStore: new NodeCasBlockStore(options.sourceCasDir),
+    targetCasStore: new NodeCasBlockStore(options.targetCasDir),
+    availableBlockHashes: options.availableBlockHashes,
+  });
+}
+
+export async function transferMissingBlocksBetweenStores(options: {
+  manifest: CasManifest;
+  sourceCasStore: CasBlockStore;
+  targetCasStore: CasBlockStore;
+  availableBlockHashes?: ReadonlySet<string>;
+}): Promise<CasBlock[]> {
+  const available = options.availableBlockHashes ?? await options.targetCasStore.listBlockHashes();
   const missing = diffMissingBlocks(options.manifest, available);
-  await mkdir(options.targetCasDir, { recursive: true });
 
   for (const block of missing) {
-    const source = blockPath(options.sourceCasDir, block.hash);
-    const target = blockPath(options.targetCasDir, block.hash);
-    const content = await readFile(source);
+    const content = await options.sourceCasStore.readBlock(block.hash);
     if (content.length !== block.size || sha256(content) !== block.hash) {
       throw new Error(`CAS source block integrity check failed: ${block.hash}`);
     }
-    await copyFile(source, target);
+    await options.targetCasStore.writeBlock(block.hash, content);
   }
 
   return missing;
@@ -240,7 +335,7 @@ export function manifestFilesEqualInventory(
 }
 
 async function writeBlocks(
-  casDir: string,
+  casStore: CasBlockStore,
   content: Uint8Array,
   chunking: CasChunking,
   compress?: (data: Uint8Array) => Uint8Array,
@@ -250,7 +345,7 @@ async function writeBlocks(
     const chunk = content.subarray(start, end);
     const stored = compress ? compress(chunk) : chunk;
     const hash = sha256(stored);
-    await writeFile(blockPath(casDir, hash), stored);
+    await casStore.writeBlock(hash, stored);
     blocks.push({ hash, size: stored.length });
   }
 
@@ -281,12 +376,15 @@ function manifestChunkSize(chunking: CasChunking): number {
   return Math.max(chunking.pageSize, Math.floor(chunking.maxChunkSize / chunking.pageSize) * chunking.pageSize);
 }
 
-function blockPath(casDir: string, hash: string): string {
-  return join(casDir, hash);
-}
-
 function sha256(content: Uint8Array): string {
   return createHash("sha256").update(content).digest("hex");
+}
+
+function resolveCasBlockStore(options: CasBlockStoreOption): CasBlockStore {
+  if (options.casStore) {
+    return options.casStore;
+  }
+  return new NodeCasBlockStore(options.casDir);
 }
 
 function stripBlocks(file: CasFileManifest): FileInventoryEntry {

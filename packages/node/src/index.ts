@@ -3,23 +3,37 @@ export type { PGliteClient } from "./pglite-store.js";
 export { WebSocketHub, WebSocketTransport } from "./websocket-transport.js";
 export { P2PWebSocketTransport } from "./p2p-transport.js";
 export type { P2PTransportOptions } from "./p2p-transport.js";
-export { copyDataDirSnapshot, inventoryDataDir } from "./inventory.js";
+export {
+  NodeDataDirFilesystem,
+  copyDataDirSnapshot,
+  inventoryDataDir,
+  inventoryFilesystem,
+  normalizeLogicalPath,
+} from "./inventory.js";
 export type {
   DataDirInventory,
   DataDirSnapshotCopy,
   FileInventoryEntry,
+  SnapshotDataFilesystem,
+  SnapshotFilesystemEntry,
 } from "./inventory.js";
 export {
   diffMissingBlocks,
+  gcCasBlockStore,
   gcCasBlocks,
   listCasBlockHashes,
   manifestFilesEqualInventory,
+  NodeCasBlockStore,
+  restoreFilesystemFromCas,
   restoreFromCas,
+  snapshotFilesystemToCas,
   snapshotToCas,
   transferMissingBlocks,
+  transferMissingBlocksBetweenStores,
 } from "./cas.js";
 export type {
   CasBlock,
+  CasBlockStore,
   CasChunking,
   CasFileManifest,
   CasGcResult,
