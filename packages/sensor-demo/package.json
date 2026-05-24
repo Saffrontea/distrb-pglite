@@ -9,7 +9,8 @@
     "scenarios": "node dist/scenarios.js",
     "scale": "node dist/scale.js",
     "vector": "node dist/vector.js",
-    "ui": "node dist/ui.js"
+    "ui": "node dist/ui.js",
+    "playground": "node dist/ui.js"
   },
   "dependencies": {
     "@distrb-pglite/core": "workspace:*",

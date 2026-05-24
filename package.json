@@ -8,7 +8,8 @@
     "check": "pnpm build && pnpm -r check",
     "test": "pnpm -r test",
     "test:integration": "pnpm --filter @distrb-pglite/node test:integration",
-    "test:all": "pnpm test && pnpm test:integration"
+    "test:all": "pnpm test && pnpm test:integration",
+    "playground": "pnpm --filter @distrb-pglite/sensor-demo playground"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

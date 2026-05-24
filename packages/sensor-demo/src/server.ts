@@ -109,6 +109,14 @@ type StatsRow = {
   sensor_id: string; avg_reading: string; min_reading: string;
   max_reading: string; count: string; last_seen: string;
 };
+type SqlResponse = {
+  mode: "query" | "exec";
+  rows: Record<string, unknown>[];
+  columns: string[];
+  rowCount: number;
+  affectedRows?: number;
+  durationMs: number;
+};
 
 export class EdgeNodeServer {
   private db!: PGlite;
@@ -207,6 +215,7 @@ export class EdgeNodeServer {
       "GET /readings":          () => this.getReadings(url.searchParams),
       "GET /stats":             () => this.getStats(),
       "GET /events":            () => this.getEvents(url.searchParams),
+      "POST /sql":              () => this.postSql(body),
       "POST /catchup":          () => this.postCatchup(body),
       "POST /disconnect":       () => this.postDisconnect(),
       "POST /connect":          () => this.postConnect(),
@@ -296,6 +305,36 @@ export class EdgeNodeServer {
     const limit = Number(params.get("limit") ?? "50");
     const events = await this.inner.listEventsAfter(this.config.partitionId);
     return { events: events.slice(-limit), count: events.length };
+  }
+
+  private async postSql(body: unknown): Promise<SqlResponse> {
+    const { sql } = body as { sql?: string };
+    if (!sql || sql.trim().length === 0) {
+      throw new Error("sql is required");
+    }
+
+    const started = Date.now();
+    if (returnsRows(sql)) {
+      const result = await this.db.query<Record<string, unknown>>(sql);
+      const rows = result.rows.map(normalizeRow);
+      return {
+        mode: "query",
+        rows,
+        columns: columnsForRows(rows),
+        rowCount: rows.length,
+        affectedRows: result.affectedRows,
+        durationMs: Date.now() - started,
+      };
+    }
+
+    await this.db.exec(sql);
+    return {
+      mode: "exec",
+      rows: [],
+      columns: [],
+      rowCount: 0,
+      durationMs: Date.now() - started,
+    };
   }
 
   private async postCatchup(body: unknown) {
@@ -422,4 +461,34 @@ async function readJson(req: IncomingMessage): Promise<unknown> {
     req.on("end", () => { try { resolve(data ? JSON.parse(data) : {}); } catch (e) { reject(e); } });
     req.on("error", reject);
   });
+}
+
+function returnsRows(sql: string): boolean {
+  return /^(select|with|values|show|explain|pragma)\b/i.test(sql.trim());
+}
+
+function normalizeRow(row: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(row).map(([key, value]) => [key, normalizeValue(value)]),
+  );
+}
+
+function normalizeValue(value: unknown): unknown {
+  if (typeof value === "bigint") {
+    return value.toString();
+  }
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+  return value;
+}
+
+function columnsForRows(rows: Record<string, unknown>[]): string[] {
+  const columns = new Set<string>();
+  for (const row of rows) {
+    for (const key of Object.keys(row)) {
+      columns.add(key);
+    }
+  }
+  return [...columns];
 }
