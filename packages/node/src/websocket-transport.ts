@@ -264,9 +264,9 @@ class WebSocketTransportConnection implements TransportConnection {
 
         this.socket = socket;
         this.attach(socket);
-        this.send({ type: "hello", nodeId: this.nodeId });
+        this.sendIfOpen({ type: "hello", nodeId: this.nodeId });
         for (const partitionId of this.subscriptions) {
-          this.send({ type: "subscribe", partitionId });
+          this.sendIfOpen({ type: "subscribe", partitionId });
         }
 
         if (this.handlers.onReconnect) {
@@ -281,7 +281,7 @@ class WebSocketTransportConnection implements TransportConnection {
 
   async subscribe(partitionId: PartitionId): Promise<void> {
     this.subscriptions.add(partitionId);
-    this.send({ type: "subscribe", partitionId });
+    this.sendIfOpen({ type: "subscribe", partitionId });
   }
 
   async publish(event: EventEnvelope): Promise<void> {
@@ -328,11 +328,19 @@ class WebSocketTransportConnection implements TransportConnection {
     if (this.socket.readyState !== WebSocket.OPEN) {
       throw new Error("websocket connection is not open");
     }
+    this.sendIfOpen(message);
+  }
+
+  private sendIfOpen(message: WireMessage): boolean {
+    if (this.socket.readyState !== WebSocket.OPEN) {
+      return false;
+    }
     if (this.zstd) {
       this.socket.send(this.zstd.compress(Buffer.from(JSON.stringify(message))));
     } else {
       this.socket.send(JSON.stringify(message));
     }
+    return true;
   }
 
   private decode(data: Buffer): WireMessage {

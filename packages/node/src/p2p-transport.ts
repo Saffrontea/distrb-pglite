@@ -205,18 +205,10 @@ class P2PWebSocketConnection implements TransportConnection {
     if (this.closed) {
       throw new Error("p2p connection is closed");
     }
-    let subscribedPeers = 0;
-    let failedSends = 0;
     for (const peer of this.peers.values()) {
       if (peer.record.subscriptions.has(event.partitionId)) {
-        subscribedPeers += 1;
-        if (!peer.send({ type: "event", event })) {
-          failedSends += 1;
-        }
+        peer.send({ type: "event", event });
       }
-    }
-    if (subscribedPeers > 0 && failedSends > 0) {
-      throw new Error(`failed to publish to ${failedSends} subscribed peer(s) for partition: ${event.partitionId}`);
     }
   }
 
