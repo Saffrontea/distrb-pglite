@@ -1,4 +1,4 @@
-import type { PartitionStore } from "./store.js";
+import { isEventTransactionalPartitionStore, type EventProjection, type PartitionStore } from "./store.js";
 import type {
   EventEnvelope,
   EventId,
@@ -69,9 +69,22 @@ export class SyncNode {
   async write<TPayload>(
     input: LocalEventInput<TPayload>,
   ): Promise<EventEnvelope<TPayload>> {
-    const event = await this.store.appendLocal(input);
-    await this.requireConnection().publish(event);
-    return event;
+    return this.store
+      .appendLocal(input)
+      .then((event) => this.requireConnection().publish(event).then(() => event));
+  }
+
+  async writeEvent<TPayload>(
+    input: LocalEventInput<TPayload>,
+    project?: EventProjection<TPayload>,
+  ): Promise<EventEnvelope<TPayload>> {
+    if (!isEventTransactionalPartitionStore(this.store)) {
+      throw new Error("SyncNode.writeEvent requires an event-transactional partition store");
+    }
+
+    return this.store
+      .appendLocalEventTransaction(input, project)
+      .then((event) => this.requireConnection().publish(event).then(() => event));
   }
 
   async catchUpFrom(peerNodeId: NodeId, partitionId: PartitionId): Promise<number> {

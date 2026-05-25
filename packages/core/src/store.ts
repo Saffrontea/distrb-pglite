@@ -24,6 +24,27 @@ export type PartitionStore = {
   createSnapshotMetadata(partitionId: PartitionId): Promise<SnapshotMetadata>;
 };
 
+export type EventProjection<TPayload = unknown> = (
+  event: EventEnvelope<TPayload>,
+) => Promise<void> | void;
+
+export type EventTransactionalPartitionStore = PartitionStore & {
+  appendLocalEventTransaction<TPayload>(
+    input: LocalEventInput<TPayload>,
+    project?: EventProjection<TPayload>,
+  ): Promise<EventEnvelope<TPayload>>;
+  applyRemoteEventTransaction<TPayload>(
+    event: EventEnvelope<TPayload>,
+    project?: EventProjection<TPayload>,
+  ): Promise<boolean>;
+};
+
+export function isEventTransactionalPartitionStore(
+  store: PartitionStore,
+): store is EventTransactionalPartitionStore {
+  return "appendLocalEventTransaction" in store && "applyRemoteEventTransaction" in store;
+}
+
 export class InMemoryPartitionStore implements PartitionStore {
   private readonly partitions = new Set<PartitionId>();
   private readonly events: EventEnvelope[] = [];
@@ -138,4 +159,3 @@ function compareEvents(left: EventEnvelope, right: EventEnvelope): number {
 
   return compareEventIds(left.eventId, right.eventId);
 }
-

@@ -5,6 +5,7 @@ import {
   type EventId,
   type HighWatermark,
   type LocalEventInput,
+  type EventProjection,
   type NodeId,
   type PartitionId,
   type PartitionStore,
@@ -86,7 +87,13 @@ export class PGlitePartitionStore implements PartitionStore {
   async appendLocal<TPayload>(
     input: LocalEventInput<TPayload>,
   ): Promise<EventEnvelope<TPayload>> {
-    await this.registerPartition(input.partitionId);
+    return this.appendLocalEventTransaction(input);
+  }
+
+  async appendLocalEventTransaction<TPayload>(
+    input: LocalEventInput<TPayload>,
+    project?: EventProjection<TPayload>,
+  ): Promise<EventEnvelope<TPayload>> {
     const event: EventEnvelope<TPayload> = {
       eventId: this.ids.next(),
       sourceNodeId: this.nodeId,
@@ -95,31 +102,45 @@ export class PGlitePartitionStore implements PartitionStore {
       payload: input.payload,
     };
 
-    await this.insertEvent(event);
+    await this.withTransaction(async () => {
+      await this.registerPartition(input.partitionId);
+      await this.insertEvent(event);
+      await project?.(event);
+    });
     return event;
   }
 
   async applyRemote(event: EventEnvelope): Promise<boolean> {
+    return this.applyRemoteEventTransaction(event);
+  }
+
+  async applyRemoteEventTransaction<TPayload>(
+    event: EventEnvelope<TPayload>,
+    project?: EventProjection<TPayload>,
+  ): Promise<boolean> {
     if (!(await this.hasPartition(event.partitionId))) {
       return false;
     }
 
-    const applied = await this.db.query<{ event_id: string }>(
-      `
-        INSERT INTO distrb_applied_events (source_node_id, event_id, partition_id)
-        VALUES ($1, $2::uuid, $3)
-        ON CONFLICT DO NOTHING
-        RETURNING event_id::text AS event_id
-      `,
-      [event.sourceNodeId, event.eventId, event.partitionId],
-    );
+    return this.withTransaction(async () => {
+      const applied = await this.db.query<{ event_id: string }>(
+        `
+          INSERT INTO distrb_applied_events (source_node_id, event_id, partition_id)
+          VALUES ($1, $2::uuid, $3)
+          ON CONFLICT DO NOTHING
+          RETURNING event_id::text AS event_id
+        `,
+        [event.sourceNodeId, event.eventId, event.partitionId],
+      );
 
-    if (applied.rows.length === 0) {
-      return false;
-    }
+      if (applied.rows.length === 0) {
+        return false;
+      }
 
-    await this.insertEvent(event);
-    return true;
+      await this.insertEvent(event);
+      await project?.(event);
+      return true;
+    });
   }
 
   async listEventsAfter(
@@ -229,6 +250,18 @@ export class PGlitePartitionStore implements PartitionStore {
     );
 
     return result.rows;
+  }
+
+  private async withTransaction<T>(run: () => Promise<T>): Promise<T> {
+    await this.db.exec("BEGIN");
+    try {
+      const result = await run();
+      await this.db.exec("COMMIT");
+      return result;
+    } catch (error) {
+      await this.db.exec("ROLLBACK");
+      throw error;
+    }
   }
 }
 
