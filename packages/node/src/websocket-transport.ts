@@ -14,6 +14,8 @@ import { loadZstd } from "./zstd.js";
 type WireMessage =
   | { type: "hello"; nodeId: NodeId }
   | { type: "subscribe"; partitionId: PartitionId }
+  | { type: "ping"; sentAt: number }
+  | { type: "pong"; sentAt: number }
   | { type: "event"; event: EventEnvelope }
   | {
       type: "replay-request";
@@ -36,7 +38,13 @@ type ClientRecord = {
   subscriptions: Set<PartitionId>;
 };
 
-const REPLAY_REQUEST_TIMEOUT_MS = 1_000;
+const REPLAY_REQUEST_FALLBACK_TIMEOUT_MS = 1_000;
+const REPLAY_REQUEST_MIN_TIMEOUT_MS = 250;
+const REPLAY_REQUEST_MAX_TIMEOUT_MS = 5_000;
+const REPLAY_REQUEST_BASE_TIMEOUT_MS = 250;
+const REPLAY_REQUEST_RTT_MULTIPLIER = 4;
+const PING_INTERVAL_MS = 500;
+const RTT_EWMA_ALPHA = 0.2;
 
 export class WebSocketHub {
   private readonly server: WebSocketServer;
@@ -106,6 +114,9 @@ export class WebSocketHub {
       case "event":
         this.broadcastEvent(source.nodeId, message.event);
         break;
+      case "ping":
+        void this.encode(source.socket, { type: "pong", sentAt: message.sentAt });
+        break;
       case "replay-request":
         this.forwardReplayRequest(message);
         break;
@@ -113,6 +124,7 @@ export class WebSocketHub {
         this.forwardReplayResponse(message);
         break;
       case "hello":
+      case "pong":
         break;
     }
   }
@@ -219,6 +231,8 @@ class WebSocketTransportConnection implements TransportConnection {
     reject: (error: Error) => void;
     timer: ReturnType<typeof setTimeout>;
   }>();
+  private pingInterval?: ReturnType<typeof setInterval>;
+  private rttEwmaMs: number | undefined;
   private closed = false;
 
   constructor(
@@ -232,6 +246,7 @@ class WebSocketTransportConnection implements TransportConnection {
     this.socket = socket;
     this.attach(socket);
     this.send({ type: "hello", nodeId });
+    this.startPing();
   }
 
   private attach(socket: WebSocket): void {
@@ -297,12 +312,13 @@ class WebSocketTransportConnection implements TransportConnection {
     cursors: ReadonlyMap<NodeId, EventId>,
   ): Promise<ReplayResponse> {
     const requestId = crypto.randomUUID();
+    const timeoutMs = this.replayRequestTimeoutMs();
     const response = new Promise<ReplayResponse>((resolve, reject) => {
       const timer = setTimeout(() => {
         if (this.pendingReplay.delete(requestId)) {
-          reject(new Error(`replay request timed out after ${REPLAY_REQUEST_TIMEOUT_MS}ms`));
+          reject(new Error(`replay request timed out after ${timeoutMs}ms`));
         }
-      }, REPLAY_REQUEST_TIMEOUT_MS);
+      }, timeoutMs);
       this.pendingReplay.set(requestId, { resolve, reject, timer });
     });
 
@@ -320,6 +336,7 @@ class WebSocketTransportConnection implements TransportConnection {
 
   async close(): Promise<void> {
     this.closed = true;
+    this.stopPing();
     this.rejectAllPendingReplay("websocket connection closed");
     this.socket.close();
   }
@@ -383,6 +400,12 @@ class WebSocketTransportConnection implements TransportConnection {
         }
         break;
       }
+      case "ping":
+        this.sendIfOpen({ type: "pong", sentAt: message.sentAt });
+        break;
+      case "pong":
+        this.recordRtt(Date.now() - message.sentAt);
+        break;
       case "hello":
       case "subscribe":
         break;
@@ -396,8 +419,48 @@ class WebSocketTransportConnection implements TransportConnection {
       pending.reject(new Error(reason));
     }
   }
+
+  private startPing(): void {
+    if (this.pingInterval) {
+      return;
+    }
+    this.pingInterval = setInterval(() => {
+      this.sendIfOpen({ type: "ping", sentAt: Date.now() });
+    }, PING_INTERVAL_MS);
+    this.pingInterval.unref?.();
+  }
+
+  private stopPing(): void {
+    if (!this.pingInterval) {
+      return;
+    }
+    clearInterval(this.pingInterval);
+    this.pingInterval = undefined;
+  }
+
+  private recordRtt(rttMs: number): void {
+    if (!Number.isFinite(rttMs) || rttMs < 0) {
+      return;
+    }
+    this.rttEwmaMs = this.rttEwmaMs === undefined
+      ? rttMs
+      : this.rttEwmaMs * (1 - RTT_EWMA_ALPHA) + rttMs * RTT_EWMA_ALPHA;
+  }
+
+  private replayRequestTimeoutMs(): number {
+    if (this.rttEwmaMs === undefined) {
+      return REPLAY_REQUEST_FALLBACK_TIMEOUT_MS;
+    }
+    return clampTimeout(
+      Math.ceil(REPLAY_REQUEST_BASE_TIMEOUT_MS + this.rttEwmaMs * REPLAY_REQUEST_RTT_MULTIPLIER),
+    );
+  }
 }
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function clampTimeout(ms: number): number {
+  return Math.max(REPLAY_REQUEST_MIN_TIMEOUT_MS, Math.min(REPLAY_REQUEST_MAX_TIMEOUT_MS, ms));
 }

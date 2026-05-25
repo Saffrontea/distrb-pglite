@@ -11,7 +11,13 @@ import {
 import WebSocket, { WebSocketServer } from "ws";
 import { loadZstd } from "./zstd.js";
 
-const REPLAY_REQUEST_TIMEOUT_MS = 1_000;
+const REPLAY_REQUEST_FALLBACK_TIMEOUT_MS = 1_000;
+const REPLAY_REQUEST_MIN_TIMEOUT_MS = 250;
+const REPLAY_REQUEST_MAX_TIMEOUT_MS = 5_000;
+const REPLAY_REQUEST_BASE_TIMEOUT_MS = 250;
+const REPLAY_REQUEST_RTT_MULTIPLIER = 4;
+const PING_INTERVAL_MS = 500;
+const RTT_EWMA_ALPHA = 0.2;
 
 // ─── options ──────────────────────────────────────────────────────────────────
 
@@ -37,6 +43,8 @@ type P2PWireMessage =
   | { type: "hello"; nodeId: NodeId; publicUrl: string; subscriptions: PartitionId[] }
   | { type: "peers"; urls: string[] }
   | { type: "subscribe"; partitionId: PartitionId }
+  | { type: "ping"; sentAt: number }
+  | { type: "pong"; sentAt: number }
   | { type: "event"; event: EventEnvelope }
   | {
       type: "replay-request";
@@ -68,6 +76,8 @@ class PeerSocket {
   readonly record: PeerRecord;
   private closed = false;
   private closeResolve?: () => void;
+  private pingInterval?: ReturnType<typeof setInterval>;
+  private rttEwmaMs: number | undefined;
   readonly closePromise: Promise<void>;
 
   constructor(
@@ -84,6 +94,7 @@ class PeerSocket {
       direction,
     };
     this.closePromise = new Promise<void>((r) => { this.closeResolve = r; });
+    this.startPing();
 
     this.ws.on("message", (data) => {
       void (async () => {
@@ -96,6 +107,10 @@ class PeerSocket {
             this.callbacks.onHello(this);
           } else if (msg.type === "peers") {
             this.callbacks.onPeers(this, msg.urls);
+          } else if (msg.type === "ping") {
+            this.send({ type: "pong", sentAt: msg.sentAt });
+          } else if (msg.type === "pong") {
+            this.recordRtt(Date.now() - msg.sentAt);
           } else {
             if (!this.record.nodeId) return; // hello 未受信 → 無視
             this.callbacks.onMessage(this, msg);
@@ -108,6 +123,7 @@ class PeerSocket {
 
     this.ws.on("close", () => {
       this.closed = true;
+      this.stopPing();
       this.closeResolve?.();
       this.callbacks.onClose(this);
     });
@@ -131,11 +147,47 @@ class PeerSocket {
     if (!this.closed) this.ws.terminate();
   }
 
+  replayRequestTimeoutMs(): number {
+    if (this.rttEwmaMs === undefined) {
+      return REPLAY_REQUEST_FALLBACK_TIMEOUT_MS;
+    }
+    return clampTimeout(
+      Math.ceil(REPLAY_REQUEST_BASE_TIMEOUT_MS + this.rttEwmaMs * REPLAY_REQUEST_RTT_MULTIPLIER),
+    );
+  }
+
   private decode(data: Buffer): P2PWireMessage {
     if (this.zstd) {
       return JSON.parse(Buffer.from(this.zstd.decompress(new Uint8Array(data))).toString()) as P2PWireMessage;
     }
     return JSON.parse(data.toString()) as P2PWireMessage;
+  }
+
+  private startPing(): void {
+    if (this.pingInterval) {
+      return;
+    }
+    this.pingInterval = setInterval(() => {
+      this.send({ type: "ping", sentAt: Date.now() });
+    }, PING_INTERVAL_MS);
+    this.pingInterval.unref?.();
+  }
+
+  private stopPing(): void {
+    if (!this.pingInterval) {
+      return;
+    }
+    clearInterval(this.pingInterval);
+    this.pingInterval = undefined;
+  }
+
+  private recordRtt(rttMs: number): void {
+    if (!Number.isFinite(rttMs) || rttMs < 0) {
+      return;
+    }
+    this.rttEwmaMs = this.rttEwmaMs === undefined
+      ? rttMs
+      : this.rttEwmaMs * (1 - RTT_EWMA_ALPHA) + rttMs * RTT_EWMA_ALPHA;
   }
 }
 
@@ -221,12 +273,13 @@ class P2PWebSocketConnection implements TransportConnection {
     if (!peer) return { partitionId, events: [] };
 
     const requestId = crypto.randomUUID();
+    const timeoutMs = peer.replayRequestTimeoutMs();
     const response = new Promise<ReplayResponse>((resolve, reject) => {
       const timer = setTimeout(() => {
         if (this.pendingReplay.delete(requestId)) {
-          reject(new Error(`replay request timed out after ${REPLAY_REQUEST_TIMEOUT_MS}ms`));
+          reject(new Error(`replay request timed out after ${timeoutMs}ms`));
         }
-      }, REPLAY_REQUEST_TIMEOUT_MS);
+      }, timeoutMs);
       this.pendingReplay.set(requestId, { targetNodeId, resolve, reject, timer });
     });
     peer.send({
@@ -436,6 +489,10 @@ class P2PWebSocketConnection implements TransportConnection {
       }
     }
   }
+}
+
+function clampTimeout(ms: number): number {
+  return Math.max(REPLAY_REQUEST_MIN_TIMEOUT_MS, Math.min(REPLAY_REQUEST_MAX_TIMEOUT_MS, ms));
 }
 
 // ─── P2PWebSocketTransport ────────────────────────────────────────────────────
