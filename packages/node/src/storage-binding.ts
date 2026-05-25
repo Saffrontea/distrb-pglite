@@ -32,6 +32,7 @@ type BindingGroupRow = {
   group_id: string;
   root_relation_oid: number;
   ddl_generation: number;
+  storage_generation: number | null;
   vacuum_policy: unknown;
 };
 
@@ -47,6 +48,10 @@ type BindingChildRow = {
   child_relation_oid: number;
 };
 
+type BindingChildRelationNameRow = {
+  relation_name: string;
+};
+
 type BindingRelationRow = {
   group_id: string;
   partition_id: string;
@@ -58,6 +63,7 @@ type BindingRelationRow = {
   storage_path: string | null;
   relation_role: string;
   parent_relation_oid: number | null;
+  schema_fingerprint: string | null;
 };
 
 type SnapshotCatalogRow = {
@@ -67,6 +73,7 @@ type SnapshotCatalogRow = {
   components: unknown;
   high_watermark: unknown;
   ddl_generation: number;
+  storage_generation: number | null;
   manifest_kind: string;
   manifest: unknown;
 };
@@ -98,6 +105,8 @@ type BindingDriftRow = {
   current_relation_role: string | null;
   stored_parent_relation_oid: number | null;
   current_parent_relation_oid: number | null;
+  stored_schema_fingerprint: string | null;
+  current_schema_fingerprint: string | null;
 };
 
 export type StorageSnapshotFenceTarget = {
@@ -139,14 +148,31 @@ export type StorageCasAutoGcSkipped = {
   reason: "disabled" | "missing-group";
 };
 
+export type StorageControlOperation =
+  | "truncate"
+  | "vacuum"
+  | "reindex-table"
+  | "vacuum-full"
+  | "cluster";
+
+export type StorageControlExecution = {
+  operation: StorageControlOperation;
+  relationNames: string[];
+  group: StorageBindingGroup;
+};
+
 export async function migrateStorageBindingCatalog(db: PGliteClient): Promise<void> {
   await db.exec(`
     CREATE TABLE IF NOT EXISTS distrb_storage_binding_groups (
       group_id text PRIMARY KEY,
       root_relation_oid integer NOT NULL,
       ddl_generation integer NOT NULL,
+      storage_generation integer NOT NULL DEFAULT 1,
       vacuum_policy jsonb
     );
+
+    ALTER TABLE distrb_storage_binding_groups
+      ADD COLUMN IF NOT EXISTS storage_generation integer NOT NULL DEFAULT 1;
 
     CREATE TABLE IF NOT EXISTS distrb_storage_bindings (
       group_id text NOT NULL REFERENCES distrb_storage_binding_groups(group_id) ON DELETE CASCADE,
@@ -177,6 +203,7 @@ export async function migrateStorageBindingCatalog(db: PGliteClient): Promise<vo
       storage_path text,
       relation_role text NOT NULL,
       parent_relation_oid integer,
+      schema_fingerprint text,
       PRIMARY KEY (group_id, partition_id, relation_ordinal),
       FOREIGN KEY (group_id, partition_id)
         REFERENCES distrb_storage_bindings(group_id, partition_id)
@@ -191,10 +218,17 @@ export async function migrateStorageBindingCatalog(db: PGliteClient): Promise<vo
       storage_path text,
       relation_role text NOT NULL,
       parent_relation_oid integer,
+      schema_fingerprint text,
       ddl_generation integer NOT NULL,
       observed_at timestamptz NOT NULL DEFAULT now(),
       PRIMARY KEY (group_id, partition_id, relation_oid, ddl_generation)
     );
+
+    ALTER TABLE distrb_storage_binding_relations
+      ADD COLUMN IF NOT EXISTS schema_fingerprint text;
+
+    ALTER TABLE distrb_storage_relation_lineage
+      ADD COLUMN IF NOT EXISTS schema_fingerprint text;
 
     CREATE TABLE IF NOT EXISTS distrb_storage_snapshots (
       group_id text NOT NULL REFERENCES distrb_storage_binding_groups(group_id) ON DELETE CASCADE,
@@ -203,11 +237,15 @@ export async function migrateStorageBindingCatalog(db: PGliteClient): Promise<vo
       components jsonb NOT NULL,
       high_watermark jsonb NOT NULL,
       ddl_generation integer NOT NULL,
+      storage_generation integer,
       manifest_kind text NOT NULL,
       manifest jsonb NOT NULL,
       created_at timestamptz NOT NULL DEFAULT now(),
       PRIMARY KEY (group_id, partition_id, snapshot_id)
     );
+
+    ALTER TABLE distrb_storage_snapshots
+      ADD COLUMN IF NOT EXISTS storage_generation integer;
 
     CREATE OR REPLACE FUNCTION distrb_create_binding_group(
       group_name text,
@@ -224,9 +262,10 @@ export async function migrateStorageBindingCatalog(db: PGliteClient): Promise<vo
         group_id,
         root_relation_oid,
         ddl_generation,
+        storage_generation,
         vacuum_policy
       )
-      VALUES (group_name, root_oid, 1, vacuum_policy)
+      VALUES (group_name, root_oid, 1, 1, vacuum_policy)
       ON CONFLICT (group_id) DO UPDATE SET
         root_relation_oid = EXCLUDED.root_relation_oid,
         vacuum_policy = EXCLUDED.vacuum_policy;
@@ -265,7 +304,8 @@ export async function migrateStorageBindingCatalog(db: PGliteClient): Promise<vo
       relfilenode integer,
       storage_path text,
       relation_role text,
-      parent_relation_oid integer
+      parent_relation_oid integer,
+      schema_fingerprint text
     )
     LANGUAGE sql
     AS $$
@@ -351,7 +391,30 @@ export async function migrateStorageBindingCatalog(db: PGliteClient): Promise<vo
         COALESCE(NULLIF(pg_relation_filenode(c.oid), 0)::integer, c.oid::integer) AS relfilenode,
         pg_relation_filepath(c.oid) AS storage_path,
         all_relations.relation_role,
-        all_relations.parent_relation_oid
+        all_relations.parent_relation_oid,
+        CASE
+          WHEN all_relations.relation_role = 'child' THEN (
+            SELECT md5(COALESCE(jsonb_agg(jsonb_build_object(
+              'attnum', a.attnum,
+              'attname', a.attname,
+              'atttypid', a.atttypid::integer,
+              'atttypmod', a.atttypmod,
+              'attnotnull', a.attnotnull,
+              'attidentity', a.attidentity,
+              'attgenerated', a.attgenerated,
+              'default', pg_get_expr(ad.adbin, ad.adrelid)
+            ) ORDER BY a.attnum)::text, '[]'))
+            FROM pg_attribute a
+            LEFT JOIN pg_attrdef ad
+              ON ad.adrelid = a.attrelid
+             AND ad.adnum = a.attnum
+            WHERE a.attrelid = c.oid
+              AND a.attnum > 0
+              AND NOT a.attisdropped
+          )
+          WHEN all_relations.relation_role = 'index' THEN md5(pg_get_indexdef(c.oid))
+          ELSE NULL
+        END AS schema_fingerprint
       FROM all_relations
       JOIN pg_class c ON c.oid = all_relations.relation_oid
       JOIN pg_database d ON d.datname = current_database()
@@ -370,7 +433,8 @@ export async function migrateStorageBindingCatalog(db: PGliteClient): Promise<vo
     AS $$
     DECLARE
       root_oid integer;
-      next_generation integer;
+      next_ddl_generation integer;
+      next_storage_generation integer;
       resolved_components text[];
       resolved_pull_requires text[];
       child_relation_oid integer;
@@ -383,8 +447,8 @@ export async function migrateStorageBindingCatalog(db: PGliteClient): Promise<vo
         RAISE EXCEPTION 'at least one relation is required to bind a storage partition';
       END IF;
 
-      SELECT root_relation_oid, ddl_generation + 1
-      INTO root_oid, next_generation
+      SELECT root_relation_oid, ddl_generation + 1, storage_generation + 1
+      INTO root_oid, next_ddl_generation, next_storage_generation
       FROM distrb_storage_binding_groups
       WHERE group_id = group_name
       FOR UPDATE;
@@ -424,7 +488,8 @@ export async function migrateStorageBindingCatalog(db: PGliteClient): Promise<vo
           'snapshotScope', snapshot_scope,
           'snapshotComponents', to_jsonb(resolved_components),
           'pullRequires', to_jsonb(resolved_pull_requires),
-          'ddlGeneration', next_generation
+          'ddlGeneration', next_ddl_generation,
+          'storageGeneration', next_storage_generation
         )
       );
 
@@ -477,7 +542,8 @@ export async function migrateStorageBindingCatalog(db: PGliteClient): Promise<vo
           relfilenode,
           storage_path,
           relation_role,
-          parent_relation_oid
+          parent_relation_oid,
+          schema_fingerprint
         )
         VALUES (
           group_name,
@@ -489,7 +555,8 @@ export async function migrateStorageBindingCatalog(db: PGliteClient): Promise<vo
           relation_row.relfilenode,
           relation_row.storage_path,
           relation_row.relation_role,
-          relation_row.parent_relation_oid
+          relation_row.parent_relation_oid,
+          relation_row.schema_fingerprint
         );
 
         INSERT INTO distrb_storage_relation_lineage (
@@ -500,6 +567,7 @@ export async function migrateStorageBindingCatalog(db: PGliteClient): Promise<vo
           storage_path,
           relation_role,
           parent_relation_oid,
+          schema_fingerprint,
           ddl_generation
         )
         VALUES (
@@ -510,13 +578,15 @@ export async function migrateStorageBindingCatalog(db: PGliteClient): Promise<vo
           relation_row.storage_path,
           relation_row.relation_role,
           relation_row.parent_relation_oid,
-          next_generation
+          relation_row.schema_fingerprint,
+          next_ddl_generation
         )
         ON CONFLICT (group_id, partition_id, relation_oid, ddl_generation) DO UPDATE SET
           relfilenode = EXCLUDED.relfilenode,
           storage_path = EXCLUDED.storage_path,
           relation_role = EXCLUDED.relation_role,
-          parent_relation_oid = EXCLUDED.parent_relation_oid;
+          parent_relation_oid = EXCLUDED.parent_relation_oid,
+          schema_fingerprint = EXCLUDED.schema_fingerprint;
       END LOOP;
 
       UPDATE distrb_storage_bindings
@@ -528,16 +598,19 @@ export async function migrateStorageBindingCatalog(db: PGliteClient): Promise<vo
           'snapshotScope', snapshot_scope,
           'snapshotComponents', to_jsonb(resolved_components),
           'pullRequires', to_jsonb(resolved_pull_requires),
-          'ddlGeneration', next_generation
+          'ddlGeneration', next_ddl_generation,
+          'storageGeneration', next_storage_generation
         )
       WHERE group_id = group_name
         AND partition_id = partition_name;
 
       UPDATE distrb_storage_binding_groups
-      SET ddl_generation = next_generation
+      SET
+        ddl_generation = next_ddl_generation,
+        storage_generation = next_storage_generation
       WHERE group_id = group_name;
 
-      RETURN next_generation;
+      RETURN next_ddl_generation;
     END;
     $$;
 
@@ -660,12 +733,14 @@ export async function migrateStorageBindingCatalog(db: PGliteClient): Promise<vo
         g.group_id,
         g.root_relation_oid,
         g.ddl_generation AS group_ddl_generation,
+        g.storage_generation AS group_storage_generation,
         g.vacuum_policy,
         b.partition_id,
         (b.binding->>'snapshotScope') AS snapshot_scope,
         b.binding->'snapshotComponents' AS snapshot_components,
         b.binding->'pullRequires' AS pull_requires,
         (b.binding->>'ddlGeneration')::integer AS binding_ddl_generation,
+        COALESCE((b.binding->>'storageGeneration')::integer, g.storage_generation) AS binding_storage_generation,
         r.relation_ordinal,
         r.database_oid,
         r.tablespace_oid,
@@ -673,7 +748,8 @@ export async function migrateStorageBindingCatalog(db: PGliteClient): Promise<vo
         r.relfilenode,
         r.storage_path,
         r.relation_role,
-        r.parent_relation_oid
+        r.parent_relation_oid,
+        r.schema_fingerprint
       FROM distrb_storage_binding_groups g
       JOIN distrb_storage_bindings b
         ON b.group_id = g.group_id
@@ -694,7 +770,8 @@ export async function migrateStorageBindingCatalog(db: PGliteClient): Promise<vo
       relfilenode integer,
       storage_path text,
       relation_role text,
-      parent_relation_oid integer
+      parent_relation_oid integer,
+      schema_fingerprint text
     )
     LANGUAGE sql
     AS $$
@@ -707,7 +784,8 @@ export async function migrateStorageBindingCatalog(db: PGliteClient): Promise<vo
         closure.relfilenode,
         closure.storage_path,
         closure.relation_role,
-        closure.parent_relation_oid
+        closure.parent_relation_oid,
+        closure.schema_fingerprint
       FROM (
         SELECT
           child.group_id,
@@ -748,7 +826,9 @@ export async function migrateStorageBindingCatalog(db: PGliteClient): Promise<vo
       stored_relation_role text,
       current_relation_role text,
       stored_parent_relation_oid integer,
-      current_parent_relation_oid integer
+      current_parent_relation_oid integer,
+      stored_schema_fingerprint text,
+      current_schema_fingerprint text
     )
     LANGUAGE sql
     AS $$
@@ -782,7 +862,9 @@ export async function migrateStorageBindingCatalog(db: PGliteClient): Promise<vo
         stored.relation_role AS stored_relation_role,
         current.relation_role AS current_relation_role,
         stored.parent_relation_oid AS stored_parent_relation_oid,
-        current.parent_relation_oid AS current_parent_relation_oid
+        current.parent_relation_oid AS current_parent_relation_oid,
+        stored.schema_fingerprint AS stored_schema_fingerprint,
+        current.schema_fingerprint AS current_schema_fingerprint
       FROM stored
       FULL OUTER JOIN current
         ON current.partition_id = stored.partition_id
@@ -796,8 +878,25 @@ export async function migrateStorageBindingCatalog(db: PGliteClient): Promise<vo
          OR stored.storage_path IS DISTINCT FROM current.storage_path
          OR stored.relation_role IS DISTINCT FROM current.relation_role
          OR stored.parent_relation_oid IS DISTINCT FROM current.parent_relation_oid
+         OR stored.schema_fingerprint IS DISTINCT FROM current.schema_fingerprint
       ORDER BY partition_id, relation_ordinal
     $$;
+
+    UPDATE distrb_storage_binding_relations r
+    SET schema_fingerprint = current.schema_fingerprint
+    FROM (
+      SELECT
+        g.group_id,
+        closure.partition_id,
+        closure.relation_ordinal,
+        closure.schema_fingerprint
+      FROM distrb_storage_binding_groups g
+      CROSS JOIN LATERAL distrb_storage_binding_current_closure(g.group_id, NULL) closure
+    ) current
+    WHERE r.group_id = current.group_id
+      AND r.partition_id = current.partition_id
+      AND r.relation_ordinal = current.relation_ordinal
+      AND r.schema_fingerprint IS NULL;
 
     CREATE OR REPLACE FUNCTION distrb_refresh_storage_binding(
       group_name text,
@@ -807,11 +906,13 @@ export async function migrateStorageBindingCatalog(db: PGliteClient): Promise<vo
     LANGUAGE plpgsql
     AS $$
     DECLARE
-      next_generation integer;
+      next_ddl_generation integer;
+      next_storage_generation integer;
       relation_row record;
       binding_row record;
       relations_json jsonb;
       has_drift boolean;
+      has_schema_drift boolean;
     BEGIN
       SELECT EXISTS (
         SELECT 1 FROM distrb_storage_binding_drift(group_name, partition_name)
@@ -820,24 +921,38 @@ export async function migrateStorageBindingCatalog(db: PGliteClient): Promise<vo
 
       IF NOT has_drift THEN
         SELECT ddl_generation
-        INTO next_generation
+        INTO next_ddl_generation
         FROM distrb_storage_binding_groups
         WHERE group_id = group_name;
 
-        IF next_generation IS NULL THEN
+        IF next_ddl_generation IS NULL THEN
           RAISE EXCEPTION 'storage binding group not found: %', group_name;
         END IF;
 
-        RETURN next_generation;
+        RETURN next_ddl_generation;
       END IF;
 
-      SELECT ddl_generation + 1
-      INTO next_generation
+      SELECT EXISTS (
+        SELECT 1
+        FROM distrb_storage_binding_drift(group_name, partition_name) d
+        WHERE d.stored_relation_oid IS DISTINCT FROM d.current_relation_oid
+           OR d.stored_relation_role IS DISTINCT FROM d.current_relation_role
+           OR d.stored_parent_relation_oid IS DISTINCT FROM d.current_parent_relation_oid
+           OR d.stored_schema_fingerprint IS DISTINCT FROM d.current_schema_fingerprint
+           OR d.stored_relation_oid IS NULL
+           OR d.current_relation_oid IS NULL
+      )
+      INTO has_schema_drift;
+
+      SELECT
+        ddl_generation + CASE WHEN has_schema_drift THEN 1 ELSE 0 END,
+        storage_generation + 1
+      INTO next_ddl_generation, next_storage_generation
       FROM distrb_storage_binding_groups
       WHERE group_id = group_name
       FOR UPDATE;
 
-      IF next_generation IS NULL THEN
+      IF next_ddl_generation IS NULL THEN
         RAISE EXCEPTION 'storage binding group not found: %', group_name;
       END IF;
 
@@ -858,7 +973,8 @@ export async function migrateStorageBindingCatalog(db: PGliteClient): Promise<vo
           relfilenode,
           storage_path,
           relation_role,
-          parent_relation_oid
+          parent_relation_oid,
+          schema_fingerprint
         )
         VALUES (
           group_name,
@@ -870,7 +986,8 @@ export async function migrateStorageBindingCatalog(db: PGliteClient): Promise<vo
           relation_row.relfilenode,
           relation_row.storage_path,
           relation_row.relation_role,
-          relation_row.parent_relation_oid
+          relation_row.parent_relation_oid,
+          relation_row.schema_fingerprint
         );
 
         INSERT INTO distrb_storage_relation_lineage (
@@ -881,6 +998,7 @@ export async function migrateStorageBindingCatalog(db: PGliteClient): Promise<vo
           storage_path,
           relation_role,
           parent_relation_oid,
+          schema_fingerprint,
           ddl_generation
         )
         VALUES (
@@ -891,13 +1009,15 @@ export async function migrateStorageBindingCatalog(db: PGliteClient): Promise<vo
           relation_row.storage_path,
           relation_row.relation_role,
           relation_row.parent_relation_oid,
-          next_generation
+          relation_row.schema_fingerprint,
+          next_ddl_generation
         )
         ON CONFLICT (group_id, partition_id, relation_oid, ddl_generation) DO UPDATE SET
           relfilenode = EXCLUDED.relfilenode,
           storage_path = EXCLUDED.storage_path,
           relation_role = EXCLUDED.relation_role,
-          parent_relation_oid = EXCLUDED.parent_relation_oid;
+          parent_relation_oid = EXCLUDED.parent_relation_oid,
+          schema_fingerprint = EXCLUDED.schema_fingerprint;
       END LOOP;
 
       FOR binding_row IN
@@ -926,19 +1046,25 @@ export async function migrateStorageBindingCatalog(db: PGliteClient): Promise<vo
 
         UPDATE distrb_storage_bindings
         SET binding = jsonb_set(
-          jsonb_set(binding, '{relations}', relations_json),
-          '{ddlGeneration}',
-          to_jsonb(next_generation)
+          jsonb_set(
+            jsonb_set(binding, '{relations}', relations_json),
+            '{ddlGeneration}',
+            to_jsonb(next_ddl_generation)
+          ),
+          '{storageGeneration}',
+          to_jsonb(next_storage_generation)
         )
         WHERE group_id = group_name
           AND partition_id = binding_row.partition_id;
       END LOOP;
 
       UPDATE distrb_storage_binding_groups
-      SET ddl_generation = next_generation
+      SET
+        ddl_generation = next_ddl_generation,
+        storage_generation = next_storage_generation
       WHERE group_id = group_name;
 
-      RETURN next_generation;
+      RETURN next_ddl_generation;
     END;
     $$;
 
@@ -961,6 +1087,7 @@ export async function migrateStorageBindingCatalog(db: PGliteClient): Promise<vo
         'groupId', g.group_id,
         'rootRelationOid', g.root_relation_oid,
         'ddlGeneration', g.ddl_generation,
+        'storageGeneration', g.storage_generation,
         'vacuumPolicy', g.vacuum_policy,
         'bindings', COALESCE((
           SELECT jsonb_agg(
@@ -993,7 +1120,8 @@ export async function migrateStorageBindingCatalog(db: PGliteClient): Promise<vo
               'snapshotScope', b.binding->>'snapshotScope',
               'snapshotComponents', b.binding->'snapshotComponents',
               'pullRequires', b.binding->'pullRequires',
-              'ddlGeneration', (b.binding->>'ddlGeneration')::integer
+              'ddlGeneration', (b.binding->>'ddlGeneration')::integer,
+              'storageGeneration', COALESCE((b.binding->>'storageGeneration')::integer, g.storage_generation)
             )
             ORDER BY b.partition_id
           )
@@ -1007,6 +1135,7 @@ export async function migrateStorageBindingCatalog(db: PGliteClient): Promise<vo
               'snapshotId', s.snapshot_id,
               'components', s.components,
               'ddlGeneration', s.ddl_generation,
+              'storageGeneration', s.storage_generation,
               'manifestKind', s.manifest_kind
             )
             ORDER BY s.partition_id, s.ddl_generation, s.snapshot_id
@@ -1062,18 +1191,21 @@ export async function saveStorageBindingGroup(
         group_id,
         root_relation_oid,
         ddl_generation,
+        storage_generation,
         vacuum_policy
       )
-      VALUES ($1, $2, $3, $4::jsonb)
+      VALUES ($1, $2, $3, $4, $5::jsonb)
       ON CONFLICT (group_id) DO UPDATE SET
         root_relation_oid = EXCLUDED.root_relation_oid,
         ddl_generation = EXCLUDED.ddl_generation,
+        storage_generation = EXCLUDED.storage_generation,
         vacuum_policy = EXCLUDED.vacuum_policy
     `,
     [
       group.groupId,
       group.rootRelationOid,
       group.ddlGeneration,
+      group.storageGeneration ?? group.ddlGeneration,
       JSON.stringify(group.vacuumPolicy ?? null),
     ],
   );
@@ -1180,6 +1312,7 @@ export async function loadStorageBindingGroup(
         group_id,
         root_relation_oid,
         ddl_generation,
+        storage_generation,
         vacuum_policy
       FROM distrb_storage_binding_groups
       WHERE group_id = $1
@@ -1207,6 +1340,7 @@ export async function loadStorageBindingGroup(
     groupId: row.group_id,
     rootRelationOid: row.root_relation_oid,
     ddlGeneration: row.ddl_generation,
+    storageGeneration: row.storage_generation ?? row.ddl_generation,
     vacuumPolicy: row.vacuum_policy
       ? row.vacuum_policy as StorageBindingGroup["vacuumPolicy"]
       : undefined,
@@ -1214,6 +1348,8 @@ export async function loadStorageBindingGroup(
       const binding = bindingRow.binding as StoragePartitionBinding;
       return {
         ...binding,
+        ddlGeneration: binding.ddlGeneration ?? row.ddl_generation,
+        storageGeneration: binding.storageGeneration ?? row.storage_generation ?? row.ddl_generation,
         boundChildRelationOids: childRows
           .filter((child) => child.partition_id === bindingRow.partition_id)
           .map((child) => child.child_relation_oid),
@@ -1248,14 +1384,16 @@ export async function saveStorageSnapshotCatalogEntry<TManifest>(
         components,
         high_watermark,
         ddl_generation,
+        storage_generation,
         manifest_kind,
         manifest
       )
-      VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $8::jsonb)
+      VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $8, $9::jsonb)
       ON CONFLICT (group_id, partition_id, snapshot_id) DO UPDATE SET
         components = EXCLUDED.components,
         high_watermark = EXCLUDED.high_watermark,
         ddl_generation = EXCLUDED.ddl_generation,
+        storage_generation = EXCLUDED.storage_generation,
         manifest_kind = EXCLUDED.manifest_kind,
         manifest = EXCLUDED.manifest
     `,
@@ -1266,6 +1404,7 @@ export async function saveStorageSnapshotCatalogEntry<TManifest>(
       JSON.stringify(entry.components),
       JSON.stringify(entry.highWatermark),
       entry.ddlGeneration,
+      entry.storageGeneration ?? entry.ddlGeneration,
       entry.manifestKind,
       JSON.stringify(entry.manifest),
     ],
@@ -1285,6 +1424,7 @@ export async function savePartitionCasSnapshotCatalogEntry(options: {
     components: options.components ?? defaultComponents(options.snapshot.storageBinding.snapshotScope),
     highWatermark: options.snapshot.highWatermark,
     ddlGeneration: options.snapshot.storageBinding.ddlGeneration ?? 0,
+    storageGeneration: options.snapshot.storageBinding.storageGeneration,
     manifestKind: "cas",
     manifest: options.snapshot.manifest,
   });
@@ -1303,6 +1443,7 @@ export async function savePartitionFilesystemSnapshotCatalogEntry(options: {
     components: options.components ?? defaultComponents(options.snapshot.storageBinding.snapshotScope),
     highWatermark: options.snapshot.highWatermark,
     ddlGeneration: options.snapshot.storageBinding.ddlGeneration ?? 0,
+    storageGeneration: options.snapshot.storageBinding.storageGeneration,
     manifestKind: "filesystem",
     manifest: options.snapshot.manifest,
   });
@@ -1324,6 +1465,7 @@ export async function loadStorageSnapshotCatalogEntry<TManifest = unknown>(optio
         components,
         high_watermark,
         ddl_generation,
+        storage_generation,
         manifest_kind,
         manifest
       FROM distrb_storage_snapshots
@@ -1352,6 +1494,7 @@ export async function listStorageSnapshotCatalogEntries<TManifest = unknown>(opt
         components,
         high_watermark,
         ddl_generation,
+        storage_generation,
         manifest_kind,
         manifest
       FROM distrb_storage_snapshots
@@ -1456,6 +1599,83 @@ export async function refreshStorageBindingGeneration(options: {
   return group;
 }
 
+export async function runStorageControlOperation(options: {
+  db: PGliteClient;
+  groupId: string;
+  partitionId: PartitionId;
+  operation: StorageControlOperation;
+  clusterIndexByRelation?: Record<string, string>;
+}): Promise<StorageControlExecution> {
+  await migrateStorageBindingCatalog(options.db);
+  const relationNames = await listBoundChildRelationNames({
+    db: options.db,
+    groupId: options.groupId,
+    partitionId: options.partitionId,
+  });
+  if (relationNames.length === 0) {
+    throw new Error(`storage partition binding has no child relations: ${options.groupId}/${options.partitionId}`);
+  }
+
+  for (const relationName of relationNames) {
+    await options.db.exec(storageControlSql({
+      operation: options.operation,
+      relationName,
+      clusterIndexName: options.clusterIndexByRelation?.[relationName],
+    }));
+  }
+
+  return {
+    operation: options.operation,
+    relationNames,
+    group: await refreshStorageBindingGeneration({
+      db: options.db,
+      groupId: options.groupId,
+      partitionId: options.partitionId,
+    }),
+  };
+}
+
+export function truncateStoragePartition(options: {
+  db: PGliteClient;
+  groupId: string;
+  partitionId: PartitionId;
+}): Promise<StorageControlExecution> {
+  return runStorageControlOperation({ ...options, operation: "truncate" });
+}
+
+export function reindexStoragePartition(options: {
+  db: PGliteClient;
+  groupId: string;
+  partitionId: PartitionId;
+}): Promise<StorageControlExecution> {
+  return runStorageControlOperation({ ...options, operation: "reindex-table" });
+}
+
+export function vacuumStoragePartition(options: {
+  db: PGliteClient;
+  groupId: string;
+  partitionId: PartitionId;
+}): Promise<StorageControlExecution> {
+  return runStorageControlOperation({ ...options, operation: "vacuum" });
+}
+
+export function vacuumFullStoragePartition(options: {
+  db: PGliteClient;
+  groupId: string;
+  partitionId: PartitionId;
+}): Promise<StorageControlExecution> {
+  return runStorageControlOperation({ ...options, operation: "vacuum-full" });
+}
+
+export function clusterStoragePartition(options: {
+  db: PGliteClient;
+  groupId: string;
+  partitionId: PartitionId;
+  clusterIndexByRelation: Record<string, string>;
+}): Promise<StorageControlExecution> {
+  return runStorageControlOperation({ ...options, operation: "cluster" });
+}
+
 export async function loadStorageCatalogManifest(options: {
   db: PGliteClient;
   groupId: string;
@@ -1487,6 +1707,7 @@ export async function applyStorageCatalogManifest(options: {
     groupId: options.manifest.groupId,
     rootRelationOid: options.manifest.rootRelationOid,
     ddlGeneration: options.manifest.ddlGeneration,
+    storageGeneration: options.manifest.storageGeneration ?? options.manifest.ddlGeneration,
     vacuumPolicy: options.manifest.vacuumPolicy,
     bindings: options.manifest.bindings,
   });
@@ -1775,6 +1996,57 @@ async function listStorageBindingChildRows(
   return result.rows;
 }
 
+async function listBoundChildRelationNames(options: {
+  db: PGliteClient;
+  groupId: string;
+  partitionId: PartitionId;
+}): Promise<string[]> {
+  const result = await options.db.query<BindingChildRelationNameRow>(
+    `
+      SELECT
+        quote_ident(n.nspname) || '.' || quote_ident(c.relname) AS relation_name
+      FROM distrb_storage_binding_children child
+      JOIN pg_class c ON c.oid = child.child_relation_oid
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE child.group_id = $1
+        AND child.partition_id = $2
+      ORDER BY child.child_ordinal
+    `,
+    [options.groupId, options.partitionId],
+  );
+  return result.rows.map((row) => row.relation_name);
+}
+
+function storageControlSql(options: {
+  operation: StorageControlOperation;
+  relationName: string;
+  clusterIndexName?: string;
+}): string {
+  switch (options.operation) {
+    case "truncate":
+      return `TRUNCATE TABLE ${options.relationName}`;
+    case "reindex-table":
+      return `REINDEX TABLE ${options.relationName}`;
+    case "vacuum":
+      return `VACUUM ${options.relationName}`;
+    case "vacuum-full":
+      return `VACUUM FULL ${options.relationName}`;
+    case "cluster":
+      if (!options.clusterIndexName) {
+        throw new Error(`cluster index is required for ${options.relationName}`);
+      }
+      return `CLUSTER ${options.relationName} USING ${quoteRelationName(options.clusterIndexName)}`;
+  }
+}
+
+function quoteRelationName(relationName: string): string {
+  const parts = relationName.split(".");
+  if (parts.length < 1 || parts.length > 2 || parts.some((part) => !/^[A-Za-z_][A-Za-z0-9_$]*$/.test(part))) {
+    throw new Error(`relation name must be unqualified or schema-qualified: ${relationName}`);
+  }
+  return parts.map((part) => `"${part.replaceAll('"', '""')}"`).join(".");
+}
+
 function storageRelationLocatorFromRow(row: BindingRelationRow): StorageRelationLocator {
   return {
     databaseOid: row.database_oid,
@@ -1842,6 +2114,7 @@ function snapshotCatalogEntryFromRow<TManifest>(
     components: row.components as StorageSnapshotComponent[],
     highWatermark: row.high_watermark as StorageSnapshotCatalogEntry<TManifest>["highWatermark"],
     ddlGeneration: row.ddl_generation,
+    storageGeneration: row.storage_generation ?? row.ddl_generation,
     manifestKind: row.manifest_kind as StorageSnapshotCatalogEntry<TManifest>["manifestKind"],
     manifest: row.manifest as TManifest,
   };

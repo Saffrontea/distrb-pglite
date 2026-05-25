@@ -170,6 +170,13 @@ function validatePullStorageCompatibility(
       `storage binding DDL generation mismatch for ${entry.groupId}/${entry.partitionId}: snapshot=${entry.ddlGeneration} target=${bindingGeneration}`,
     );
   }
+  const bindingStorageGeneration = storageBinding.storageGeneration ?? bindingGeneration;
+  const entryStorageGeneration = entry.storageGeneration ?? entry.ddlGeneration;
+  if (bindingStorageGeneration !== entryStorageGeneration) {
+    throw new Error(
+      `storage binding generation mismatch for ${entry.groupId}/${entry.partitionId}: snapshot=${entryStorageGeneration} target=${bindingStorageGeneration}`,
+    );
+  }
 
   if (storageBinding.snapshotScope === "data-only" && entry.components.includes("catalog")) {
     throw new Error(
@@ -208,6 +215,7 @@ function partitionCasSnapshotCatalogEntry(options: {
     components: options.components ?? defaultComponents(options.snapshot.storageBinding.snapshotScope),
     highWatermark: options.snapshot.highWatermark,
     ddlGeneration: options.snapshot.storageBinding.ddlGeneration ?? 0,
+    storageGeneration: options.snapshot.storageBinding.storageGeneration,
     manifestKind: "cas",
     manifest: options.snapshot.manifest,
   };

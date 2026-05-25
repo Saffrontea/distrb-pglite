@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   applyStorageCatalogManifest,
   bindStoragePartition,
+  clusterStoragePartition,
   createStorageBindingGroup,
   createPartitionCasSnapshot,
   detectStorageBindingDrift,
@@ -20,12 +21,16 @@ import {
   planStorageGcFromCatalog,
   planStorageSnapshotFence,
   prepareStorageSnapshotFence,
+  reindexStoragePartition,
   refreshStorageBindingGeneration,
   runStorageCasAutoGcFromCatalog,
   runStorageCasGcFromCatalog,
   savePartitionCasSnapshotCatalogEntry,
   saveStorageBindingGroup,
   saveStorageSnapshotCatalogEntry,
+  truncateStoragePartition,
+  vacuumStoragePartition,
+  vacuumFullStoragePartition,
 } from "../src/index.js";
 import { makeTempDir } from "./temp-dir.js";
 
@@ -701,6 +706,196 @@ describe("discoverStoragePartitionBinding", () => {
         { relation_role: "index", ddl_generation: 3 },
       ]),
     );
+  }, 120_000);
+
+  it("detects ALTER TABLE schema drift even when relation storage is unchanged", async () => {
+    const root = await makeTempDir("storage-binding-alter-drift");
+    const db = new PGlite(join(root, "data"));
+    await migrateStorageBindingCatalog(db);
+
+    await db.exec(`
+      CREATE TABLE sensor_readings (
+        tenant_id text NOT NULL,
+        sensor_id text NOT NULL,
+        reading integer NOT NULL
+      );
+      CREATE TABLE sensor_readings_tenant_jp (
+        tenant_id text NOT NULL,
+        sensor_id text NOT NULL,
+        reading integer NOT NULL
+      );
+    `);
+    await createStorageBindingGroup({
+      db,
+      groupId: "sensor_readings",
+      rootRelation: "public.sensor_readings",
+    });
+    await bindStoragePartition({
+      db,
+      groupId: "sensor_readings",
+      partitionId: "tenant:jp",
+      relations: ["public.sensor_readings_tenant_jp"],
+      snapshotScope: "data-only",
+    });
+
+    await db.exec("ALTER TABLE sensor_readings_tenant_jp ADD COLUMN battery_level integer");
+    const drift = await detectStorageBindingDrift({
+      db,
+      groupId: "sensor_readings",
+      partitionId: "tenant:jp",
+    });
+    const refreshed = await refreshStorageBindingGeneration({
+      db,
+      groupId: "sensor_readings",
+      partitionId: "tenant:jp",
+    });
+    const afterDrift = await detectStorageBindingDrift({
+      db,
+      groupId: "sensor_readings",
+      partitionId: "tenant:jp",
+    });
+    await db.close();
+
+    expect(drift).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        driftKind: "changed",
+        currentRelation: expect.objectContaining({ role: "child" }),
+      }),
+    ]));
+    expect(refreshed.ddlGeneration).toBe(3);
+    expect(refreshed.storageGeneration).toBe(3);
+    expect(refreshed.bindings[0]).toMatchObject({ ddlGeneration: 3, storageGeneration: 3 });
+    expect(afterDrift).toEqual([]);
+  }, 120_000);
+
+  it("treats TRUNCATE control API rewrites as storage drift without advancing DDL generation", async () => {
+    const root = await makeTempDir("storage-binding-truncate-drift");
+    const db = new PGlite(join(root, "data"));
+    await migrateStorageBindingCatalog(db);
+
+    await db.exec(`
+      CREATE TABLE sensor_readings (
+        tenant_id text NOT NULL,
+        sensor_id text NOT NULL,
+        reading integer NOT NULL
+      );
+      CREATE TABLE sensor_readings_tenant_jp (
+        tenant_id text NOT NULL,
+        sensor_id text NOT NULL,
+        reading integer NOT NULL
+      );
+      INSERT INTO sensor_readings_tenant_jp (tenant_id, sensor_id, reading)
+      VALUES ('tenant:jp', 'tokyo-1', 42);
+    `);
+    await createStorageBindingGroup({
+      db,
+      groupId: "sensor_readings",
+      rootRelation: "public.sensor_readings",
+    });
+    const before = await bindStoragePartition({
+      db,
+      groupId: "sensor_readings",
+      partitionId: "tenant:jp",
+      relations: ["public.sensor_readings_tenant_jp"],
+      snapshotScope: "data-only",
+    });
+    const beforeChild = before.bindings[0]?.relations.find((relation) => relation.role === "child");
+
+    const control = await truncateStoragePartition({
+      db,
+      groupId: "sensor_readings",
+      partitionId: "tenant:jp",
+    });
+    const drift = await detectStorageBindingDrift({
+      db,
+      groupId: "sensor_readings",
+      partitionId: "tenant:jp",
+    });
+    const refreshed = control.group;
+    const afterChild = refreshed.bindings[0]?.relations.find((relation) => relation.role === "child");
+    const afterDrift = await detectStorageBindingDrift({
+      db,
+      groupId: "sensor_readings",
+      partitionId: "tenant:jp",
+    });
+    await db.close();
+
+    expect(control).toMatchObject({
+      operation: "truncate",
+      relationNames: ["public.sensor_readings_tenant_jp"],
+    });
+    expect(drift).toEqual([]);
+    expect(afterChild?.relfilenode).not.toBe(beforeChild?.relfilenode);
+    expect(refreshed.ddlGeneration).toBe(2);
+    expect(refreshed.storageGeneration).toBe(3);
+    expect(refreshed.bindings[0]).toMatchObject({ ddlGeneration: 2, storageGeneration: 3 });
+    expect(afterDrift).toEqual([]);
+  }, 120_000);
+
+  it("treats storage rewrite control APIs as storage generation changes", async () => {
+    const root = await makeTempDir("storage-binding-rewrite-controls");
+    const db = new PGlite(join(root, "data"));
+    await migrateStorageBindingCatalog(db);
+
+    await db.exec(`
+      CREATE TABLE sensor_readings (
+        tenant_id text NOT NULL,
+        sensor_id text NOT NULL,
+        reading integer NOT NULL
+      );
+      CREATE TABLE sensor_readings_tenant_jp (
+        tenant_id text NOT NULL,
+        sensor_id text NOT NULL,
+        reading integer NOT NULL
+      );
+      INSERT INTO sensor_readings_tenant_jp (tenant_id, sensor_id, reading)
+      VALUES ('tenant:jp', 'tokyo-1', 42);
+      CREATE INDEX sensor_readings_tenant_jp_sensor_id
+      ON sensor_readings_tenant_jp (sensor_id);
+    `);
+    await createStorageBindingGroup({
+      db,
+      groupId: "sensor_readings",
+      rootRelation: "public.sensor_readings",
+    });
+    await bindStoragePartition({
+      db,
+      groupId: "sensor_readings",
+      partitionId: "tenant:jp",
+      relations: ["public.sensor_readings_tenant_jp"],
+      snapshotScope: "data-only",
+    });
+
+    const vacuumedPlain = await vacuumStoragePartition({
+      db,
+      groupId: "sensor_readings",
+      partitionId: "tenant:jp",
+    });
+    const reindexed = await reindexStoragePartition({
+      db,
+      groupId: "sensor_readings",
+      partitionId: "tenant:jp",
+    });
+    const vacuumed = await vacuumFullStoragePartition({
+      db,
+      groupId: "sensor_readings",
+      partitionId: "tenant:jp",
+    });
+    const clustered = await clusterStoragePartition({
+      db,
+      groupId: "sensor_readings",
+      partitionId: "tenant:jp",
+      clusterIndexByRelation: {
+        "public.sensor_readings_tenant_jp": "sensor_readings_tenant_jp_sensor_id",
+      },
+    });
+    await db.close();
+
+    expect(vacuumedPlain.group).toMatchObject({ ddlGeneration: 2, storageGeneration: 2 });
+    expect(reindexed.group).toMatchObject({ ddlGeneration: 2, storageGeneration: 3 });
+    expect(vacuumed.group).toMatchObject({ ddlGeneration: 2, storageGeneration: 4 });
+    expect(clustered.group).toMatchObject({ ddlGeneration: 2, storageGeneration: 5 });
+    expect(clustered.group.bindings[0]).toMatchObject({ ddlGeneration: 2, storageGeneration: 5 });
   }, 120_000);
 
   it("lists persisted snapshot catalog entries by group and partition", async () => {

@@ -72,6 +72,7 @@ export type {
 export {
   bindStoragePartition,
   applyStorageCatalogManifest,
+  clusterStoragePartition,
   createStorageBindingGroup,
   detectStorageBindingDrift,
   discoverStoragePartitionBinding,
@@ -85,13 +86,18 @@ export {
   planStorageGcFromCatalog,
   planStorageSnapshotFence,
   prepareStorageSnapshotFence,
+  reindexStoragePartition,
   refreshStorageBindingGeneration,
+  runStorageControlOperation,
   runStorageCasAutoGcFromCatalog,
   runStorageCasGcFromCatalog,
   savePartitionCasSnapshotCatalogEntry,
   savePartitionFilesystemSnapshotCatalogEntry,
   saveStorageBindingGroup,
   saveStorageSnapshotCatalogEntry,
+  truncateStoragePartition,
+  vacuumStoragePartition,
+  vacuumFullStoragePartition,
 } from "./storage-binding.js";
 export type {
   StorageBindingDrift,
@@ -99,5 +105,7 @@ export type {
   StorageCasAutoGcPolicy,
   StorageCasAutoGcSkipped,
   StorageCasGcExecution,
+  StorageControlExecution,
+  StorageControlOperation,
   StorageSnapshotFenceTarget,
 } from "./storage-binding.js";

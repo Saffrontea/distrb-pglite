@@ -28,6 +28,7 @@ export type StoragePartitionBinding = {
   snapshotComponents?: StorageSnapshotComponent[];
   pullRequires?: StorageSnapshotComponent[];
   ddlGeneration?: number;
+  storageGeneration?: number;
 };
 
 export type StorageBindingGroup = {
@@ -35,6 +36,7 @@ export type StorageBindingGroup = {
   rootRelationOid: PgOid;
   bindings: StoragePartitionBinding[];
   ddlGeneration: number;
+  storageGeneration?: number;
   vacuumPolicy?: {
     retainSnapshotGenerations: number;
     gcAfterGeneration: number;
@@ -58,6 +60,7 @@ export type StorageSnapshotCatalogEntry<TManifest = unknown> = {
   components: StorageSnapshotComponent[];
   highWatermark: [NodeId, EventId][];
   ddlGeneration: number;
+  storageGeneration?: number;
   manifestKind: StorageSnapshotManifestKind;
   manifest: TManifest;
 };
@@ -67,6 +70,7 @@ export type StorageCatalogManifest = {
   groupId: string;
   rootRelationOid: PgOid;
   ddlGeneration: number;
+  storageGeneration?: number;
   vacuumPolicy?: StorageBindingGroup["vacuumPolicy"];
   bindings: StoragePartitionBinding[];
   snapshots: Array<{
@@ -74,6 +78,7 @@ export type StorageCatalogManifest = {
     snapshotId: SnapshotId;
     components: StorageSnapshotComponent[];
     ddlGeneration: number;
+    storageGeneration?: number;
     manifestKind: StorageSnapshotManifestKind;
   }>;
 };
