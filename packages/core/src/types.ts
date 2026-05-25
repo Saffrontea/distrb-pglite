@@ -49,6 +49,11 @@ export type StorageGcPlan = {
   protectedGenerations: number[];
   gcAllowedThroughGeneration: number;
   canGcGeneration: (generation: number) => boolean;
+  storageGeneration: number;
+  storageRetainFromGeneration: number;
+  protectedStorageGenerations: number[];
+  storageGcAllowedThroughGeneration: number;
+  canGcStorageGeneration: (generation: number) => boolean;
 };
 
 export type StorageSnapshotManifestKind = "cas" | "filesystem";

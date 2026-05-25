@@ -1193,6 +1193,95 @@ describe("discoverStoragePartitionBinding", () => {
     });
   }, 120_000);
 
+  it("uses storage generation, not only DDL generation, for CAS block GC", async () => {
+    const root = await makeTempDir("storage-cas-gc-storage-generation");
+    const dataDir = join(root, "data");
+    const casDir = join(root, "cas");
+    await mkdir(casDir, { recursive: true });
+    const oldHash = "e".repeat(64);
+    const newHash = "f".repeat(64);
+    await writeFile(join(casDir, oldHash), "old");
+    await writeFile(join(casDir, newHash), "new");
+
+    const db = new PGlite(dataDir);
+    await db.exec(`
+      CREATE TABLE sensor_readings (
+        tenant_id text NOT NULL,
+        sensor_id text NOT NULL,
+        reading integer NOT NULL
+      );
+      CREATE TABLE sensor_readings_tenant_jp (
+        tenant_id text NOT NULL,
+        sensor_id text NOT NULL,
+        reading integer NOT NULL
+      );
+      INSERT INTO sensor_readings_tenant_jp (tenant_id, sensor_id, reading)
+      VALUES ('tenant:jp', 'tokyo-1', 42);
+    `);
+    await createStorageBindingGroup({
+      db,
+      groupId: "sensor_readings",
+      rootRelation: "public.sensor_readings",
+      vacuumPolicy: { retainSnapshotGenerations: 1, gcAfterGeneration: 9 },
+    });
+    const bound = await bindStoragePartition({
+      db,
+      groupId: "sensor_readings",
+      partitionId: "tenant:jp",
+      relations: ["public.sensor_readings_tenant_jp"],
+      snapshotScope: "data-only",
+    });
+    await saveStorageSnapshotCatalogEntry(db, {
+      groupId: "sensor_readings",
+      partitionId: "tenant:jp",
+      snapshotId: "old-storage",
+      components: ["data"],
+      highWatermark: [],
+      ddlGeneration: bound.ddlGeneration,
+      storageGeneration: bound.storageGeneration,
+      manifestKind: "cas",
+      manifest: casManifest("old-storage", oldHash, 3),
+    });
+    const truncated = await truncateStoragePartition({
+      db,
+      groupId: "sensor_readings",
+      partitionId: "tenant:jp",
+    });
+    await saveStorageSnapshotCatalogEntry(db, {
+      groupId: "sensor_readings",
+      partitionId: "tenant:jp",
+      snapshotId: "new-storage",
+      components: ["data"],
+      highWatermark: [],
+      ddlGeneration: truncated.group.ddlGeneration,
+      storageGeneration: truncated.group.storageGeneration,
+      manifestKind: "cas",
+      manifest: casManifest("new-storage", newHash, 3),
+    });
+
+    const result = await runStorageCasGcFromCatalog({
+      db,
+      groupId: "sensor_readings",
+      casDir,
+    });
+    await db.close();
+
+    expect(result).toMatchObject({
+      plan: {
+        ddlGeneration: 2,
+        storageGeneration: 3,
+        protectedStorageGenerations: [3],
+        storageGcAllowedThroughGeneration: 2,
+      },
+      retainedSnapshotIds: ["new-storage"],
+      gcEligibleSnapshotIds: ["old-storage"],
+      gc: {
+        retained: [newHash],
+        deleted: [oldHash],
+      },
+    });
+  }, 120_000);
+
   it("runs catalog CAS GC from an auto-GC policy and can be disabled", async () => {
     const root = await makeTempDir("storage-cas-auto-gc");
     const dataDir = join(root, "data");

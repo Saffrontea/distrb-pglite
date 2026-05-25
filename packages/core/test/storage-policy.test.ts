@@ -104,6 +104,12 @@ describe("storage GC policy", () => {
     expect(plan.gcAllowedThroughGeneration).toBe(7);
     expect(plan.canGcGeneration(7)).toBe(true);
     expect(plan.canGcGeneration(8)).toBe(false);
+    expect(plan.storageGeneration).toBe(10);
+    expect(plan.storageRetainFromGeneration).toBe(8);
+    expect(plan.protectedStorageGenerations).toEqual([8, 9, 10]);
+    expect(plan.storageGcAllowedThroughGeneration).toBe(7);
+    expect(plan.canGcStorageGeneration(7)).toBe(true);
+    expect(plan.canGcStorageGeneration(8)).toBe(false);
   });
 
   it("does not advance GC past active pull generations", () => {
@@ -122,6 +128,24 @@ describe("storage GC policy", () => {
 
     expect(plan.protectedGenerations).toEqual([4, 8, 9, 10]);
     expect(plan.gcAllowedThroughGeneration).toBe(3);
+  });
+
+  it("uses storage generations for physical snapshot GC boundaries", () => {
+    const plan = planStorageGc({
+      ...group,
+      ddlGeneration: 3,
+      storageGeneration: 10,
+    }, {
+      activeStorageGenerations: [5],
+      retainedSnapshotStorageGenerations: [4, 9],
+    });
+
+    expect(plan.protectedGenerations).toEqual([1, 2, 3]);
+    expect(plan.gcAllowedThroughGeneration).toBe(0);
+    expect(plan.protectedStorageGenerations).toEqual([4, 5, 8, 9, 10]);
+    expect(plan.storageGcAllowedThroughGeneration).toBe(3);
+    expect(plan.canGcStorageGeneration(3)).toBe(true);
+    expect(plan.canGcStorageGeneration(4)).toBe(false);
   });
 });
 

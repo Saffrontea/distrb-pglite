@@ -13,6 +13,8 @@ const COMPONENT_ORDER: StorageSnapshotComponent[] = ["catalog", "data"];
 export type StorageGcPlanOptions = {
   activePullGenerations?: readonly number[];
   retainedSnapshotGenerations?: readonly number[];
+  activeStorageGenerations?: readonly number[];
+  retainedSnapshotStorageGenerations?: readonly number[];
 };
 
 export function componentsForSnapshotScope(
@@ -106,15 +108,27 @@ export function planStorageGc(
   const retainCount = Math.max(1, group.vacuumPolicy?.retainSnapshotGenerations ?? 1);
   const policyGcAfterGeneration = group.vacuumPolicy?.gcAfterGeneration ?? 0;
   const retainFromGeneration = Math.max(0, group.ddlGeneration - retainCount + 1);
+  const storageGeneration = group.storageGeneration ?? group.ddlGeneration;
+  const storageRetainFromGeneration = Math.max(0, storageGeneration - retainCount + 1);
   const protectedGenerations = uniqueSortedGenerations([
     ...range(retainFromGeneration, group.ddlGeneration),
     ...(options.activePullGenerations ?? []),
     ...(options.retainedSnapshotGenerations ?? []),
   ]);
+  const protectedStorageGenerations = uniqueSortedGenerations([
+    ...range(storageRetainFromGeneration, storageGeneration),
+    ...(options.activeStorageGenerations ?? []),
+    ...(options.retainedSnapshotStorageGenerations ?? []),
+  ]);
   const earliestProtectedGeneration = protectedGenerations[0] ?? Number.POSITIVE_INFINITY;
+  const earliestProtectedStorageGeneration = protectedStorageGenerations[0] ?? Number.POSITIVE_INFINITY;
   const gcAllowedThroughGeneration = Math.max(
     0,
     Math.min(policyGcAfterGeneration, earliestProtectedGeneration - 1),
+  );
+  const storageGcAllowedThroughGeneration = Math.max(
+    0,
+    Math.min(policyGcAfterGeneration, earliestProtectedStorageGeneration - 1),
   );
 
   return {
@@ -123,6 +137,11 @@ export function planStorageGc(
     protectedGenerations,
     gcAllowedThroughGeneration,
     canGcGeneration: (generation: number) => generation <= gcAllowedThroughGeneration,
+    storageGeneration,
+    storageRetainFromGeneration,
+    protectedStorageGenerations,
+    storageGcAllowedThroughGeneration,
+    canGcStorageGeneration: (generation: number) => generation <= storageGcAllowedThroughGeneration,
   };
 }
 

@@ -137,6 +137,7 @@ export type StorageCasAutoGcPolicy = {
   enabled: boolean;
   dryRun?: boolean;
   activePullGenerations?: StorageGcPlanOptions["activePullGenerations"];
+  activeStorageGenerations?: StorageGcPlanOptions["activeStorageGenerations"];
 };
 
 export type StorageCasAutoGcExecution = StorageCasGcExecution & {
@@ -1069,13 +1070,15 @@ export async function migrateStorageBindingCatalog(db: PGliteClient): Promise<vo
     $$;
 
     CREATE OR REPLACE FUNCTION distrb_retained_snapshot_generations(group_name text)
-    RETURNS TABLE(ddl_generation integer)
+    RETURNS TABLE(ddl_generation integer, storage_generation integer)
     LANGUAGE sql
     AS $$
-      SELECT DISTINCT s.ddl_generation
+      SELECT DISTINCT
+        s.ddl_generation,
+        COALESCE(s.storage_generation, s.ddl_generation) AS storage_generation
       FROM distrb_storage_snapshots s
       WHERE s.group_id = group_name
-      ORDER BY s.ddl_generation
+      ORDER BY s.ddl_generation, COALESCE(s.storage_generation, s.ddl_generation)
     $$;
 
     CREATE OR REPLACE FUNCTION distrb_create_catalog_manifest(group_name text)
@@ -1723,15 +1726,19 @@ export async function planStorageGcFromCatalog(options: {
   db: PGliteClient;
   groupId: string;
   activePullGenerations?: StorageGcPlanOptions["activePullGenerations"];
+  activeStorageGenerations?: StorageGcPlanOptions["activeStorageGenerations"];
 }): Promise<StorageGcPlan | undefined> {
   const group = await loadStorageBindingGroup(options.db, options.groupId);
   if (!group) {
     return undefined;
   }
 
-  const snapshotGenerations = await options.db.query<{ ddl_generation: number }>(
+  const snapshotGenerations = await options.db.query<{
+    ddl_generation: number;
+    storage_generation: number;
+  }>(
     `
-      SELECT ddl_generation
+      SELECT ddl_generation, storage_generation
       FROM distrb_retained_snapshot_generations($1)
     `,
     [options.groupId],
@@ -1739,7 +1746,9 @@ export async function planStorageGcFromCatalog(options: {
 
   return planStorageGc(group, {
     activePullGenerations: options.activePullGenerations,
+    activeStorageGenerations: options.activeStorageGenerations,
     retainedSnapshotGenerations: snapshotGenerations.rows.map((row) => row.ddl_generation),
+    retainedSnapshotStorageGenerations: snapshotGenerations.rows.map((row) => row.storage_generation),
   });
 }
 
@@ -1748,6 +1757,7 @@ export async function runStorageCasGcFromCatalog(options: {
   groupId: string;
   casDir: string;
   activePullGenerations?: StorageGcPlanOptions["activePullGenerations"];
+  activeStorageGenerations?: StorageGcPlanOptions["activeStorageGenerations"];
   dryRun?: boolean;
 }): Promise<StorageCasGcExecution | undefined> {
   const group = await loadStorageBindingGroup(options.db, options.groupId);
@@ -1756,6 +1766,7 @@ export async function runStorageCasGcFromCatalog(options: {
   }
   const plan = planStorageGc(group, {
     activePullGenerations: options.activePullGenerations,
+    activeStorageGenerations: options.activeStorageGenerations,
   });
 
   const entries = await listStorageSnapshotCatalogEntries<CasManifest>({
@@ -1763,10 +1774,12 @@ export async function runStorageCasGcFromCatalog(options: {
     groupId: options.groupId,
   });
   const retainedEntries = entries.filter((entry) =>
-    entry.manifestKind === "cas" && !plan.canGcGeneration(entry.ddlGeneration)
+    entry.manifestKind === "cas"
+    && !plan.canGcStorageGeneration(entry.storageGeneration ?? entry.ddlGeneration)
   );
   const gcEligibleEntries = entries.filter((entry) =>
-    entry.manifestKind === "cas" && plan.canGcGeneration(entry.ddlGeneration)
+    entry.manifestKind === "cas"
+    && plan.canGcStorageGeneration(entry.storageGeneration ?? entry.ddlGeneration)
   );
 
   return {
@@ -1796,6 +1809,7 @@ export async function runStorageCasAutoGcFromCatalog(options: {
     groupId: options.groupId,
     casDir: options.casDir,
     activePullGenerations: options.policy.activePullGenerations,
+    activeStorageGenerations: options.policy.activeStorageGenerations,
     dryRun: options.policy.dryRun,
   });
   if (!result) {
