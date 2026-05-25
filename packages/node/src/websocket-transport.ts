@@ -36,6 +36,8 @@ type ClientRecord = {
   subscriptions: Set<PartitionId>;
 };
 
+const REPLAY_REQUEST_TIMEOUT_MS = 1_000;
+
 export class WebSocketHub {
   private readonly server: WebSocketServer;
   private readonly clients = new Map<NodeId, ClientRecord>();
@@ -212,7 +214,11 @@ export class WebSocketTransport implements Transport {
 class WebSocketTransportConnection implements TransportConnection {
   private socket: WebSocket;
   private readonly subscriptions = new Set<PartitionId>();
-  private readonly pendingReplay = new Map<string, (response: ReplayResponse) => void>();
+  private readonly pendingReplay = new Map<string, {
+    resolve: (response: ReplayResponse) => void;
+    reject: (error: Error) => void;
+    timer: ReturnType<typeof setTimeout>;
+  }>();
   private closed = false;
 
   constructor(
@@ -233,6 +239,7 @@ class WebSocketTransportConnection implements TransportConnection {
       void this.handleMessage(this.decode(data as Buffer));
     });
     socket.on("close", () => {
+      this.rejectAllPendingReplay("websocket connection closed");
       if (!this.closed && this.reconnectOptions && this.url) {
         void this.attemptReconnect();
       }
@@ -278,6 +285,9 @@ class WebSocketTransportConnection implements TransportConnection {
   }
 
   async publish(event: EventEnvelope): Promise<void> {
+    if (this.closed) {
+      throw new Error("websocket connection is closed");
+    }
     this.send({ type: "event", event });
   }
 
@@ -287,8 +297,13 @@ class WebSocketTransportConnection implements TransportConnection {
     cursors: ReadonlyMap<NodeId, EventId>,
   ): Promise<ReplayResponse> {
     const requestId = crypto.randomUUID();
-    const response = new Promise<ReplayResponse>((resolve) => {
-      this.pendingReplay.set(requestId, resolve);
+    const response = new Promise<ReplayResponse>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        if (this.pendingReplay.delete(requestId)) {
+          reject(new Error(`replay request timed out after ${REPLAY_REQUEST_TIMEOUT_MS}ms`));
+        }
+      }, REPLAY_REQUEST_TIMEOUT_MS);
+      this.pendingReplay.set(requestId, { resolve, reject, timer });
     });
 
     this.send({
@@ -305,12 +320,13 @@ class WebSocketTransportConnection implements TransportConnection {
 
   async close(): Promise<void> {
     this.closed = true;
+    this.rejectAllPendingReplay("websocket connection closed");
     this.socket.close();
   }
 
   private send(message: WireMessage): void {
     if (this.socket.readyState !== WebSocket.OPEN) {
-      return;
+      throw new Error("websocket connection is not open");
     }
     if (this.zstd) {
       this.socket.send(this.zstd.compress(Buffer.from(JSON.stringify(message))));
@@ -351,16 +367,25 @@ class WebSocketTransportConnection implements TransportConnection {
         break;
       }
       case "replay-response": {
-        const resolve = this.pendingReplay.get(message.requestId);
-        if (resolve) {
+        const pending = this.pendingReplay.get(message.requestId);
+        if (pending) {
           this.pendingReplay.delete(message.requestId);
-          resolve({ partitionId: message.partitionId, events: message.events });
+          clearTimeout(pending.timer);
+          pending.resolve({ partitionId: message.partitionId, events: message.events });
         }
         break;
       }
       case "hello":
       case "subscribe":
         break;
+    }
+  }
+
+  private rejectAllPendingReplay(reason: string): void {
+    for (const [requestId, pending] of this.pendingReplay) {
+      this.pendingReplay.delete(requestId);
+      clearTimeout(pending.timer);
+      pending.reject(new Error(reason));
     }
   }
 }

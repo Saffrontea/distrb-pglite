@@ -66,6 +66,50 @@ describe("WebSocketTransport (Hub 固有)", () => {
     await nodeA.stop();
     await nodeB.stop();
   });
+
+  it("requestReplay は応答がない場合にタイムアウトする", async () => {
+    const port = await getFreePort();
+    if (port === undefined) return;
+
+    const hub = new WebSocketHub({ port });
+    hubs.push(hub);
+
+    const url = `ws://127.0.0.1:${port}`;
+    const requester = await new WebSocketTransport(url).connect("node-a", {
+      onEvent: () => {},
+    });
+    const target = await new WebSocketTransport(url).connect("node-b", {
+      onEvent: () => {},
+      onReplayRequest: () => new Promise(() => {}),
+    });
+
+    await expect(requester.requestReplay("node-b", "tenant:jp", new Map()))
+      .rejects.toThrow("replay request timed out after 1000ms");
+
+    await requester.close();
+    await target.close();
+  });
+
+  it("publish は connection close 後に失敗する", async () => {
+    const port = await getFreePort();
+    if (port === undefined) return;
+
+    const hub = new WebSocketHub({ port });
+    hubs.push(hub);
+
+    const connection = await new WebSocketTransport(`ws://127.0.0.1:${port}`).connect("node-a", {
+      onEvent: () => {},
+    });
+    await connection.close();
+
+    await expect(connection.publish({
+      sourceNodeId: "node-a",
+      eventId: "018bcfe5-6800-7001-8000-000000000001",
+      partitionId: "tenant:jp",
+      schemaVersion: 1,
+      payload: {},
+    })).rejects.toThrow("websocket connection is closed");
+  });
 });
 
 const hubs: WebSocketHub[] = [];

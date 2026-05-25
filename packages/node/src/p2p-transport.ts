@@ -11,6 +11,8 @@ import {
 import WebSocket, { WebSocketServer } from "ws";
 import { loadZstd } from "./zstd.js";
 
+const REPLAY_REQUEST_TIMEOUT_MS = 1_000;
+
 // ─── options ──────────────────────────────────────────────────────────────────
 
 export type P2PTransportOptions = {
@@ -115,13 +117,14 @@ class PeerSocket {
     });
   }
 
-  send(msg: P2PWireMessage): void {
-    if (this.ws.readyState !== WebSocket.OPEN) return;
+  send(msg: P2PWireMessage): boolean {
+    if (this.ws.readyState !== WebSocket.OPEN) return false;
     if (this.zstd) {
       this.ws.send(this.zstd.compress(Buffer.from(JSON.stringify(msg))));
     } else {
       this.ws.send(JSON.stringify(msg));
     }
+    return true;
   }
 
   close(): void {
@@ -143,7 +146,12 @@ class P2PWebSocketConnection implements TransportConnection {
   private readonly knownUrls = new Set<string>();
   private readonly reconnecting = new Set<string>();
   private readonly localSubscriptions = new Set<PartitionId>();
-  private readonly pendingReplay = new Map<string, (r: ReplayResponse) => void>();
+  private readonly pendingReplay = new Map<string, {
+    targetNodeId: NodeId;
+    resolve: (response: ReplayResponse) => void;
+    reject: (error: Error) => void;
+    timer: ReturnType<typeof setTimeout>;
+  }>();
   private closed = false;
 
   private server!: WebSocketServer;
@@ -194,10 +202,21 @@ class P2PWebSocketConnection implements TransportConnection {
   }
 
   async publish(event: EventEnvelope): Promise<void> {
+    if (this.closed) {
+      throw new Error("p2p connection is closed");
+    }
+    let subscribedPeers = 0;
+    let failedSends = 0;
     for (const peer of this.peers.values()) {
       if (peer.record.subscriptions.has(event.partitionId)) {
-        peer.send({ type: "event", event });
+        subscribedPeers += 1;
+        if (!peer.send({ type: "event", event })) {
+          failedSends += 1;
+        }
       }
+    }
+    if (subscribedPeers > 0 && failedSends > 0) {
+      throw new Error(`failed to publish to ${failedSends} subscribed peer(s) for partition: ${event.partitionId}`);
     }
   }
 
@@ -210,8 +229,13 @@ class P2PWebSocketConnection implements TransportConnection {
     if (!peer) return { partitionId, events: [] };
 
     const requestId = crypto.randomUUID();
-    const response = new Promise<ReplayResponse>((resolve) => {
-      this.pendingReplay.set(requestId, resolve);
+    const response = new Promise<ReplayResponse>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        if (this.pendingReplay.delete(requestId)) {
+          reject(new Error(`replay request timed out after ${REPLAY_REQUEST_TIMEOUT_MS}ms`));
+        }
+      }, REPLAY_REQUEST_TIMEOUT_MS);
+      this.pendingReplay.set(requestId, { targetNodeId, resolve, reject, timer });
     });
     peer.send({
       type: "replay-request",
@@ -226,11 +250,7 @@ class P2PWebSocketConnection implements TransportConnection {
 
   async close(): Promise<void> {
     this.closed = true;
-    // pendingReplay を空応答で全解決（リーク防止）
-    for (const [id, resolve] of this.pendingReplay) {
-      this.pendingReplay.delete(id);
-      resolve({ partitionId: "", events: [] });
-    }
+    this.rejectAllPendingReplay("p2p connection closed");
     for (const peer of this.peers.values()) peer.close();
     this.peers.clear();
     await new Promise<void>((r, j) => this.server.close((e) => e ? j(e) : r()));
@@ -346,10 +366,11 @@ class P2PWebSocketConnection implements TransportConnection {
             break;
           }
           case "replay-response": {
-            const resolve = this.pendingReplay.get(msg.requestId);
-            if (resolve) {
+            const pending = this.pendingReplay.get(msg.requestId);
+            if (pending) {
               this.pendingReplay.delete(msg.requestId);
-              resolve({ partitionId: msg.partitionId, events: msg.events });
+              clearTimeout(pending.timer);
+              pending.resolve({ partitionId: msg.partitionId, events: msg.events });
             }
             break;
           }
@@ -363,12 +384,32 @@ class P2PWebSocketConnection implements TransportConnection {
   private onPeerClose(peer: PeerSocket): void {
     const nodeId = peer.record.nodeId;
     if (nodeId) {
-      if (this.peers.get(nodeId) === peer) this.peers.delete(nodeId);
+      if (this.peers.get(nodeId) === peer) {
+        this.peers.delete(nodeId);
+        this.rejectPendingReplayForPeer(nodeId, `p2p peer disconnected: ${nodeId}`);
+      }
     }
     const url = peer.record.publicUrl;
     // dedup で別方向を残して close した場合は再接続しない
     const hasLiveConnection = nodeId ? this.peers.has(nodeId) : false;
     if (url && !this.closed && !hasLiveConnection) this.scheduleReconnect(url);
+  }
+
+  private rejectPendingReplayForPeer(nodeId: NodeId, reason: string): void {
+    for (const [requestId, pending] of this.pendingReplay) {
+      if (pending.targetNodeId !== nodeId) continue;
+      this.pendingReplay.delete(requestId);
+      clearTimeout(pending.timer);
+      pending.reject(new Error(reason));
+    }
+  }
+
+  private rejectAllPendingReplay(reason: string): void {
+    for (const [requestId, pending] of this.pendingReplay) {
+      this.pendingReplay.delete(requestId);
+      clearTimeout(pending.timer);
+      pending.reject(new Error(reason));
+    }
   }
 
   // ─── reconnection ────────────────────────────────────────────────────────

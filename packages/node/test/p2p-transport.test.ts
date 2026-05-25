@@ -152,6 +152,55 @@ describe("P2PWebSocketTransport (P2P 固有)", () => {
     await nodeA.stop();
   });
 
+  it("requestReplay は応答がない場合にタイムアウトする", async () => {
+    const portA = await getFreePort();
+    const portB = await getFreePort();
+    const urlA  = `ws://127.0.0.1:${portA}`;
+    const urlB  = `ws://127.0.0.1:${portB}`;
+
+    const requester = await new P2PWebSocketTransport({
+      publicUrl: urlA,
+      port: portA,
+      seeds: [urlB],
+      reconnectBaseDelayMs: 10,
+      reconnectMaxDelayMs: 50,
+    }).connect("node-a", { onEvent: () => {} });
+    const target = await new P2PWebSocketTransport({
+      publicUrl: urlB,
+      port: portB,
+      seeds: [urlA],
+      reconnectBaseDelayMs: 10,
+      reconnectMaxDelayMs: 50,
+    }).connect("node-b", {
+      onEvent: () => {},
+      onReplayRequest: () => new Promise(() => {}),
+    });
+    await new Promise((r) => setTimeout(r, meshSettleMs));
+
+    await expect(requester.requestReplay("node-b", "tenant:jp", new Map()))
+      .rejects.toThrow("replay request timed out after 1000ms");
+
+    await requester.close();
+    await target.close();
+  });
+
+  it("publish は connection close 後に失敗する", async () => {
+    const port = await getFreePort();
+    const connection = await new P2PWebSocketTransport({
+      publicUrl: `ws://127.0.0.1:${port}`,
+      port,
+    }).connect("node-a", { onEvent: () => {} });
+    await connection.close();
+
+    await expect(connection.publish({
+      sourceNodeId: "node-a",
+      eventId: "018bcfe5-6800-7001-8000-000000000001",
+      partitionId: "tenant:jp",
+      schemaVersion: 1,
+      payload: {},
+    })).rejects.toThrow("p2p connection is closed");
+  });
+
   it("zstd 圧縮を有効にしてもP2Pイベントが届く", async () => {
     const portA = await getFreePort();
     const portB = await getFreePort();
