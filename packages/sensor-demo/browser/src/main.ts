@@ -361,13 +361,9 @@ async function catchupTargetFromSource(): Promise<void> {
   if (!target.syncNode) {
     await connectRelay(target.id);
   }
-  const partitions = sharedPartitions(target, requireNode(sourceNodeId));
-  let applied = 0;
-  for (const partitionId of partitions) {
-    applied += await requireNode(targetNodeId).syncNode?.catchUpFrom(sourceNodeId, partitionId) ?? 0;
-  }
-  target.stats = await readNodeStats(target.db);
-  target.eventCount = target.stats.events;
+  const source = requireNode(sourceNodeId);
+  const partitions = sharedPartitions(target, source);
+  const applied = await catchUpNodeFromPeer(target, source);
   addLog("sync", `${targetNodeId} catchup from ${sourceNodeId} on ${partitions.join(", ") || "no shared partitions"}: +${applied}`);
   render(false);
 }
@@ -376,6 +372,29 @@ async function writeBurst(nodeId: string, count = 5): Promise<void> {
   for (let index = 0; index < count; index++) {
     await writeFactoryEvent(nodeId);
   }
+}
+
+async function catchUpNodeFromPeer(target: BrowserNode, peer: BrowserNode): Promise<number> {
+  if (!target.syncNode) return 0;
+  const partitions = sharedPartitions(target, peer);
+  let applied = 0;
+  for (const partitionId of partitions) {
+    applied += await target.syncNode.catchUpFrom(peer.id, partitionId);
+  }
+  target.stats = await readNodeStats(target.db);
+  target.eventCount = target.stats.events;
+  return applied;
+}
+
+async function fanOutCatchupFromPeer(peer: BrowserNode): Promise<number> {
+  let applied = 0;
+  for (const target of nodes.values()) {
+    if (target.id === peer.id || !target.syncNode || sharedPartitions(target, peer).length === 0) {
+      continue;
+    }
+    applied += await catchUpNodeFromPeer(target, peer);
+  }
+  return applied;
 }
 
 function startSimulation(): void {
@@ -423,12 +442,7 @@ async function simulationStep(): Promise<void> {
       const peer = pick(nodeList.filter((node) => node.id !== target.id));
       const partitions = peer ? sharedPartitions(target, peer) : [];
       if (target.syncNode && peer && partitions.length > 0) {
-        let applied = 0;
-        for (const partitionId of partitions) {
-          applied += await target.syncNode.catchUpFrom(peer.id, partitionId);
-        }
-        target.stats = await readNodeStats(target.db);
-        target.eventCount = target.stats.events;
+        const applied = await catchUpNodeFromPeer(target, peer);
         addLog("sync", `${target.id} auto catchup from ${peer.id} on ${partitions.join(", ")}: +${applied}`);
         render(false);
       }
@@ -461,13 +475,12 @@ async function incidentStep(): Promise<void> {
     const peer = peers.length ? pick(peers) : undefined;
     const partitions = peer ? sharedPartitions(node, peer) : [];
     if (node.syncNode && peer && partitions.length > 0) {
-      let applied = 0;
-      for (const partitionId of partitions) {
-        applied += await node.syncNode.catchUpFrom(peer.id, partitionId);
-      }
-      node.stats = await readNodeStats(node.db);
-      node.eventCount = node.stats.events;
+      const applied = await catchUpNodeFromPeer(node, peer);
+      const fannedOut = await fanOutCatchupFromPeer(node);
       addLog("sync", `${node.id} rejoined and caught up from ${peer.id} on ${partitions.join(", ")}: +${applied}`);
+      if (fannedOut > 0) {
+        addLog("sync", `${node.id} shared offline backlog to subscribers: +${fannedOut}`);
+      }
       render(false);
     }
     return;
