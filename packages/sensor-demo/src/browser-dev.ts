@@ -14,6 +14,8 @@ async function main(): Promise<void> {
   hub = new WebSocketHub({ port: relayPort });
   vite = await createViteServer({
     root: "browser",
+    base: "./",
+    assetsInclude: ["**/*.data"],
     define: {
       __DISTRB_RELAY_PORT__: JSON.stringify(relayPort),
     },

@@ -14,7 +14,7 @@
     "ui": "node dist/ui.js",
     "playground": "node dist/ui.js",
     "browser:dev": "pnpm build && node dist/browser-dev.js",
-    "browser:build": "vite build browser",
+    "browser:build": "vite build -c vite.browser.config.ts",
     "browser:check": "tsc -p browser/tsconfig.json --noEmit"
   },
   "dependencies": {
