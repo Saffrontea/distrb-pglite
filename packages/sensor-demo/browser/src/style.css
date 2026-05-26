@@ -57,6 +57,30 @@ header {
   gap: 16px;
 }
 
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sim-live,
+.sim-paused {
+  padding: 4px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.sim-live {
+  background: #e7f7ee;
+  color: #18794e;
+}
+
+.sim-paused {
+  background: #fff4e5;
+  color: #ad5700;
+}
+
 h1,
 h2,
 p {
@@ -100,6 +124,40 @@ main {
   color: #66768a;
 }
 
+.kpis {
+  padding: 12px 18px;
+  border-bottom: 1px solid #d7dee8;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(130px, 1fr));
+  gap: 10px;
+  background: #ffffff;
+}
+
+.kpis div {
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid #d7dee8;
+  border-radius: 8px;
+  background: #fbfcfe;
+}
+
+.kpis span,
+.panel-title {
+  display: block;
+  color: #66768a;
+  font-size: 11px;
+  font-weight: 650;
+  text-transform: uppercase;
+}
+
+.kpis strong {
+  display: block;
+  margin-top: 4px;
+  color: #12355b;
+  font-size: 24px;
+  line-height: 1;
+}
+
 .content {
   display: grid;
   grid-template-columns: minmax(260px, 0.9fr) minmax(420px, 1.2fr) 320px;
@@ -114,6 +172,12 @@ main {
   align-content: start;
   gap: 10px;
   overflow: auto;
+}
+
+.panel-title {
+  grid-column: 1 / -1;
+  padding: 2px 2px 4px;
+  letter-spacing: .06em;
 }
 
 .node {
@@ -149,6 +213,36 @@ main {
   line-height: 1;
   font-weight: 780;
   color: #1464a5;
+}
+
+.node-metrics {
+  margin-top: 12px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.node-metrics div {
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid #e5eaf1;
+  border-radius: 6px;
+  background: #fbfcfe;
+}
+
+.node-metrics strong {
+  display: block;
+  color: #1464a5;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.node-metrics span {
+  display: block;
+  margin-top: 3px;
+  color: #66768a;
+  font-size: 10px;
+  text-transform: uppercase;
 }
 
 .node p {
@@ -332,6 +426,10 @@ aside h2 {
 @media (max-width: 1100px) {
   main {
     height: auto;
+  }
+
+  .kpis {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .content {

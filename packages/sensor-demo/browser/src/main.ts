@@ -4,7 +4,6 @@ import pgliteWasmUrl from "../../node_modules/@electric-sql/pglite/dist/pglite.w
 import {
   InMemoryPartitionStore,
   SyncNode,
-  uuidV7,
   type EventEnvelope,
   type PartitionStore,
 } from "@distrb-pglite/core";
@@ -29,6 +28,8 @@ type QueryRow = Record<string, unknown>;
 
 type BrowserNode = {
   id: string;
+  role: FactoryRole;
+  lineId: string;
   fs: BrowserPGliteCasFilesystem;
   blobs: BrowserSha256BlobStore;
   db: PGlite;
@@ -36,6 +37,7 @@ type BrowserNode = {
   syncNode?: SyncNode;
   relayOnline: boolean;
   eventCount: number;
+  stats: NodeStats;
 };
 
 type LogEntry = {
@@ -44,20 +46,46 @@ type LogEntry = {
   message: string;
 };
 
-type SensorPayload = {
-  sensorId: string;
-  reading: number;
+type FactoryRole = "line" | "quality" | "maintenance" | "warehouse";
+
+type FactoryPayload = {
+  eventType: "production" | "inspection" | "downtime" | "material" | "maintenance";
+  lineId: string;
+  stationId: string;
+  workOrder: string;
+  sku: string;
+  quantity: number;
+  defectCode?: string;
+  severity?: "info" | "warn" | "critical";
+  status: "open" | "closed";
+  reading?: number;
   unit?: string;
+};
+
+type NodeStats = {
+  events: number;
+  units: number;
+  defects: number;
+  openIssues: number;
+  latest: string;
 };
 
 declare const __DISTRB_RELAY_PORT__: number | undefined;
 
 const SCHEMA = `
-  CREATE TABLE IF NOT EXISTS sensor_readings (
+  CREATE TABLE IF NOT EXISTS factory_events (
     id          text PRIMARY KEY,
-    sensor_id   text NOT NULL,
-    reading     numeric NOT NULL,
-    unit        text NOT NULL DEFAULT 'C',
+    event_type  text NOT NULL,
+    line_id     text NOT NULL,
+    station_id  text NOT NULL,
+    work_order  text NOT NULL,
+    sku         text NOT NULL,
+    quantity    integer NOT NULL DEFAULT 0,
+    defect_code text,
+    severity    text NOT NULL DEFAULT 'info',
+    status      text NOT NULL DEFAULT 'closed',
+    reading     numeric,
+    unit        text,
     source_node text NOT NULL,
     recorded_at timestamptz NOT NULL DEFAULT now()
   );
@@ -105,7 +133,7 @@ class SensorBrowserStore implements PartitionStore {
   async applyRemote(event: EventEnvelope): Promise<boolean> {
     const applied = await this.inner.applyRemote(event);
     if (applied) {
-      await insertReading(this.db, event);
+      await insertFactoryEvent(this.db, event);
       await this.onAppliedRemote();
     }
     return applied;
@@ -123,9 +151,9 @@ const logs: LogEntry[] = [];
 const relayPort = typeof __DISTRB_RELAY_PORT__ === "number" ? __DISTRB_RELAY_PORT__ : 4174;
 const relayUrl = `ws://${location.hostname || "127.0.0.1"}:${relayPort}`;
 const partitionId = "tenant:jp";
-let sourceNodeId = "browser-a";
-let targetNodeId = "browser-b";
-let selectedSqlNodeId = "browser-a";
+let sourceNodeId = "line-a-edge";
+let targetNodeId = "plant-control";
+let selectedSqlNodeId = "plant-control";
 let lastManifest: BrowserCasManifest | null = null;
 let sourceCasStore: BrowserCasBlockStore;
 let targetCasStore: BrowserCasBlockStore;
@@ -133,22 +161,31 @@ let opfsEnabled = false;
 let casRelayEnabled = false;
 let pgliteFsBundlePromise: Promise<Blob> | undefined;
 let pgliteWasmModulePromise: Promise<WebAssembly.Module> | undefined;
+let simulationRunning = true;
+let simulationBusy = false;
+let simulationTimer: ReturnType<typeof setInterval> | undefined;
+let incidentTimer: ReturnType<typeof setInterval> | undefined;
 
 async function boot(): Promise<void> {
   sourceCasStore = await openCasStore("source", "distrb-pglite-browser-source-cas");
   targetCasStore = await openCasStore("target", "distrb-pglite-browser-target-cas");
-  await addNode("browser-a");
-  await addNode("browser-b");
-  await connectRelay("browser-a");
-  await connectRelay("browser-b");
-  await writeReading("browser-a", "temp-a", 22);
-  await writeReading("browser-a", "temp-b", 24);
-  await writeReading("browser-b", "temp-c", 20);
+  await addNode("line-a-edge", "line", "LINE-A");
+  await addNode("qa-gate", "quality", "LINE-A");
+  await addNode("maintenance-bay", "maintenance", "LINE-B");
+  await addNode("plant-control", "warehouse", "PLANT");
+  await connectRelay("line-a-edge");
+  await connectRelay("qa-gate");
+  await connectRelay("plant-control");
+  await writeFactoryEvent("line-a-edge", "production");
+  await writeFactoryEvent("line-a-edge", "production");
+  await writeFactoryEvent("qa-gate", "inspection");
+  await writeFactoryEvent("maintenance-bay", "downtime");
   addLog(
     "system",
-    `${opfsEnabled ? "OPFS" : "memory"} local CAS + ${casRelayEnabled ? "HTTP relay CAS" : "local-only CAS"} active`,
+    `factory dashboard using ${opfsEnabled ? "OPFS" : "memory"} CAS + ${casRelayEnabled ? "HTTP relay CAS" : "local-only CAS"}`,
   );
   render();
+  startSimulation();
 }
 
 async function createPGlite(fs: BrowserPGliteCasFilesystem): Promise<PGlite> {
@@ -180,7 +217,11 @@ function loadPGliteWasmModule(): Promise<WebAssembly.Module> {
   return pgliteWasmModulePromise;
 }
 
-async function addNode(id = `browser-${nodes.size + 1}`): Promise<void> {
+async function addNode(
+  id = `workcell-${nodes.size + 1}`,
+  role: FactoryRole = roleForIndex(nodes.size),
+  lineId = lineForIndex(nodes.size),
+): Promise<void> {
   const blobs = new BrowserSha256BlobStore();
   const fs = new BrowserPGliteCasFilesystem(blobs);
   const db = await createPGlite(fs);
@@ -189,16 +230,18 @@ async function addNode(id = `browser-${nodes.size + 1}`): Promise<void> {
   const store = new SensorBrowserStore(id, db, async () => {
     const node = nodes.get(id);
     if (node) {
-      node.eventCount = await rowCount(node.db);
+      node.stats = await readNodeStats(node.db);
+      node.eventCount = node.stats.events;
       addLog("sync", `${id} applied remote event`);
       render(false);
     }
   });
-  nodes.set(id, { id, fs, blobs, db, store, relayOnline: false, eventCount: 0 });
+  const stats = await readNodeStats(db);
+  nodes.set(id, { id, role, lineId, fs, blobs, db, store, relayOnline: false, eventCount: stats.events, stats });
   if (!sourceNodeId) sourceNodeId = id;
   if (!targetNodeId) targetNodeId = id;
   selectedSqlNodeId = selectedSqlNodeId || id;
-  addLog("system", `${id} opened with BrowserPGliteCasFilesystem`);
+  addLog("system", `${id} joined as ${role} node on ${lineId}`);
 }
 
 async function resetNode(id: string): Promise<void> {
@@ -213,12 +256,25 @@ async function resetNode(id: string): Promise<void> {
   const store = new SensorBrowserStore(id, db, async () => {
     const node = nodes.get(id);
     if (node) {
-      node.eventCount = await rowCount(node.db);
+      node.stats = await readNodeStats(node.db);
+      node.eventCount = node.stats.events;
       addLog("sync", `${id} applied remote event`);
       render(false);
     }
   });
-  nodes.set(id, { id, fs, blobs, db, store, relayOnline: false, eventCount: 0 });
+  const stats = await readNodeStats(db);
+  nodes.set(id, {
+    id,
+    role: existing.role,
+    lineId: existing.lineId,
+    fs,
+    blobs,
+    db,
+    store,
+    relayOnline: false,
+    eventCount: stats.events,
+    stats,
+  });
   addLog("system", `${id} reset`);
   render();
 }
@@ -259,34 +315,31 @@ async function disconnectRelay(nodeId: string): Promise<void> {
   render(false);
 }
 
-async function writeReading(
+async function writeFactoryEvent(
   nodeId: string,
-  sensorId = `sensor-${Math.floor(Math.random() * 5) + 1}`,
-  reading = Math.round((18 + Math.random() * 12) * 10) / 10,
+  preferredType?: FactoryPayload["eventType"],
 ): Promise<void> {
   const node = requireNode(nodeId);
+  const payload = createFactoryPayload(node, preferredType);
   if (node.syncNode) {
-    const event = await node.syncNode.write<SensorPayload>({
+    const event = await node.syncNode.write<FactoryPayload>({
       partitionId,
       schemaVersion: 1,
-      payload: { sensorId, reading },
+      payload,
     });
-    await insertReading(node.db, event);
-    addLog("write", `${nodeId} relayed ${sensorId}=${reading}`);
+    await insertFactoryEvent(node.db, event);
+    addLog("write", `${nodeId} relayed ${eventSummary(payload)}`);
   } else {
-    await node.db.query(
-      `INSERT INTO sensor_readings (id, sensor_id, reading, source_node)
-       VALUES ($1, $2, $3, $4)`,
-      [uuidV7(), sensorId, reading, nodeId],
-    );
-    await node.store.appendLocal<SensorPayload>({
+    const event = await node.store.appendLocal<FactoryPayload>({
       partitionId,
       schemaVersion: 1,
-      payload: { sensorId, reading },
+      payload,
     });
-    addLog("write", `${nodeId} inserted local-only ${sensorId}=${reading}`);
+    await insertFactoryEvent(node.db, event);
+    addLog("write", `${nodeId} recorded offline ${eventSummary(payload)}`);
   }
-  node.eventCount = await rowCount(node.db);
+  node.stats = await readNodeStats(node.db);
+  node.eventCount = node.stats.events;
   render();
 }
 
@@ -296,19 +349,107 @@ async function catchupTargetFromSource(): Promise<void> {
     await connectRelay(target.id);
   }
   const applied = await requireNode(targetNodeId).syncNode?.catchUpFrom(sourceNodeId, partitionId) ?? 0;
-  target.eventCount = await rowCount(target.db);
+  target.stats = await readNodeStats(target.db);
+  target.eventCount = target.stats.events;
   addLog("sync", `${targetNodeId} catchup from ${sourceNodeId}: +${applied}`);
   render(false);
 }
 
 async function writeBurst(nodeId: string, count = 5): Promise<void> {
   for (let index = 0; index < count; index++) {
-    await writeReading(
-      nodeId,
-      `sensor-${index % 3}`,
-      Math.round((18 + Math.random() * 14) * 10) / 10,
-    );
+    await writeFactoryEvent(nodeId);
   }
+}
+
+function startSimulation(): void {
+  stopSimulationTimers();
+  simulationRunning = true;
+  simulationTimer = setInterval(() => {
+    void simulationStep();
+  }, 1_800);
+  incidentTimer = setInterval(() => {
+    void incidentStep();
+  }, 6_500);
+}
+
+function stopSimulation(): void {
+  simulationRunning = false;
+  stopSimulationTimers();
+  addLog("system", "shift automation paused");
+  render(false);
+}
+
+function resumeSimulation(): void {
+  if (simulationRunning) return;
+  addLog("system", "shift automation resumed");
+  startSimulation();
+  render(false);
+}
+
+function stopSimulationTimers(): void {
+  if (simulationTimer) clearInterval(simulationTimer);
+  if (incidentTimer) clearInterval(incidentTimer);
+  simulationTimer = undefined;
+  incidentTimer = undefined;
+}
+
+async function simulationStep(): Promise<void> {
+  if (!simulationRunning || simulationBusy || nodes.size === 0) return;
+  simulationBusy = true;
+  try {
+    const nodeList = [...nodes.values()];
+    const producer = pick(nodeList);
+    await writeFactoryEvent(producer.id);
+
+    if (Math.random() > 0.72) {
+      const target = nodeList.find((node) => node.id === "plant-control") ?? pick(nodeList);
+      const peer = pick(nodeList.filter((node) => node.id !== target.id));
+      if (target.syncNode && peer) {
+        const applied = await target.syncNode.catchUpFrom(peer.id, partitionId);
+        target.stats = await readNodeStats(target.db);
+        target.eventCount = target.stats.events;
+        addLog("sync", `${target.id} auto catchup from ${peer.id}: +${applied}`);
+        render(false);
+      }
+    }
+  } finally {
+    simulationBusy = false;
+  }
+}
+
+async function incidentStep(): Promise<void> {
+  if (!simulationRunning || nodes.size === 0) return;
+  const nodeList = [...nodes.values()];
+  const online = nodeList.filter((node) => node.relayOnline);
+  const offline = nodeList.filter((node) => !node.relayOnline);
+
+  if (Math.random() > 0.55 && online.length > 2) {
+    const node = pick(online.filter((candidate) => candidate.id !== "plant-control"));
+    if (node) {
+      await disconnectRelay(node.id);
+      addLog("system", `${node.id} network segment isolated`);
+      await writeFactoryEvent(node.id, node.role === "maintenance" ? "downtime" : eventTypeForRole(node.role));
+    }
+    return;
+  }
+
+  if (offline.length > 0) {
+    const node = pick(offline);
+    await connectRelay(node.id);
+    const peers = nodeList.filter((candidate) => candidate.id !== node.id && candidate.relayOnline);
+    const peer = peers.length ? pick(peers) : undefined;
+    if (node.syncNode && peer) {
+      const applied = await node.syncNode.catchUpFrom(peer.id, partitionId);
+      node.stats = await readNodeStats(node.db);
+      node.eventCount = node.stats.events;
+      addLog("sync", `${node.id} rejoined and caught up from ${peer.id}: +${applied}`);
+      render(false);
+    }
+    return;
+  }
+
+  const maintenance = nodeList.find((node) => node.role === "maintenance") ?? pick(nodeList);
+  await writeFactoryEvent(maintenance.id, "downtime");
 }
 
 async function createSnapshot(): Promise<void> {
@@ -350,16 +491,28 @@ async function restoreSnapshot(): Promise<void> {
   });
   const db = await createPGlite(fs);
   await db.waitReady;
-  const count = await rowCount(db);
+  const stats = await readNodeStats(db);
   const store = new SensorBrowserStore(target.id, db, async () => {
     const node = nodes.get(target.id);
     if (node) {
-      node.eventCount = await rowCount(node.db);
+      node.stats = await readNodeStats(node.db);
+      node.eventCount = node.stats.events;
       addLog("sync", `${target.id} applied remote event`);
       render(false);
     }
   });
-  nodes.set(target.id, { id: target.id, fs, blobs, db, store, relayOnline: false, eventCount: count });
+  nodes.set(target.id, {
+    id: target.id,
+    role: target.role,
+    lineId: target.lineId,
+    fs,
+    blobs,
+    db,
+    store,
+    relayOnline: false,
+    eventCount: stats.events,
+    stats,
+  });
   addLog("restore", `${target.id} restored ${manifest.snapshotId}; transferred ${missing.length} missing blocks`);
   selectedSqlNodeId = target.id;
   render();
@@ -407,22 +560,54 @@ async function runSql(): Promise<void> {
   render(false);
 }
 
-async function rowCount(db: PGlite): Promise<number> {
-  const result = await db.query<{ count: string }>("SELECT count(*)::int AS count FROM sensor_readings");
-  return Number(result.rows[0]?.count ?? 0);
+async function readNodeStats(db: PGlite): Promise<NodeStats> {
+  const result = await db.query<{
+    events: string;
+    units: string;
+    defects: string;
+    open_issues: string;
+    latest: string | null;
+  }>(`
+    SELECT
+      count(*)::int AS events,
+      coalesce(sum(quantity) FILTER (WHERE event_type = 'production'), 0)::int AS units,
+      count(*) FILTER (WHERE event_type = 'inspection' AND defect_code IS NOT NULL)::int AS defects,
+      count(*) FILTER (WHERE status = 'open')::int AS open_issues,
+      max(recorded_at)::text AS latest
+    FROM factory_events
+  `);
+  const row = result.rows[0];
+  return {
+    events: Number(row?.events ?? 0),
+    units: Number(row?.units ?? 0),
+    defects: Number(row?.defects ?? 0),
+    openIssues: Number(row?.open_issues ?? 0),
+    latest: row?.latest ? new Date(row.latest).toLocaleTimeString("ja-JP", { hour12: false }) : "none",
+  };
 }
 
-async function insertReading(db: PGlite, event: EventEnvelope): Promise<void> {
-  const payload = event.payload as SensorPayload;
+async function insertFactoryEvent(db: PGlite, event: EventEnvelope): Promise<void> {
+  const payload = event.payload as FactoryPayload;
   await db.query(
-    `INSERT INTO sensor_readings (id, sensor_id, reading, unit, source_node)
-     VALUES ($1, $2, $3, $4, $5)
+    `INSERT INTO factory_events (
+       id, event_type, line_id, station_id, work_order, sku, quantity,
+       defect_code, severity, status, reading, unit, source_node
+     )
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
      ON CONFLICT (id) DO NOTHING`,
     [
       event.eventId,
-      payload.sensorId,
-      payload.reading,
-      payload.unit ?? "C",
+      payload.eventType,
+      payload.lineId,
+      payload.stationId,
+      payload.workOrder,
+      payload.sku,
+      payload.quantity,
+      payload.defectCode ?? null,
+      payload.severity ?? "info",
+      payload.status,
+      payload.reading ?? null,
+      payload.unit ?? null,
       event.sourceNodeId,
     ],
   );
@@ -468,20 +653,25 @@ function addLog(kind: LogEntry["kind"], message: string): void {
 
 function render(includeSqlResult = true): void {
   const nodeList = [...nodes.values()];
+  const fleet = fleetStats(nodeList);
   appRoot.innerHTML = `
     <header>
       <div>
-        <h1>distrb-pglite browser playground</h1>
-        <p>Browser PGlite + ${opfsEnabled ? "OPFS" : "memory"} CAS + ${casRelayEnabled ? "HTTP relay CAS" : "local CAS"} + WebSocket event relay</p>
+        <h1>Distributed Factory Control</h1>
+        <p>${nodeList.length} browser nodes · ${opfsEnabled ? "OPFS" : "memory"} CAS · ${casRelayEnabled ? "HTTP relay CAS" : "local CAS"} · WebSocket event relay</p>
       </div>
-      <button data-action="add-node">Add node</button>
+      <div class="header-actions">
+        <span class="${simulationRunning ? "sim-live" : "sim-paused"}">${simulationRunning ? "shift running" : "shift paused"}</span>
+        <button data-action="toggle-sim">${simulationRunning ? "Pause shift" : "Run shift"}</button>
+        <button data-action="add-node">Add workcell</button>
+      </div>
     </header>
     <main>
       <section class="toolbar">
         <label>Source ${select("source-node", nodeList, sourceNodeId)}</label>
         <label>Target ${select("target-node", nodeList, targetNodeId)}</label>
-        <button class="primary" data-action="write-source">Write</button>
-        <button data-action="burst-source">Burst</button>
+        <button class="primary" data-action="write-source">Record event</button>
+        <button data-action="burst-source">Run shift</button>
         <button data-action="connect-source">Connect source</button>
         <button data-action="connect-target">Connect target</button>
         <button data-action="catchup">Catchup target</button>
@@ -490,18 +680,29 @@ function render(includeSqlResult = true): void {
         <button class="primary" data-action="restore">Restore to target</button>
         <button data-action="gc">GC target CAS</button>
       </section>
+      <section class="kpis">
+        <div><span>Fleet events</span><strong>${fleet.events}</strong></div>
+        <div><span>Units reported</span><strong>${fleet.units}</strong></div>
+        <div><span>Quality defects</span><strong>${fleet.defects}</strong></div>
+        <div><span>Open issues</span><strong>${fleet.openIssues}</strong></div>
+        <div><span>Relay online</span><strong>${fleet.online}/${nodeList.length}</strong></div>
+      </section>
       <section class="content">
-        <div class="nodes">${nodeList.map(renderNode).join("")}</div>
+        <div class="nodes">
+          <div class="panel-title">Workcell nodes</div>
+          ${nodeList.map(renderNode).join("")}
+        </div>
         <div class="sql">
           <div class="sql-head">
-            <h2>SQL</h2>
+            <h2>Local plant SQL</h2>
             ${select("sql-node", nodeList, selectedSqlNodeId)}
             <button class="primary" data-action="run-sql">Run</button>
           </div>
           <div class="samples">
-            <button data-sql="readings">readings</button>
-            <button data-sql="stats">stats</button>
-            <button data-sql="files">files</button>
+            <button data-sql="events">events</button>
+            <button data-sql="line">line board</button>
+            <button data-sql="quality">quality</button>
+            <button data-sql="files">storage</button>
           </div>
           <textarea id="sql-input" spellcheck="false">${escapeHtml(currentSql())}</textarea>
           <div id="sql-meta">${includeSqlResult ? "ready" : document.querySelector("#sql-meta")?.textContent ?? "ready"}</div>
@@ -520,18 +721,26 @@ function render(includeSqlResult = true): void {
 function renderNode(node: BrowserNode): string {
   const isSource = node.id === sourceNodeId;
   const isTarget = node.id === targetNodeId;
+  const stale = node.stats.latest === "none" ? "no local events" : `latest ${node.stats.latest}`;
   return `
     <article class="node">
       <div class="node-title">
         <strong>${node.id}</strong>
+        <span>${node.role}</span>
+        <span>${node.lineId}</span>
         ${isSource ? '<span>source</span>' : ""}
         ${isTarget ? '<span>target</span>' : ""}
         ${node.relayOnline ? '<span>relay</span>' : ""}
       </div>
-      <div class="count">${node.eventCount}</div>
-      <p>local SQL rows</p>
+      <div class="node-metrics">
+        <div><strong>${node.stats.events}</strong><span>events</span></div>
+        <div><strong>${node.stats.units}</strong><span>units</span></div>
+        <div><strong>${node.stats.defects}</strong><span>defects</span></div>
+        <div><strong>${node.stats.openIssues}</strong><span>open</span></div>
+      </div>
+      <p>${stale}</p>
       <div class="node-actions">
-        <button data-write="${node.id}">Write</button>
+        <button data-write="${node.id}">Record</button>
         <button data-connect="${node.id}">${node.relayOnline ? "Disconnect" : "Connect"}</button>
         <button data-reset="${node.id}">Reset</button>
         <button data-use-sql="${node.id}">SQL</button>
@@ -573,7 +782,14 @@ function bindEvents(): void {
     render(false);
   });
   document.querySelector("[data-action='add-node']")?.addEventListener("click", () => void addNode().then(() => render()));
-  document.querySelector("[data-action='write-source']")?.addEventListener("click", () => void writeReading(sourceNodeId));
+  document.querySelector("[data-action='toggle-sim']")?.addEventListener("click", () => {
+    if (simulationRunning) {
+      stopSimulation();
+    } else {
+      resumeSimulation();
+    }
+  });
+  document.querySelector("[data-action='write-source']")?.addEventListener("click", () => void writeFactoryEvent(sourceNodeId));
   document.querySelector("[data-action='burst-source']")?.addEventListener("click", () => void writeBurst(sourceNodeId));
   document.querySelector("[data-action='connect-source']")?.addEventListener("click", () => void connectRelay(sourceNodeId));
   document.querySelector("[data-action='connect-target']")?.addEventListener("click", () => void connectRelay(targetNodeId));
@@ -584,7 +800,7 @@ function bindEvents(): void {
   document.querySelector("[data-action='gc']")?.addEventListener("click", () => void runGc());
   document.querySelector("[data-action='run-sql']")?.addEventListener("click", () => void runSql());
   document.querySelectorAll<HTMLButtonElement>("[data-write]").forEach((button) => {
-    button.addEventListener("click", () => void writeReading(button.dataset.write!));
+    button.addEventListener("click", () => void writeFactoryEvent(button.dataset.write!));
   });
   document.querySelectorAll<HTMLButtonElement>("[data-connect]").forEach((button) => {
     button.addEventListener("click", () => {
@@ -620,17 +836,27 @@ function select(id: string, nodeList: BrowserNode[], selected: string): string {
 function setSqlSample(name: string): void {
   const input = document.querySelector<HTMLTextAreaElement>("#sql-input");
   if (!input) return;
-  if (name === "stats") {
-    input.value = `SELECT sensor_id, round(avg(reading)::numeric, 2) AS avg_reading, count(*)::int AS count
-FROM sensor_readings
-GROUP BY sensor_id
-ORDER BY sensor_id;`;
+  if (name === "line") {
+    input.value = `SELECT line_id,
+       sum(quantity) FILTER (WHERE event_type = 'production')::int AS units,
+       count(*) FILTER (WHERE status = 'open')::int AS open_issues,
+       max(recorded_at) AS latest
+FROM factory_events
+GROUP BY line_id
+ORDER BY line_id;`;
+  } else if (name === "quality") {
+    input.value = `SELECT line_id, station_id, defect_code, severity, count(*)::int AS count
+FROM factory_events
+WHERE event_type = 'inspection' AND defect_code IS NOT NULL
+GROUP BY line_id, station_id, defect_code, severity
+ORDER BY count DESC, line_id;`;
   } else if (name === "files") {
-    input.value = `SELECT pg_relation_filepath('sensor_readings') AS relation_path,
+    input.value = `SELECT pg_relation_filepath('factory_events') AS relation_path,
        pg_database_size(current_database()) AS database_size;`;
   } else {
-    input.value = `SELECT sensor_id, reading, unit, source_node, recorded_at
-FROM sensor_readings
+    input.value = `SELECT event_type, line_id, station_id, work_order, sku, quantity,
+       coalesce(defect_code, '') AS defect, severity, status, source_node, recorded_at
+FROM factory_events
 ORDER BY recorded_at DESC
 LIMIT 20;`;
   }
@@ -638,10 +864,126 @@ LIMIT 20;`;
 
 function currentSql(): string {
   return document.querySelector<HTMLTextAreaElement>("#sql-input")?.value
-    ?? `SELECT sensor_id, reading, unit, source_node, recorded_at
-FROM sensor_readings
+    ?? `SELECT event_type, line_id, station_id, work_order, sku, quantity,
+       coalesce(defect_code, '') AS defect, severity, status, source_node, recorded_at
+FROM factory_events
 ORDER BY recorded_at DESC
 LIMIT 20;`;
+}
+
+function createFactoryPayload(
+  node: BrowserNode,
+  preferredType = eventTypeForRole(node.role),
+): FactoryPayload {
+  const sku = pick(["AX-14", "BX-22", "CX-90", "DX-08"]);
+  const workOrder = `WO-${String(Math.floor(1200 + Math.random() * 80))}`;
+  const stationId = stationFor(node);
+
+  if (preferredType === "production") {
+    return {
+      eventType: "production",
+      lineId: node.lineId,
+      stationId,
+      workOrder,
+      sku,
+      quantity: Math.floor(18 + Math.random() * 34),
+      severity: "info",
+      status: "closed",
+      reading: Math.round((82 + Math.random() * 10) * 10) / 10,
+      unit: "oee",
+    };
+  }
+
+  if (preferredType === "inspection") {
+    const hasDefect = Math.random() > 0.55;
+    return {
+      eventType: "inspection",
+      lineId: node.lineId,
+      stationId,
+      workOrder,
+      sku,
+      quantity: 0,
+      defectCode: hasDefect ? pick(["scratch", "torque-low", "vision-fail", "label-miss"]) : undefined,
+      severity: hasDefect ? pick(["warn", "critical"]) : "info",
+      status: hasDefect ? "open" : "closed",
+      reading: Math.round((96 + Math.random() * 3.5) * 10) / 10,
+      unit: "yield",
+    };
+  }
+
+  if (preferredType === "material") {
+    return {
+      eventType: "material",
+      lineId: node.lineId,
+      stationId,
+      workOrder,
+      sku,
+      quantity: Math.floor(40 + Math.random() * 90),
+      severity: "info",
+      status: "closed",
+      unit: "kits",
+    };
+  }
+
+  return {
+    eventType: preferredType,
+    lineId: node.lineId,
+    stationId,
+    workOrder,
+    sku,
+    quantity: 0,
+    defectCode: preferredType === "downtime" ? pick(["jam", "overheat", "air-pressure", "changeover"]) : undefined,
+    severity: preferredType === "downtime" ? pick(["warn", "critical"]) : "warn",
+    status: "open",
+    reading: Math.floor(6 + Math.random() * 24),
+    unit: "min",
+  };
+}
+
+function eventTypeForRole(role: FactoryRole): FactoryPayload["eventType"] {
+  if (role === "quality") return "inspection";
+  if (role === "maintenance") return Math.random() > 0.35 ? "maintenance" : "downtime";
+  if (role === "warehouse") return "material";
+  return "production";
+}
+
+function stationFor(node: BrowserNode): string {
+  if (node.role === "quality") return "QA-02";
+  if (node.role === "maintenance") return "MNT-01";
+  if (node.role === "warehouse") return "WH-01";
+  return `${node.lineId}-CELL-${Math.floor(1 + Math.random() * 4)}`;
+}
+
+function roleForIndex(index: number): FactoryRole {
+  return (["line", "quality", "maintenance", "warehouse"] as const)[index % 4];
+}
+
+function lineForIndex(index: number): string {
+  return ["LINE-A", "LINE-B", "LINE-C", "PLANT"][index % 4];
+}
+
+function pick<T>(values: readonly T[]): T {
+  return values[Math.floor(Math.random() * values.length)]!;
+}
+
+function eventSummary(payload: FactoryPayload): string {
+  const issue = payload.defectCode ? ` ${payload.defectCode}` : "";
+  const qty = payload.quantity ? ` x${payload.quantity}` : "";
+  return `${payload.eventType} ${payload.lineId}/${payload.stationId}${qty}${issue}`;
+}
+
+function fleetStats(nodeList: BrowserNode[]): NodeStats & { online: number } {
+  return nodeList.reduce(
+    (total, node) => ({
+      events: total.events + node.stats.events,
+      units: total.units + node.stats.units,
+      defects: total.defects + node.stats.defects,
+      openIssues: total.openIssues + node.stats.openIssues,
+      latest: total.latest,
+      online: total.online + (node.relayOnline ? 1 : 0),
+    }),
+    { events: 0, units: 0, defects: 0, openIssues: 0, latest: "", online: 0 },
+  );
 }
 
 function blockCount(manifest: BrowserCasManifest): number {
