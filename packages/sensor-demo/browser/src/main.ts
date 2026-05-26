@@ -165,6 +165,9 @@ let simulationRunning = true;
 let simulationBusy = false;
 let simulationTimer: ReturnType<typeof setInterval> | undefined;
 let incidentTimer: ReturnType<typeof setInterval> | undefined;
+let sqlText = defaultSql();
+let sqlMetaText = "ready";
+let sqlResultHtml = '<div class="empty">Run a query</div>';
 
 async function boot(): Promise<void> {
   sourceCasStore = await openCasStore("source", "distrb-pglite-browser-source-cas");
@@ -541,20 +544,19 @@ async function runGc(): Promise<void> {
 async function runSql(): Promise<void> {
   const node = requireNode(selectedSqlNodeId);
   const input = document.querySelector<HTMLTextAreaElement>("#sql-input");
-  const meta = document.querySelector<HTMLDivElement>("#sql-meta");
-  const output = document.querySelector<HTMLDivElement>("#sql-result");
-  if (!input || !meta || !output) return;
+  if (!input) return;
 
+  sqlText = input.value;
   const started = performance.now();
   try {
-    const result = await node.db.query<QueryRow>(input.value);
+    const result = await node.db.query<QueryRow>(sqlText);
     const duration = Math.round(performance.now() - started);
-    meta.textContent = `${node.id}: ${result.rows.length} rows in ${duration}ms`;
-    output.innerHTML = renderTable(result.rows);
+    sqlMetaText = `${node.id}: ${result.rows.length} rows in ${duration}ms`;
+    sqlResultHtml = renderTable(result.rows);
     addLog("sql", `${node.id} query returned ${result.rows.length} rows`);
   } catch (error) {
-    meta.textContent = `${node.id}: query failed`;
-    output.innerHTML = `<pre class="error">${escapeHtml(String(error))}</pre>`;
+    sqlMetaText = `${node.id}: query failed`;
+    sqlResultHtml = `<pre class="error">${escapeHtml(String(error))}</pre>`;
     addLog("sql", `${node.id} query failed`);
   }
   render(false);
@@ -704,9 +706,9 @@ function render(includeSqlResult = true): void {
             <button data-sql="quality">quality</button>
             <button data-sql="files">storage</button>
           </div>
-          <textarea id="sql-input" spellcheck="false">${escapeHtml(currentSql())}</textarea>
-          <div id="sql-meta">${includeSqlResult ? "ready" : document.querySelector("#sql-meta")?.textContent ?? "ready"}</div>
-          <div id="sql-result">${includeSqlResult ? '<div class="empty">Run a query</div>' : document.querySelector("#sql-result")?.innerHTML ?? ""}</div>
+          <textarea id="sql-input" spellcheck="false">${escapeHtml(sqlText)}</textarea>
+          <div id="sql-meta">${escapeHtml(sqlMetaText)}</div>
+          <div id="sql-result">${sqlResultHtml}</div>
         </div>
         <aside>
           <h2>Log</h2>
@@ -781,6 +783,9 @@ function bindEvents(): void {
     selectedSqlNodeId = (event.target as HTMLSelectElement).value;
     render(false);
   });
+  document.querySelector<HTMLTextAreaElement>("#sql-input")?.addEventListener("input", (event) => {
+    sqlText = (event.target as HTMLTextAreaElement).value;
+  });
   document.querySelector("[data-action='add-node']")?.addEventListener("click", () => void addNode().then(() => render()));
   document.querySelector("[data-action='toggle-sim']")?.addEventListener("click", () => {
     if (simulationRunning) {
@@ -835,9 +840,8 @@ function select(id: string, nodeList: BrowserNode[], selected: string): string {
 
 function setSqlSample(name: string): void {
   const input = document.querySelector<HTMLTextAreaElement>("#sql-input");
-  if (!input) return;
   if (name === "line") {
-    input.value = `SELECT line_id,
+    sqlText = `SELECT line_id,
        sum(quantity) FILTER (WHERE event_type = 'production')::int AS units,
        count(*) FILTER (WHERE status = 'open')::int AS open_issues,
        max(recorded_at) AS latest
@@ -845,26 +849,22 @@ FROM factory_events
 GROUP BY line_id
 ORDER BY line_id;`;
   } else if (name === "quality") {
-    input.value = `SELECT line_id, station_id, defect_code, severity, count(*)::int AS count
+    sqlText = `SELECT line_id, station_id, defect_code, severity, count(*)::int AS count
 FROM factory_events
 WHERE event_type = 'inspection' AND defect_code IS NOT NULL
 GROUP BY line_id, station_id, defect_code, severity
 ORDER BY count DESC, line_id;`;
   } else if (name === "files") {
-    input.value = `SELECT pg_relation_filepath('factory_events') AS relation_path,
+    sqlText = `SELECT pg_relation_filepath('factory_events') AS relation_path,
        pg_database_size(current_database()) AS database_size;`;
   } else {
-    input.value = `SELECT event_type, line_id, station_id, work_order, sku, quantity,
-       coalesce(defect_code, '') AS defect, severity, status, source_node, recorded_at
-FROM factory_events
-ORDER BY recorded_at DESC
-LIMIT 20;`;
+    sqlText = defaultSql();
   }
+  if (input) input.value = sqlText;
 }
 
-function currentSql(): string {
-  return document.querySelector<HTMLTextAreaElement>("#sql-input")?.value
-    ?? `SELECT event_type, line_id, station_id, work_order, sku, quantity,
+function defaultSql(): string {
+  return `SELECT event_type, line_id, station_id, work_order, sku, quantity,
        coalesce(defect_code, '') AS defect, severity, status, source_node, recorded_at
 FROM factory_events
 ORDER BY recorded_at DESC
