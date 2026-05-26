@@ -1,4 +1,6 @@
 import { PGlite } from "@electric-sql/pglite";
+import pgliteDataUrl from "../../node_modules/@electric-sql/pglite/dist/pglite.data?url";
+import pgliteWasmUrl from "../../node_modules/@electric-sql/pglite/dist/pglite.wasm?url";
 import {
   InMemoryPartitionStore,
   SyncNode,
@@ -128,6 +130,8 @@ let sourceCasStore: BrowserCasBlockStore;
 let targetCasStore: BrowserCasBlockStore;
 let opfsEnabled = false;
 let casRelayEnabled = false;
+let pgliteFsBundlePromise: Promise<Blob> | undefined;
+let pgliteWasmModulePromise: Promise<WebAssembly.Module> | undefined;
 
 async function boot(): Promise<void> {
   sourceCasStore = await openCasStore("source", "distrb-pglite-browser-source-cas");
@@ -146,10 +150,39 @@ async function boot(): Promise<void> {
   render();
 }
 
+async function createPGlite(fs: BrowserPGliteCasFilesystem): Promise<PGlite> {
+  return new PGlite({
+    fs,
+    relaxedDurability: false,
+    fsBundle: await loadPGliteFsBundle(),
+    wasmModule: await loadPGliteWasmModule(),
+  });
+}
+
+function loadPGliteFsBundle(): Promise<Blob> {
+  pgliteFsBundlePromise ??= fetch(pgliteDataUrl).then(async (response) => {
+    if (!response.ok) {
+      throw new Error(`failed to load PGlite FS bundle: ${response.status} ${response.url}`);
+    }
+    return response.blob();
+  });
+  return pgliteFsBundlePromise;
+}
+
+function loadPGliteWasmModule(): Promise<WebAssembly.Module> {
+  pgliteWasmModulePromise ??= fetch(pgliteWasmUrl).then(async (response) => {
+    if (!response.ok) {
+      throw new Error(`failed to load PGlite WASM module: ${response.status} ${response.url}`);
+    }
+    return WebAssembly.compile(await response.arrayBuffer());
+  });
+  return pgliteWasmModulePromise;
+}
+
 async function addNode(id = `browser-${nodes.size + 1}`): Promise<void> {
   const blobs = new BrowserSha256BlobStore();
   const fs = new BrowserPGliteCasFilesystem(blobs);
-  const db = new PGlite({ fs, relaxedDurability: false });
+  const db = await createPGlite(fs);
   await db.waitReady;
   await db.exec(SCHEMA);
   const store = new SensorBrowserStore(id, db, async () => {
@@ -173,7 +206,7 @@ async function resetNode(id: string): Promise<void> {
   await existing.db.close();
   const blobs = new BrowserSha256BlobStore();
   const fs = new BrowserPGliteCasFilesystem(blobs);
-  const db = new PGlite({ fs, relaxedDurability: false });
+  const db = await createPGlite(fs);
   await db.waitReady;
   await db.exec(SCHEMA);
   const store = new SensorBrowserStore(id, db, async () => {
@@ -314,7 +347,7 @@ async function restoreSnapshot(): Promise<void> {
     casStore: targetCasStore,
     fs: fs.asSnapshotDataFilesystem(),
   });
-  const db = new PGlite({ fs, relaxedDurability: false });
+  const db = await createPGlite(fs);
   await db.waitReady;
   const count = await rowCount(db);
   const store = new SensorBrowserStore(target.id, db, async () => {
