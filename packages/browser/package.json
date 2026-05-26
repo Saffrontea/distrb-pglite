@@ -1,0 +1,19 @@
+{
+  "name": "@distrb-pglite/browser",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@distrb-pglite/core": "workspace:*",
+    "@electric-sql/pglite": "^0.3.4"
+  }
+}

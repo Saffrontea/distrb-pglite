@@ -107,6 +107,7 @@ Replication uses source-node-local event streams. Event IDs are UUID v7, but cor
 - Keep IndexedDB as a fallback investigation, but prefer OPFS for file-like PGlite persistence because the current architecture expects filesystem-style directory and file operations.
 - Add a browser playground that can create a PGlite database, run SQL, snapshot to OPFS CAS blocks, restore into a second logical data directory, and compare query results.
 - Acceptance: snapshot, restore, diff transfer, and GC pass using only browser storage APIs and no Node filesystem access.
+- Current prototype: `@distrb-pglite/browser` provides OPFS-backed data-directory and CAS block stores, Web Crypto SHA-256 hashing, browser CAS snapshot/restore/diff/transfer/GC helpers, and a PGlite `BaseFilesystem` adapter that snapshots/restores through core CAS manifests without importing Node APIs.
 
 ## Phase 10.2: Browser Sync And Relay Track
 
@@ -115,6 +116,7 @@ Replication uses source-node-local event streams. Event IDs are UUID v7, but cor
 - Add a small relay/hub protocol that lets browser nodes exchange event streams, snapshot manifests, and missing CAS blocks through a server-controlled rendezvous point.
 - Ensure the relay only needs transport and authorization responsibilities; storage semantics stay in manifests, event logs, and CAS block stores.
 - Acceptance: two browser nodes can sync through a relay, pull a snapshot, fetch only missing blocks, replay events after high-watermarks, and converge.
+- Current prototype: `@distrb-pglite/browser` exposes `BrowserWebSocketTransport`, a DOM `WebSocket` client for the same event/replay/reconnect wire protocol used by the Node `WebSocketHub`. The browser playground now starts that relay alongside Vite and can connect browser nodes, publish events, and catch up a target node through the relay. The playground also exposes an HTTP CAS relay namespace so snapshot blocks are written, diffed, transferred, restored, and GC'd through a server rendezvous instead of only in one tab. Sensor-demo tests cover browser transport event replication and replay against the real Node `WebSocketHub`.
 
 ## Phase 10.5: Storage Catalog Before smgr
 

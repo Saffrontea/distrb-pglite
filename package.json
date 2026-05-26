@@ -9,7 +9,8 @@
     "test": "pnpm -r test",
     "test:integration": "pnpm --filter @distrb-pglite/node test:integration",
     "test:all": "pnpm test && pnpm test:integration",
-    "playground": "pnpm --filter @distrb-pglite/sensor-demo playground"
+    "playground": "pnpm --filter @distrb-pglite/sensor-demo playground",
+    "playground:browser": "pnpm --filter @distrb-pglite/sensor-demo browser:dev"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

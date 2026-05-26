@@ -5,16 +5,25 @@
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit && pnpm browser:check",
+    "test": "vitest run",
     "run": "node dist/run.js",
     "scenarios": "node dist/scenarios.js",
     "scale": "node dist/scale.js",
     "vector": "node dist/vector.js",
     "ui": "node dist/ui.js",
-    "playground": "node dist/ui.js"
+    "playground": "node dist/ui.js",
+    "browser:dev": "pnpm build && node dist/browser-dev.js",
+    "browser:build": "vite build browser",
+    "browser:check": "tsc -p browser/tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@distrb-pglite/browser": "workspace:*",
     "@distrb-pglite/core": "workspace:*",
     "@distrb-pglite/node": "workspace:*",
     "@electric-sql/pglite": "^0.3.4"
+  },
+  "devDependencies": {
+    "vite": "^5.4.21"
   }
 }

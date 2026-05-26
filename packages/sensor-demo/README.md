@@ -14,6 +14,32 @@ mise exec -- pnpm build
 
 ## エントリーポイント
 
+### `pnpm browser:dev` — Browser-only playground
+
+```bash
+mise exec -- pnpm --filter @distrb-pglite/sensor-demo browser:dev
+```
+
+`http://127.0.0.1:5173` を開く。
+
+PGlite をブラウザ内で起動し、`@distrb-pglite/browser` の `BrowserPGliteCasFilesystem` と
+OPFS CAS store を使って snapshot / diff / restore / GC を試せます。
+同じ dev server が relay 用 `WebSocketHub` と HTTP CAS relay も起動するため、ブラウザ node 同士の
+event sync / catchup と snapshot block transfer も試せます。Node の data directory や `crypto` は使いません。
+
+UI でできること:
+
+- browser node を追加する
+- browser-local PGlite に sensor reading を書き込む
+- relay に接続して browser node 間で event sync する
+- target node を source node から catchup する
+- source node の filesystem snapshot を CAS manifest 化する
+- HTTP CAS relay 上の target namespace に missing block を転送する
+- relay CAS から snapshot を target node に restore して SQL 結果を比較する
+- target CAS store の GC を実行する
+
+---
+
 ### `pnpm playground` — ブラウザ UI
 
 ```bash

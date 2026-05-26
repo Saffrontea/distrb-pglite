@@ -1,0 +1,197 @@
+import { describe, expect, it } from "vitest";
+import { PGlite } from "@electric-sql/pglite";
+import {
+  BrowserPGliteCasFilesystem,
+  BrowserSha256BlobStore,
+  diffMissingBrowserCasBlocks,
+  restoreBrowserFilesystemFromCas,
+  snapshotBrowserFilesystemToCas,
+  transferMissingBrowserCasBlocks,
+  type BrowserCasBlockStore,
+  type BrowserSnapshotDataFilesystem,
+} from "../src/index.js";
+
+describe("browser CAS helpers", () => {
+  it("snapshots, transfers, and restores a browser filesystem without Node APIs", async () => {
+    const sourceFs = new MemoryDataFilesystem();
+    await sourceFs.mkdir("base");
+    await sourceFs.writeFile("base/one", new TextEncoder().encode("aaaabbbb"));
+    await sourceFs.writeFile("base/two", new TextEncoder().encode("aaaacccc"));
+
+    const sourceCas = new MemoryCasBlockStore();
+    const targetCas = new MemoryCasBlockStore();
+    const manifest = await snapshotBrowserFilesystemToCas({
+      fs: sourceFs,
+      casStore: sourceCas,
+      chunkSize: 4,
+      snapshotId: "snapshot-1",
+    });
+
+    expect(manifest.files.map((file) => file.path)).toEqual(["base/one", "base/two"]);
+    expect(manifest.directories).toEqual(["base"]);
+
+    const missing = diffMissingBrowserCasBlocks(manifest, await targetCas.listBlockHashes());
+    expect(missing.length).toBeGreaterThan(0);
+    await transferMissingBrowserCasBlocks({
+      manifest,
+      sourceCasStore: sourceCas,
+      targetCasStore: targetCas,
+    });
+
+    const restoredFs = new MemoryDataFilesystem();
+    await restoreBrowserFilesystemFromCas({
+      manifest,
+      casStore: targetCas,
+      fs: restoredFs,
+    });
+
+    expect(new TextDecoder().decode(await restoredFs.readFile("base/one"))).toBe("aaaabbbb");
+    expect(new TextDecoder().decode(await restoredFs.readFile("base/two"))).toBe("aaaacccc");
+  });
+});
+
+describe("BrowserPGliteCasFilesystem", () => {
+  it("supports file operations and CAS restore with Web Crypto hashes", async () => {
+    const blobs = new BrowserSha256BlobStore();
+    const source = new BrowserPGliteCasFilesystem(blobs, 4);
+    source.mkdir("/base/pgdata", { recursive: true });
+    const fd = source.open("/base/pgdata/file", "w+");
+    const input = new TextEncoder().encode("hello browser");
+
+    expect(source.write(fd, input, 0, input.length, 0)).toBe(input.length);
+    expect(source.fstat(fd).size).toBe(input.length);
+
+    const output = new Uint8Array(input.length);
+    expect(source.read(fd, output, 0, output.length, 0)).toBe(input.length);
+    expect(new TextDecoder().decode(output)).toBe("hello browser");
+    source.close(fd);
+
+    const manifest = await source.snapshot();
+    const restored = new BrowserPGliteCasFilesystem(blobs, 4);
+    await restored.restore(manifest);
+
+    expect(restored.readdir("/base/pgdata")).toEqual(["file"]);
+    expect(restored.lstat("/base/pgdata/file").size).toBe(input.length);
+  });
+
+  it("runs PGlite and restores a readable database from a browser CAS filesystem snapshot", async () => {
+    const blobs = new BrowserSha256BlobStore();
+    const sourceFs = new BrowserPGliteCasFilesystem(blobs, 16 * 1024);
+    const sourceDb = new PGlite({ fs: sourceFs, relaxedDurability: false });
+    await sourceDb.waitReady;
+    await sourceDb.exec(`
+      CREATE TABLE readings (id text PRIMARY KEY, value int NOT NULL);
+      INSERT INTO readings (id, value) VALUES ('a', 1), ('b', 2);
+    `);
+    await sourceDb.close();
+
+    const manifest = await sourceFs.snapshot();
+    const restoredFs = new BrowserPGliteCasFilesystem(blobs, 16 * 1024);
+    await restoredFs.restore(manifest);
+    const restoredDb = new PGlite({ fs: restoredFs, relaxedDurability: false });
+    await restoredDb.waitReady;
+    const result = await restoredDb.query<{ total: string }>(
+      "SELECT sum(value)::int AS total FROM readings",
+    );
+
+    expect(result.rows).toEqual([{ total: 3 }]);
+    await restoredDb.close();
+  });
+});
+
+class MemoryCasBlockStore implements BrowserCasBlockStore {
+  private readonly blocks = new Map<string, Uint8Array>();
+
+  async readBlock(hash: string): Promise<Uint8Array> {
+    const content = this.blocks.get(hash);
+    if (!content) {
+      throw new Error(`block not found: ${hash}`);
+    }
+    return new Uint8Array(content);
+  }
+
+  async writeBlock(hash: string, content: Uint8Array): Promise<void> {
+    this.blocks.set(hash, new Uint8Array(content));
+  }
+
+  async listBlockHashes(): Promise<Set<string>> {
+    return new Set(this.blocks.keys());
+  }
+
+  async deleteBlock(hash: string): Promise<void> {
+    this.blocks.delete(hash);
+  }
+}
+
+class MemoryDataFilesystem implements BrowserSnapshotDataFilesystem {
+  private readonly files = new Map<string, Uint8Array>();
+  private readonly directories = new Set<string>([""]);
+
+  async listDir(path: string): Promise<Array<{ name: string; type: "file" | "directory" }>> {
+    const normalized = normalize(path);
+    const prefix = normalized ? `${normalized}/` : "";
+    const entries = new Map<string, "file" | "directory">();
+
+    for (const dir of this.directories) {
+      if (!dir.startsWith(prefix) || dir === normalized) {
+        continue;
+      }
+      const rest = dir.slice(prefix.length);
+      if (rest && !rest.includes("/")) {
+        entries.set(rest, "directory");
+      }
+    }
+
+    for (const file of this.files.keys()) {
+      if (!file.startsWith(prefix)) {
+        continue;
+      }
+      const rest = file.slice(prefix.length);
+      if (rest && !rest.includes("/")) {
+        entries.set(rest, "file");
+      }
+    }
+
+    return [...entries]
+      .map(([name, type]) => ({ name, type }))
+      .sort((left, right) => left.name.localeCompare(right.name));
+  }
+
+  async readFile(path: string): Promise<Uint8Array> {
+    const content = this.files.get(normalize(path));
+    if (!content) {
+      throw new Error(`file not found: ${path}`);
+    }
+    return new Uint8Array(content);
+  }
+
+  async writeFile(path: string, data: Uint8Array): Promise<void> {
+    const normalized = normalize(path);
+    await this.mkdir(dirname(normalized));
+    this.files.set(normalized, new Uint8Array(data));
+  }
+
+  async mkdir(path: string): Promise<void> {
+    const normalized = normalize(path);
+    const parts = normalized ? normalized.split("/") : [];
+    let current = "";
+    this.directories.add(current);
+    for (const part of parts) {
+      current = current ? `${current}/${part}` : part;
+      this.directories.add(current);
+    }
+  }
+}
+
+function normalize(path: string): string {
+  return path
+    .replaceAll("\\", "/")
+    .replace(/^\/+/, "")
+    .replace(/\/+/g, "/")
+    .replace(/\/$/, "");
+}
+
+function dirname(path: string): string {
+  const index = path.lastIndexOf("/");
+  return index <= 0 ? "" : path.slice(0, index);
+}

@@ -63,6 +63,9 @@ edge で SQL を使いたい時、よくある選択肢には弱点がありま�
 - managed snapshot 作成
 - managed snapshot pull
 - snapshot 後の delta event replay
+- Browser 用 OPFS data filesystem / CAS block store
+- Browser 用 PGlite CAS filesystem adapter
+- Browser 用 WebSocket relay transport
 - browser playground で SQL / catchup / snapshot bootstrap を試す
 
 ## やらないこと
@@ -108,6 +111,22 @@ UI でできること:
 - 既存 target node を event catchup で追いつかせる
 - snapshot pull で late-joining replica を bootstrap する
 - bootstrap 後に delta catchup する
+
+Browser-only 版:
+
+```bash
+mise exec -- pnpm playground:browser
+```
+
+```text
+http://127.0.0.1:5173
+```
+
+こちらは Node 側の data directory を使わず、ブラウザ内 PGlite と
+`@distrb-pglite/browser` の OPFS/CAS adapter だけで snapshot / diff / restore / GC を試します。
+dev server は relay 用 `WebSocketHub` も同時に起動するため、ブラウザ node 同士の
+event sync / catchup も試せます。snapshot の CAS block transfer は同じ dev server の
+HTTP CAS relay を通ります。
 
 SQL パネルでは、各 node のローカル DB に直接 query できます。
 
@@ -193,11 +212,14 @@ packages/core
 packages/node
   PGlite store, WebSocket transport, CAS snapshot, storage binding, orchestration
 
+packages/browser
+  OPFS filesystem, browser CAS snapshot/restore, browser PGlite filesystem adapter
+
 packages/testkit
   shared test helpers
 
 packages/sensor-demo
-  sensor demo and browser playground
+  sensor demo, Node-backed playground, browser-only playground
 
 docs/adr
   architecture decision records
