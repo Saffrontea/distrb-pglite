@@ -70,6 +70,7 @@ type NodeStats = {
   defects: number;
   openIssues: number;
   latest: string;
+  partitions: Record<string, number>;
 };
 
 declare const __DISTRB_RELAY_PORT__: number | undefined;
@@ -175,8 +176,8 @@ let sqlResultHtml = '<div class="empty">Run a query</div>';
 async function boot(): Promise<void> {
   sourceCasStore = await openCasStore("source", "distrb-pglite-browser-source-cas");
   targetCasStore = await openCasStore("target", "distrb-pglite-browser-target-cas");
-  await addNode("line-a-edge", "line", "LINE-A", ["line:a", "quality"]);
-  await addNode("line-b-edge", "line", "LINE-B", ["line:b", "maintenance"]);
+  await addNode("line-a-edge", "line", "LINE-A", ["line:a"]);
+  await addNode("line-b-edge", "line", "LINE-B", ["line:b"]);
   await addNode("qa-gate", "quality", "LINE-A", ["quality", "line:a", "line:b"]);
   await addNode("maintenance-bay", "maintenance", "LINE-B", ["maintenance", "line:b"]);
   await addNode("plant-control", "warehouse", "PLANT", allPartitions);
@@ -600,6 +601,12 @@ async function readNodeStats(db: PGlite): Promise<NodeStats> {
       max(recorded_at)::text AS latest
     FROM factory_events
   `);
+  const partitionRows = await db.query<{ partition_id: string; count: string }>(`
+    SELECT partition_id, count(*)::int AS count
+    FROM factory_events
+    GROUP BY partition_id
+    ORDER BY partition_id
+  `);
   const row = result.rows[0];
   return {
     events: Number(row?.events ?? 0),
@@ -607,6 +614,9 @@ async function readNodeStats(db: PGlite): Promise<NodeStats> {
     defects: Number(row?.defects ?? 0),
     openIssues: Number(row?.open_issues ?? 0),
     latest: row?.latest ? new Date(row.latest).toLocaleTimeString("ja-JP", { hour12: false }) : "none",
+    partitions: Object.fromEntries(
+      partitionRows.rows.map((partition) => [partition.partition_id, Number(partition.count)]),
+    ),
   };
 }
 
@@ -747,6 +757,7 @@ function renderNode(node: BrowserNode): string {
   const isSource = node.id === sourceNodeId;
   const isTarget = node.id === targetNodeId;
   const stale = node.stats.latest === "none" ? "no local events" : `latest ${node.stats.latest}`;
+  const visiblePartitions = Object.entries(node.stats.partitions);
   return `
     <article class="node">
       <div class="node-title">
@@ -759,10 +770,15 @@ function renderNode(node: BrowserNode): string {
       </div>
       <div class="partitions">${node.partitions.map((partition) => `<span>${escapeHtml(partition)}</span>`).join("")}</div>
       <div class="node-metrics">
-        <div><strong>${node.stats.events}</strong><span>events</span></div>
+        <div><strong>${node.stats.events}</strong><span>visible events</span></div>
         <div><strong>${node.stats.units}</strong><span>units</span></div>
         <div><strong>${node.stats.defects}</strong><span>defects</span></div>
         <div><strong>${node.stats.openIssues}</strong><span>open</span></div>
+      </div>
+      <div class="partition-counts">
+        ${visiblePartitions.length
+          ? visiblePartitions.map(([partition, count]) => `<span>${escapeHtml(partition)} ${count}</span>`).join("")
+          : '<span>no partition rows</span>'}
       </div>
       <p>${stale}</p>
       <div class="node-actions">
@@ -1028,9 +1044,10 @@ function fleetStats(nodeList: BrowserNode[]): NodeStats & { online: number } {
       defects: total.defects + node.stats.defects,
       openIssues: total.openIssues + node.stats.openIssues,
       latest: total.latest,
+      partitions: total.partitions,
       online: total.online + (node.relayOnline ? 1 : 0),
     }),
-    { events: 0, units: 0, defects: 0, openIssues: 0, latest: "", online: 0 },
+    { events: 0, units: 0, defects: 0, openIssues: 0, latest: "", partitions: {}, online: 0 },
   );
 }
 

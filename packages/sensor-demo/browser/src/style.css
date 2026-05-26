@@ -223,6 +223,21 @@ main {
   font-size: 10px;
 }
 
+.partition-counts {
+  margin-top: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.partition-counts span {
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: #eef3f8;
+  color: #263548;
+  font-size: 10px;
+}
+
 .count {
   margin-top: 12px;
   font-size: 38px;
