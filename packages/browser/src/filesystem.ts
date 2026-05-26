@@ -7,6 +7,7 @@ export type BrowserSnapshotDataFilesystem = {
   listDir(path: string): Promise<BrowserSnapshotFilesystemEntry[]>;
   readFile(path: string): Promise<Uint8Array>;
   writeFile(path: string, data: Uint8Array): Promise<void>;
+  writeFileChunks?(path: string, chunks: AsyncIterable<Uint8Array>, expectedSize: number): Promise<void>;
   mkdir(path: string): Promise<void>;
 };
 
@@ -55,6 +56,27 @@ export class OpfsDataDirFilesystem implements BrowserSnapshotDataFilesystem {
     const writable = await fileHandle.createWritable();
     await writable.write(new Uint8Array(data));
     await writable.close();
+  }
+
+  async writeFileChunks(
+    path: string,
+    chunks: AsyncIterable<Uint8Array>,
+    expectedSize: number,
+  ): Promise<void> {
+    const fileHandle = await this.resolveFile(path, true);
+    const writable = await fileHandle.createWritable();
+    let written = 0;
+    try {
+      for await (const chunk of chunks) {
+        await writable.write(new Uint8Array(chunk));
+        written += chunk.length;
+      }
+    } finally {
+      await writable.close();
+    }
+    if (written !== expectedSize) {
+      throw new Error(`chunked write size mismatch: ${path}`);
+    }
   }
 
   async mkdir(path: string): Promise<void> {

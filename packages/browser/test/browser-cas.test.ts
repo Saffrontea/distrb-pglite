@@ -48,6 +48,29 @@ describe("browser CAS helpers", () => {
     expect(new TextDecoder().decode(await restoredFs.readFile("base/one"))).toBe("aaaabbbb");
     expect(new TextDecoder().decode(await restoredFs.readFile("base/two"))).toBe("aaaacccc");
   });
+
+  it("restores through chunked filesystem writes without concatenating whole files", async () => {
+    const sourceFs = new MemoryDataFilesystem();
+    await sourceFs.writeFile("large", new TextEncoder().encode("aaaabbbbcccc"));
+    const sourceCas = new MemoryCasBlockStore();
+    const manifest = await snapshotBrowserFilesystemToCas({
+      fs: sourceFs,
+      casStore: sourceCas,
+      chunkSize: 4,
+      snapshotId: "snapshot-1",
+    });
+    const restoredFs = new ChunkedMemoryDataFilesystem();
+
+    await restoreBrowserFilesystemFromCas({
+      manifest,
+      casStore: sourceCas,
+      fs: restoredFs,
+    });
+
+    expect(restoredFs.writeFileCalls).toBe(0);
+    expect(restoredFs.chunkWrites).toBe(3);
+    expect(new TextDecoder().decode(await restoredFs.readFile("large"))).toBe("aaaabbbbcccc");
+  });
 });
 
 describe("BrowserPGliteCasFilesystem", () => {
@@ -181,6 +204,45 @@ class MemoryDataFilesystem implements BrowserSnapshotDataFilesystem {
       this.directories.add(current);
     }
   }
+}
+
+class ChunkedMemoryDataFilesystem extends MemoryDataFilesystem {
+  writeFileCalls = 0;
+  chunkWrites = 0;
+
+  override async writeFile(path: string, data: Uint8Array): Promise<void> {
+    this.writeFileCalls += 1;
+    await super.writeFile(path, data);
+  }
+
+  override async writeFileChunks(
+    path: string,
+    chunks: AsyncIterable<Uint8Array>,
+    expectedSize: number,
+  ): Promise<void> {
+    const restored: Uint8Array[] = [];
+    let size = 0;
+    for await (const chunk of chunks) {
+      this.chunkWrites += 1;
+      restored.push(new Uint8Array(chunk));
+      size += chunk.length;
+    }
+    if (size !== expectedSize) {
+      throw new Error("size mismatch");
+    }
+    await super.writeFile(path, concat(restored));
+  }
+}
+
+function concat(chunks: Uint8Array[]): Uint8Array {
+  const total = chunks.reduce((size, chunk) => size + chunk.length, 0);
+  const result = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    result.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return result;
 }
 
 function normalize(path: string): string {

@@ -145,20 +145,19 @@ export async function restoreBrowserFilesystemFromCas(options: {
   }
 
   for (const file of options.manifest.files) {
-    const chunks: Uint8Array[] = [];
-    for (const block of file.blocks) {
-      const stored = await options.casStore.readBlock(block.hash);
-      if (stored.length !== block.size || await sha256(stored) !== block.hash) {
-        throw new Error(`CAS block integrity check failed: ${block.hash}`);
-      }
-      chunks.push(stored);
+    if (options.fs.writeFileChunks) {
+      await options.fs.writeFileChunks(file.path, verifiedBlockChunks(options.casStore, file.blocks), file.size);
+      continue;
     }
 
+    const chunks: Uint8Array[] = [];
+    for (const block of file.blocks) {
+      chunks.push(await readVerifiedBlock(options.casStore, block));
+    }
     const restored = concat(chunks);
     if (restored.length !== file.size || await sha256(restored) !== file.sha256) {
       throw new Error(`CAS file integrity check failed: ${file.path}`);
     }
-
     await options.fs.writeFile(file.path, restored);
   }
 }
@@ -340,6 +339,27 @@ function concat(chunks: Uint8Array[]): Uint8Array {
     offset += chunk.length;
   }
   return result;
+}
+
+async function* verifiedBlockChunks(
+  casStore: BrowserCasBlockStore,
+  blocks: readonly BrowserCasBlock[],
+): AsyncIterable<Uint8Array> {
+  for (const block of blocks) {
+    const content = await readVerifiedBlock(casStore, block);
+    yield content;
+  }
+}
+
+async function readVerifiedBlock(
+  casStore: BrowserCasBlockStore,
+  block: BrowserCasBlock,
+): Promise<Uint8Array> {
+  const stored = await casStore.readBlock(block.hash);
+  if (stored.length !== block.size || await sha256(stored) !== block.hash) {
+    throw new Error(`CAS block integrity check failed: ${block.hash}`);
+  }
+  return stored;
 }
 
 function isNotFoundError(error: unknown): boolean {
