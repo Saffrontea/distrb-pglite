@@ -30,6 +30,7 @@ type BrowserNode = {
   id: string;
   role: FactoryRole;
   lineId: string;
+  partitions: string[];
   fs: BrowserPGliteCasFilesystem;
   blobs: BrowserSha256BlobStore;
   db: PGlite;
@@ -50,6 +51,7 @@ type FactoryRole = "line" | "quality" | "maintenance" | "warehouse";
 
 type FactoryPayload = {
   eventType: "production" | "inspection" | "downtime" | "material" | "maintenance";
+  partitionId: string;
   lineId: string;
   stationId: string;
   workOrder: string;
@@ -76,6 +78,7 @@ const SCHEMA = `
   CREATE TABLE IF NOT EXISTS factory_events (
     id          text PRIMARY KEY,
     event_type  text NOT NULL,
+    partition_id text NOT NULL,
     line_id     text NOT NULL,
     station_id  text NOT NULL,
     work_order  text NOT NULL,
@@ -150,7 +153,7 @@ const nodes = new Map<string, BrowserNode>();
 const logs: LogEntry[] = [];
 const relayPort = typeof __DISTRB_RELAY_PORT__ === "number" ? __DISTRB_RELAY_PORT__ : 4174;
 const relayUrl = `ws://${location.hostname || "127.0.0.1"}:${relayPort}`;
-const partitionId = "tenant:jp";
+const allPartitions = ["line:a", "line:b", "quality", "maintenance", "warehouse"];
 let sourceNodeId = "line-a-edge";
 let targetNodeId = "plant-control";
 let selectedSqlNodeId = "plant-control";
@@ -172,11 +175,13 @@ let sqlResultHtml = '<div class="empty">Run a query</div>';
 async function boot(): Promise<void> {
   sourceCasStore = await openCasStore("source", "distrb-pglite-browser-source-cas");
   targetCasStore = await openCasStore("target", "distrb-pglite-browser-target-cas");
-  await addNode("line-a-edge", "line", "LINE-A");
-  await addNode("qa-gate", "quality", "LINE-A");
-  await addNode("maintenance-bay", "maintenance", "LINE-B");
-  await addNode("plant-control", "warehouse", "PLANT");
+  await addNode("line-a-edge", "line", "LINE-A", ["line:a", "quality"]);
+  await addNode("line-b-edge", "line", "LINE-B", ["line:b", "maintenance"]);
+  await addNode("qa-gate", "quality", "LINE-A", ["quality", "line:a", "line:b"]);
+  await addNode("maintenance-bay", "maintenance", "LINE-B", ["maintenance", "line:b"]);
+  await addNode("plant-control", "warehouse", "PLANT", allPartitions);
   await connectRelay("line-a-edge");
+  await connectRelay("line-b-edge");
   await connectRelay("qa-gate");
   await connectRelay("plant-control");
   await writeFactoryEvent("line-a-edge", "production");
@@ -224,6 +229,7 @@ async function addNode(
   id = `workcell-${nodes.size + 1}`,
   role: FactoryRole = roleForIndex(nodes.size),
   lineId = lineForIndex(nodes.size),
+  partitions = partitionsForRole(role, lineId),
 ): Promise<void> {
   const blobs = new BrowserSha256BlobStore();
   const fs = new BrowserPGliteCasFilesystem(blobs);
@@ -240,11 +246,11 @@ async function addNode(
     }
   });
   const stats = await readNodeStats(db);
-  nodes.set(id, { id, role, lineId, fs, blobs, db, store, relayOnline: false, eventCount: stats.events, stats });
+  nodes.set(id, { id, role, lineId, partitions, fs, blobs, db, store, relayOnline: false, eventCount: stats.events, stats });
   if (!sourceNodeId) sourceNodeId = id;
   if (!targetNodeId) targetNodeId = id;
   selectedSqlNodeId = selectedSqlNodeId || id;
-  addLog("system", `${id} joined as ${role} node on ${lineId}`);
+  addLog("system", `${id} joined as ${role} node on ${lineId}; subscribes ${partitions.join(", ")}`);
 }
 
 async function resetNode(id: string): Promise<void> {
@@ -270,6 +276,7 @@ async function resetNode(id: string): Promise<void> {
     id,
     role: existing.role,
     lineId: existing.lineId,
+    partitions: existing.partitions,
     fs,
     blobs,
     db,
@@ -298,10 +305,12 @@ async function connectRelay(nodeId: string): Promise<void> {
       }),
     );
     await syncNode.start({ autoRecoverSubscriptions: true });
-    await syncNode.subscribe(partitionId);
+    for (const partitionId of node.partitions) {
+      await syncNode.subscribe(partitionId);
+    }
     node.syncNode = syncNode;
     node.relayOnline = true;
-    addLog("sync", `${node.id} connected to relay ${relayUrl}`);
+    addLog("sync", `${node.id} connected to relay; subscribed ${node.partitions.join(", ")}`);
   } catch (error) {
     node.relayOnline = false;
     addLog("sync", `${node.id} relay unavailable: ${String(error)}`);
@@ -326,7 +335,7 @@ async function writeFactoryEvent(
   const payload = createFactoryPayload(node, preferredType);
   if (node.syncNode) {
     const event = await node.syncNode.write<FactoryPayload>({
-      partitionId,
+      partitionId: payload.partitionId,
       schemaVersion: 1,
       payload,
     });
@@ -334,7 +343,7 @@ async function writeFactoryEvent(
     addLog("write", `${nodeId} relayed ${eventSummary(payload)}`);
   } else {
     const event = await node.store.appendLocal<FactoryPayload>({
-      partitionId,
+      partitionId: payload.partitionId,
       schemaVersion: 1,
       payload,
     });
@@ -351,10 +360,14 @@ async function catchupTargetFromSource(): Promise<void> {
   if (!target.syncNode) {
     await connectRelay(target.id);
   }
-  const applied = await requireNode(targetNodeId).syncNode?.catchUpFrom(sourceNodeId, partitionId) ?? 0;
+  const partitions = sharedPartitions(target, requireNode(sourceNodeId));
+  let applied = 0;
+  for (const partitionId of partitions) {
+    applied += await requireNode(targetNodeId).syncNode?.catchUpFrom(sourceNodeId, partitionId) ?? 0;
+  }
   target.stats = await readNodeStats(target.db);
   target.eventCount = target.stats.events;
-  addLog("sync", `${targetNodeId} catchup from ${sourceNodeId}: +${applied}`);
+  addLog("sync", `${targetNodeId} catchup from ${sourceNodeId} on ${partitions.join(", ") || "no shared partitions"}: +${applied}`);
   render(false);
 }
 
@@ -407,11 +420,15 @@ async function simulationStep(): Promise<void> {
     if (Math.random() > 0.72) {
       const target = nodeList.find((node) => node.id === "plant-control") ?? pick(nodeList);
       const peer = pick(nodeList.filter((node) => node.id !== target.id));
-      if (target.syncNode && peer) {
-        const applied = await target.syncNode.catchUpFrom(peer.id, partitionId);
+      const partitions = peer ? sharedPartitions(target, peer) : [];
+      if (target.syncNode && peer && partitions.length > 0) {
+        let applied = 0;
+        for (const partitionId of partitions) {
+          applied += await target.syncNode.catchUpFrom(peer.id, partitionId);
+        }
         target.stats = await readNodeStats(target.db);
         target.eventCount = target.stats.events;
-        addLog("sync", `${target.id} auto catchup from ${peer.id}: +${applied}`);
+        addLog("sync", `${target.id} auto catchup from ${peer.id} on ${partitions.join(", ")}: +${applied}`);
         render(false);
       }
     }
@@ -441,11 +458,15 @@ async function incidentStep(): Promise<void> {
     await connectRelay(node.id);
     const peers = nodeList.filter((candidate) => candidate.id !== node.id && candidate.relayOnline);
     const peer = peers.length ? pick(peers) : undefined;
-    if (node.syncNode && peer) {
-      const applied = await node.syncNode.catchUpFrom(peer.id, partitionId);
+    const partitions = peer ? sharedPartitions(node, peer) : [];
+    if (node.syncNode && peer && partitions.length > 0) {
+      let applied = 0;
+      for (const partitionId of partitions) {
+        applied += await node.syncNode.catchUpFrom(peer.id, partitionId);
+      }
       node.stats = await readNodeStats(node.db);
       node.eventCount = node.stats.events;
-      addLog("sync", `${node.id} rejoined and caught up from ${peer.id}: +${applied}`);
+      addLog("sync", `${node.id} rejoined and caught up from ${peer.id} on ${partitions.join(", ")}: +${applied}`);
       render(false);
     }
     return;
@@ -508,6 +529,7 @@ async function restoreSnapshot(): Promise<void> {
     id: target.id,
     role: target.role,
     lineId: target.lineId,
+    partitions: target.partitions,
     fs,
     blobs,
     db,
@@ -592,14 +614,15 @@ async function insertFactoryEvent(db: PGlite, event: EventEnvelope): Promise<voi
   const payload = event.payload as FactoryPayload;
   await db.query(
     `INSERT INTO factory_events (
-       id, event_type, line_id, station_id, work_order, sku, quantity,
+       id, event_type, partition_id, line_id, station_id, work_order, sku, quantity,
        defect_code, severity, status, reading, unit, source_node
      )
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
      ON CONFLICT (id) DO NOTHING`,
     [
       event.eventId,
       payload.eventType,
+      payload.partitionId,
       payload.lineId,
       payload.stationId,
       payload.workOrder,
@@ -734,6 +757,7 @@ function renderNode(node: BrowserNode): string {
         ${isTarget ? '<span>target</span>' : ""}
         ${node.relayOnline ? '<span>relay</span>' : ""}
       </div>
+      <div class="partitions">${node.partitions.map((partition) => `<span>${escapeHtml(partition)}</span>`).join("")}</div>
       <div class="node-metrics">
         <div><strong>${node.stats.events}</strong><span>events</span></div>
         <div><strong>${node.stats.units}</strong><span>units</span></div>
@@ -841,19 +865,19 @@ function select(id: string, nodeList: BrowserNode[], selected: string): string {
 function setSqlSample(name: string): void {
   const input = document.querySelector<HTMLTextAreaElement>("#sql-input");
   if (name === "line") {
-    sqlText = `SELECT line_id,
+    sqlText = `SELECT partition_id, line_id,
        sum(quantity) FILTER (WHERE event_type = 'production')::int AS units,
        count(*) FILTER (WHERE status = 'open')::int AS open_issues,
        max(recorded_at) AS latest
 FROM factory_events
-GROUP BY line_id
-ORDER BY line_id;`;
+GROUP BY partition_id, line_id
+ORDER BY partition_id, line_id;`;
   } else if (name === "quality") {
-    sqlText = `SELECT line_id, station_id, defect_code, severity, count(*)::int AS count
+    sqlText = `SELECT partition_id, line_id, station_id, defect_code, severity, count(*)::int AS count
 FROM factory_events
 WHERE event_type = 'inspection' AND defect_code IS NOT NULL
-GROUP BY line_id, station_id, defect_code, severity
-ORDER BY count DESC, line_id;`;
+GROUP BY partition_id, line_id, station_id, defect_code, severity
+ORDER BY count DESC, partition_id, line_id;`;
   } else if (name === "files") {
     sqlText = `SELECT pg_relation_filepath('factory_events') AS relation_path,
        pg_database_size(current_database()) AS database_size;`;
@@ -864,7 +888,7 @@ ORDER BY count DESC, line_id;`;
 }
 
 function defaultSql(): string {
-  return `SELECT event_type, line_id, station_id, work_order, sku, quantity,
+  return `SELECT partition_id, event_type, line_id, station_id, work_order, sku, quantity,
        coalesce(defect_code, '') AS defect, severity, status, source_node, recorded_at
 FROM factory_events
 ORDER BY recorded_at DESC
@@ -878,10 +902,12 @@ function createFactoryPayload(
   const sku = pick(["AX-14", "BX-22", "CX-90", "DX-08"]);
   const workOrder = `WO-${String(Math.floor(1200 + Math.random() * 80))}`;
   const stationId = stationFor(node);
+  const partition = partitionForEvent(node, preferredType);
 
   if (preferredType === "production") {
     return {
       eventType: "production",
+      partitionId: partition,
       lineId: node.lineId,
       stationId,
       workOrder,
@@ -898,6 +924,7 @@ function createFactoryPayload(
     const hasDefect = Math.random() > 0.55;
     return {
       eventType: "inspection",
+      partitionId: partition,
       lineId: node.lineId,
       stationId,
       workOrder,
@@ -914,6 +941,7 @@ function createFactoryPayload(
   if (preferredType === "material") {
     return {
       eventType: "material",
+      partitionId: partition,
       lineId: node.lineId,
       stationId,
       workOrder,
@@ -927,6 +955,7 @@ function createFactoryPayload(
 
   return {
     eventType: preferredType,
+    partitionId: partition,
     lineId: node.lineId,
     stationId,
     workOrder,
@@ -938,6 +967,13 @@ function createFactoryPayload(
     reading: Math.floor(6 + Math.random() * 24),
     unit: "min",
   };
+}
+
+function partitionForEvent(node: BrowserNode, eventType: FactoryPayload["eventType"]): string {
+  if (eventType === "inspection") return "quality";
+  if (eventType === "downtime" || eventType === "maintenance") return "maintenance";
+  if (eventType === "material") return "warehouse";
+  return node.lineId === "LINE-B" ? "line:b" : "line:a";
 }
 
 function eventTypeForRole(role: FactoryRole): FactoryPayload["eventType"] {
@@ -962,6 +998,18 @@ function lineForIndex(index: number): string {
   return ["LINE-A", "LINE-B", "LINE-C", "PLANT"][index % 4];
 }
 
+function partitionsForRole(role: FactoryRole, lineId: string): string[] {
+  if (role === "quality") return ["quality", "line:a", "line:b"];
+  if (role === "maintenance") return ["maintenance", lineId === "LINE-B" ? "line:b" : "line:a"];
+  if (role === "warehouse") return ["warehouse"];
+  return [lineId === "LINE-B" ? "line:b" : "line:a"];
+}
+
+function sharedPartitions(left: BrowserNode, right: BrowserNode): string[] {
+  const rightPartitions = new Set(right.partitions);
+  return left.partitions.filter((partition) => rightPartitions.has(partition));
+}
+
 function pick<T>(values: readonly T[]): T {
   return values[Math.floor(Math.random() * values.length)]!;
 }
@@ -969,7 +1017,7 @@ function pick<T>(values: readonly T[]): T {
 function eventSummary(payload: FactoryPayload): string {
   const issue = payload.defectCode ? ` ${payload.defectCode}` : "";
   const qty = payload.quantity ? ` x${payload.quantity}` : "";
-  return `${payload.eventType} ${payload.lineId}/${payload.stationId}${qty}${issue}`;
+  return `${payload.partitionId} ${payload.eventType} ${payload.lineId}/${payload.stationId}${qty}${issue}`;
 }
 
 function fleetStats(nodeList: BrowserNode[]): NodeStats & { online: number } {

@@ -207,6 +207,22 @@ main {
   font-size: 10px;
 }
 
+.partitions {
+  margin-top: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.partitions span {
+  padding: 2px 6px;
+  border: 1px solid #d7dee8;
+  border-radius: 999px;
+  color: #53657a;
+  background: #fbfcfe;
+  font-size: 10px;
+}
+
 .count {
   margin-top: 12px;
   font-size: 38px;

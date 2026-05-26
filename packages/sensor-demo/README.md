@@ -27,9 +27,9 @@ OPFS CAS store を使って snapshot / diff / restore / GC を試せます。
 同じ dev server が relay 用 `WebSocketHub` と HTTP CAS relay も起動するため、ブラウザ node 同士の
 event sync / catchup と snapshot block transfer も試せます。Node の data directory は使いません。
 
-UI は分散工場の dashboard です。ライン端末、品質ゲート、保全端末、工場管制ノードがそれぞれ
-ローカル PGlite に生産・検査・停止・資材イベントを書き込み、relay と catchup で各ノードの
-ローカル SQL view が収束する様子を確認できます。
+UI は partition-aware な分散工場 dashboard です。ライン端末、品質ゲート、保全端末、工場管制ノードが
+`line:a` / `line:b` / `quality` / `maintenance` / `warehouse` の一部だけを購読し、
+購読 partition のイベントだけが relay / catchup で届くことを観測できます。
 shift automation が既定で動き、各ノードのイベント追加、ネットワーク分断、復帰後 catchup、
 設備停止イベントが自動で発生します。
 
@@ -37,8 +37,8 @@ UI でできること:
 
 - workcell node を追加する
 - browser-local PGlite に factory event を書き込む
-- relay に接続して browser node 間で event sync する
-- target node を source node から catchup して dashboard KPI を収束させる
+- relay に接続して browser node 間で購読 partition だけ event sync する
+- target node を source node から共有 partition だけ catchup して dashboard KPI を収束させる
 - source node の filesystem snapshot を CAS manifest 化する
 - HTTP CAS relay 上の target namespace に missing block を転送する
 - relay CAS から snapshot を target node に restore して SQL 結果を比較する

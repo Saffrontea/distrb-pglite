@@ -124,8 +124,10 @@ http://127.0.0.1:5173
 
 こちらは Node 側の data directory を使わず、ブラウザ内 PGlite と
 `@distrb-pglite/browser` の OPFS/CAS adapter だけで分散工場 dashboard を動かします。
-ライン端末、品質ゲート、保全端末、工場管制ノードがそれぞれローカルに factory event を持ち、
-event sync / catchup / snapshot restore でローカル SQL view と KPI が収束します。
+ライン端末、品質ゲート、保全端末、工場管制ノードがそれぞれ
+`line:a` / `line:b` / `quality` / `maintenance` / `warehouse` の一部を購読し、
+購読 partition のイベントだけを受け取ります。event sync / catchup / snapshot restore で
+ローカル SQL view と KPI が収束します。
 既定では shift automation が動き、イベント追加・ネットワーク分断・復帰後 catchup・設備停止が
 自動で発生します。
 dev server は relay 用 `WebSocketHub` も同時に起動するため、ブラウザ node 同士の
@@ -137,7 +139,7 @@ SQL パネルでは、各 node のローカル DB に直接 query できます�
 例:
 
 ```sql
-SELECT event_type, line_id, station_id, work_order, sku, quantity, severity, status, source_node, recorded_at
+SELECT partition_id, event_type, line_id, station_id, work_order, sku, quantity, severity, status, source_node, recorded_at
 FROM factory_events
 ORDER BY recorded_at DESC
 LIMIT 20;
