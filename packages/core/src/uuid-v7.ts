@@ -47,6 +47,12 @@ export function compareEventIds(left: EventId, right: EventId): number {
   return left.localeCompare(right);
 }
 
+const defaultUuidV7Factory = new UuidV7Factory();
+
+export function uuidV7(): EventId {
+  return defaultUuidV7Factory.next();
+}
+
 function defaultRandomBytes(length: number): Uint8Array {
   const crypto = globalThis.crypto;
   if (!crypto?.getRandomValues) {
@@ -66,4 +72,3 @@ function formatUuid(bytes: Uint8Array): string {
     hex.slice(10, 16).join(""),
   ].join("-");
 }
-

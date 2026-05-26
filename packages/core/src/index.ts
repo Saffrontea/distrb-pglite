@@ -23,7 +23,7 @@ export type {
   StorageSnapshotManifestKind,
   StorageSnapshotScope,
 } from "./types.js";
-export { compareEventIds, isUuidV7, UuidV7Factory } from "./uuid-v7.js";
+export { compareEventIds, isUuidV7, uuidV7, UuidV7Factory } from "./uuid-v7.js";
 export { InMemoryPartitionStore, isEventTransactionalPartitionStore } from "./store.js";
 export type {
   EventProjection,

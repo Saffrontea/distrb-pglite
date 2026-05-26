@@ -1,4 +1,5 @@
 import {
+  uuidV7,
   type EventEnvelope,
   type EventId,
   type NodeId,
@@ -311,7 +312,7 @@ class WebSocketTransportConnection implements TransportConnection {
     partitionId: PartitionId,
     cursors: ReadonlyMap<NodeId, EventId>,
   ): Promise<ReplayResponse> {
-    const requestId = crypto.randomUUID();
+    const requestId = uuidV7();
     const timeoutMs = this.replayRequestTimeoutMs();
     const response = new Promise<ReplayResponse>((resolve, reject) => {
       const timer = setTimeout(() => {

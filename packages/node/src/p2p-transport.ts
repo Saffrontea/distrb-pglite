@@ -1,4 +1,5 @@
 import {
+  uuidV7,
   type EventEnvelope,
   type EventId,
   type NodeId,
@@ -272,7 +273,7 @@ class P2PWebSocketConnection implements TransportConnection {
     const peer = this.peers.get(targetNodeId);
     if (!peer) return { partitionId, events: [] };
 
-    const requestId = crypto.randomUUID();
+    const requestId = uuidV7();
     const timeoutMs = peer.replayRequestTimeoutMs();
     const response = new Promise<ReplayResponse>((resolve, reject) => {
       const timer = setTimeout(() => {

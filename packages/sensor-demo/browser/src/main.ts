@@ -4,6 +4,7 @@ import pgliteWasmUrl from "../../node_modules/@electric-sql/pglite/dist/pglite.w
 import {
   InMemoryPartitionStore,
   SyncNode,
+  uuidV7,
   type EventEnvelope,
   type PartitionStore,
 } from "@distrb-pglite/core";
@@ -276,7 +277,7 @@ async function writeReading(
     await node.db.query(
       `INSERT INTO sensor_readings (id, sensor_id, reading, source_node)
        VALUES ($1, $2, $3, $4)`,
-      [crypto.randomUUID(), sensorId, reading, nodeId],
+      [uuidV7(), sensorId, reading, nodeId],
     );
     await node.store.appendLocal<SensorPayload>({
       partitionId,

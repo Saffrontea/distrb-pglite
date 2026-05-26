@@ -1,11 +1,12 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import type {
-  BlobRef,
-  SnapshotFile,
-  SnapshotFilesystemManifest,
-  StorageSnapshotComponent,
+import {
+  type BlobRef,
+  type SnapshotFile,
+  type SnapshotFilesystemManifest,
+  type StorageSnapshotComponent,
+  uuidV7,
 } from "@distrb-pglite/core";
 import {
   NodeDataDirFilesystem,
@@ -158,7 +159,7 @@ export async function snapshotFilesystemToCas(options: {
 
   return {
     version: 1,
-    snapshotId: options.snapshotId ?? randomUUID(),
+    snapshotId: options.snapshotId ?? uuidV7(),
     parentSnapshotIds: options.parentSnapshotIds ?? [],
     chunkSize,
     chunking,

@@ -1,8 +1,9 @@
-import type {
-  BlobRef,
-  SnapshotFile,
-  SnapshotFilesystemManifest,
-  StorageSnapshotComponent,
+import {
+  uuidV7,
+  type BlobRef,
+  type SnapshotFile,
+  type SnapshotFilesystemManifest,
+  type StorageSnapshotComponent,
 } from "@distrb-pglite/core";
 import {
   inventoryBrowserFilesystem,
@@ -122,7 +123,7 @@ export async function snapshotBrowserFilesystemToCas(options: {
 
   return {
     version: 1,
-    snapshotId: options.snapshotId ?? crypto.randomUUID(),
+    snapshotId: options.snapshotId ?? uuidV7(),
     parentSnapshotIds: options.parentSnapshotIds ?? [],
     chunkSize,
     chunking,
