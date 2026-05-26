@@ -129,10 +129,6 @@ let targetCasStore: BrowserCasBlockStore;
 let opfsEnabled = false;
 let casRelayEnabled = false;
 
-void boot().catch((error) => {
-  app.innerHTML = `<main class="fatal"><h1>Browser playground failed</h1><pre>${escapeHtml(String(error))}</pre></main>`;
-});
-
 async function boot(): Promise<void> {
   sourceCasStore = await openCasStore("source", "distrb-pglite-browser-source-cas");
   targetCasStore = await openCasStore("target", "distrb-pglite-browser-target-cas");
@@ -744,3 +740,7 @@ class MirroredCasBlockStore implements BrowserCasBlockStore {
     ]);
   }
 }
+
+void boot().catch((error) => {
+  app.innerHTML = `<main class="fatal"><h1>Browser playground failed</h1><pre>${escapeHtml(String(error))}</pre></main>`;
+});
