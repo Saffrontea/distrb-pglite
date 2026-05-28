@@ -52,7 +52,11 @@ export type SensorPayload = {
 // applyRemote でイベントを受け取ったとき、sensor_readings にも書き込む。
 
 class SensorPartitionStore implements PartitionStore {
-  constructor(readonly inner: PGlitePartitionStore, private readonly db: PGlite) {}
+  constructor(
+    readonly inner: PGlitePartitionStore,
+    private readonly db: PGlite,
+    private readonly projectedPartitionId: string,
+  ) {}
 
   registerPartition(id: string) { return this.inner.registerPartition(id); }
   hasPartition(id: string) { return this.inner.hasPartition(id); }
@@ -69,8 +73,12 @@ class SensorPartitionStore implements PartitionStore {
   createSnapshotMetadata(id: string) { return this.inner.createSnapshotMetadata(id); }
 
   async applyRemote(event: EventEnvelope): Promise<boolean> {
+    if (event.partitionId === this.projectedPartitionId && !isSensorPayload(event.payload)) {
+      return false;
+    }
+
     const applied = await this.inner.applyRemote(event);
-    if (applied) {
+    if (applied && event.partitionId === this.projectedPartitionId) {
       const p = event.payload as SensorPayload;
       await this.db.query(
         `INSERT INTO sensor_readings (event_id, sensor_id, reading, unit, source_node)
@@ -160,7 +168,7 @@ export class EdgeNodeServer {
     await this.db.exec(SCHEMA);
     this.inner = new PGlitePartitionStore(this.config.nodeId, this.db);
     await this.inner.migrate();
-    this.store = new SensorPartitionStore(this.inner, this.db);
+    this.store = new SensorPartitionStore(this.inner, this.db, this.config.partitionId);
   }
 
   private async initSync(): Promise<void> {
@@ -250,14 +258,14 @@ export class EdgeNodeServer {
   }
 
   private async postSubscribe(body: unknown) {
-    const { partitionId } = body as { partitionId: string };
+    const { partitionId } = parseSubscribeBody(body);
     await this.syncNode.subscribe(partitionId);
     return { ok: true, partitionId };
   }
 
   private async postReading(body: unknown) {
     if (!this.online) throw new Error("node is offline — use /readings-offline");
-    const p = body as SensorPayload;
+    const p = parseSensorPayload(body);
     const event = await this.syncNode.write({ partitionId: this.config.partitionId, schemaVersion: 1, payload: p });
     await this.db.query(
       `INSERT INTO sensor_readings (event_id, sensor_id, reading, unit, source_node)
@@ -268,7 +276,7 @@ export class EdgeNodeServer {
   }
 
   private async postReadingOffline(body: unknown) {
-    const p = body as SensorPayload;
+    const p = parseSensorPayload(body);
     const event = await this.inner.appendLocal({ partitionId: this.config.partitionId, schemaVersion: 1, payload: p });
     await this.db.query(
       `INSERT INTO sensor_readings (event_id, sensor_id, reading, unit, source_node)
@@ -338,7 +346,7 @@ export class EdgeNodeServer {
   }
 
   private async postCatchup(body: unknown) {
-    const { peerNodeId, partitionId } = body as { peerNodeId: string; partitionId?: string };
+    const { peerNodeId, partitionId } = parseCatchupBody(body);
     const applied = await this.syncNode.catchUpFrom(peerNodeId, partitionId ?? this.config.partitionId);
     return { applied };
   }
@@ -439,7 +447,7 @@ export class EdgeNodeServer {
     this.db    = new PGlite(this.config.dataDir, { relaxedDurability: false });
     this.inner = new PGlitePartitionStore(this.config.nodeId, this.db);
     await this.inner.migrate();
-    this.store = new SensorPartitionStore(this.inner, this.db);
+    this.store = new SensorPartitionStore(this.inner, this.db, this.config.partitionId);
 
     if (wasOnline) {
       this.syncNode = this.createSyncNode();
@@ -465,6 +473,65 @@ async function readJson(req: IncomingMessage): Promise<unknown> {
 
 function returnsRows(sql: string): boolean {
   return /^(select|with|values|show|explain|pragma)\b/i.test(sql.trim());
+}
+
+function parseSensorPayload(body: unknown): SensorPayload {
+  if (!isSensorPayload(body)) {
+    throw new Error("invalid sensor payload");
+  }
+  return body;
+}
+
+function parseSubscribeBody(body: unknown): { partitionId: string } {
+  const record = objectRecord(body);
+  const partitionId = record?.partitionId;
+  if (!isNonEmptyString(partitionId)) {
+    throw new Error("partitionId is required");
+  }
+  return { partitionId };
+}
+
+function parseCatchupBody(body: unknown): { peerNodeId: string; partitionId?: string } {
+  const record = objectRecord(body);
+  const peerNodeId = record?.peerNodeId;
+  const partitionId = record?.partitionId;
+  if (!isNonEmptyString(peerNodeId)) {
+    throw new Error("peerNodeId is required");
+  }
+  if (partitionId !== undefined && !isNonEmptyString(partitionId)) {
+    throw new Error("partitionId must be a non-empty string");
+  }
+  return { peerNodeId, partitionId };
+}
+
+function isSensorPayload(body: unknown): body is SensorPayload {
+  const record = objectRecord(body);
+  if (!record) {
+    return false;
+  }
+
+  if (!isNonEmptyString(record.sensorId)) {
+    return false;
+  }
+  if (typeof record.reading !== "number" || !Number.isFinite(record.reading)) {
+    return false;
+  }
+  if (record.unit !== undefined && !isNonEmptyString(record.unit)) {
+    return false;
+  }
+
+  return true;
+}
+
+function objectRecord(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  return value as Record<string, unknown>;
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
 }
 
 function normalizeRow(row: Record<string, unknown>): Record<string, unknown> {
