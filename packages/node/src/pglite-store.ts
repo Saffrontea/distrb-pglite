@@ -29,11 +29,10 @@ type EventRow = {
 };
 
 export class PGlitePartitionStore implements PartitionStore {
-  private readonly ids = new UuidV7Factory();
-
   constructor(
     private readonly nodeId: NodeId,
     private readonly db: PGliteClient,
+    private readonly ids = new UuidV7Factory(),
   ) {}
 
   async migrate(): Promise<void> {
@@ -134,6 +133,7 @@ export class PGlitePartitionStore implements PartitionStore {
       );
 
       if (applied.rows.length === 0) {
+        await this.assertExistingEventMatches(event);
         return false;
       }
 
@@ -202,7 +202,7 @@ export class PGlitePartitionStore implements PartitionStore {
   }
 
   private async insertEvent(event: EventEnvelope): Promise<void> {
-    await this.db.query(
+    const inserted = await this.db.query<{ event_id: string }>(
       `
         INSERT INTO distrb_events (
           source_node_id,
@@ -213,6 +213,7 @@ export class PGlitePartitionStore implements PartitionStore {
         )
         VALUES ($1, $2::uuid, $3, $4, $5::jsonb)
         ON CONFLICT DO NOTHING
+        RETURNING event_id::text AS event_id
       `,
       [
         event.sourceNodeId,
@@ -222,6 +223,9 @@ export class PGlitePartitionStore implements PartitionStore {
         JSON.stringify(event.payload),
       ],
     );
+    if (inserted.rows.length === 0) {
+      await this.assertExistingEventMatches(event);
+    }
 
     await this.db.query(
       `
@@ -231,6 +235,35 @@ export class PGlitePartitionStore implements PartitionStore {
       `,
       [event.sourceNodeId, event.eventId, event.partitionId],
     );
+  }
+
+  private async assertExistingEventMatches(event: EventEnvelope): Promise<void> {
+    const existing = await this.db.query<EventRow>(
+      `
+        SELECT
+          source_node_id,
+          event_id::text AS event_id,
+          partition_id,
+          schema_version,
+          payload
+        FROM distrb_events
+        WHERE source_node_id = $1
+          AND event_id = $2::uuid
+      `,
+      [event.sourceNodeId, event.eventId],
+    );
+    const row = existing.rows[0];
+    if (!row) {
+      throw new Error(`event id conflict without stored event: ${event.sourceNodeId}/${event.eventId}`);
+    }
+
+    if (
+      row.partition_id !== event.partitionId
+      || row.schema_version !== event.schemaVersion
+      || canonicalJson(row.payload) !== canonicalJson(event.payload)
+    ) {
+      throw new Error(`event id conflict: ${event.sourceNodeId}/${event.eventId}`);
+    }
   }
 
   private async loadPartitionEvents(partitionId: PartitionId): Promise<EventRow[]> {
@@ -273,4 +306,22 @@ function rowToEvent(row: EventRow): EventEnvelope {
     schemaVersion: row.schema_version,
     payload: row.payload,
   };
+}
+
+function canonicalJson(value: unknown): string {
+  return JSON.stringify(canonicalize(value));
+}
+
+function canonicalize(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(canonicalize);
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, child]) => [key, canonicalize(child)]),
+    );
+  }
+  return value;
 }

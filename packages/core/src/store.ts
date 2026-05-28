@@ -48,7 +48,7 @@ export function isEventTransactionalPartitionStore(
 export class InMemoryPartitionStore implements PartitionStore {
   private readonly partitions = new Set<PartitionId>();
   private readonly events: EventEnvelope[] = [];
-  private readonly applied = new Set<string>();
+  private readonly applied = new Map<string, EventEnvelope>();
 
   constructor(
     private readonly nodeId: NodeId,
@@ -137,11 +137,13 @@ export class InMemoryPartitionStore implements PartitionStore {
 
   private record(event: EventEnvelope): boolean {
     const key = appliedKey(event.sourceNodeId, event.eventId);
-    if (this.applied.has(key)) {
+    const existing = this.applied.get(key);
+    if (existing) {
+      assertSameEvent(existing, event);
       return false;
     }
 
-    this.applied.add(key);
+    this.applied.set(key, event);
     this.events.push(event);
     return true;
   }
@@ -158,4 +160,34 @@ function compareEvents(left: EventEnvelope, right: EventEnvelope): number {
   }
 
   return compareEventIds(left.eventId, right.eventId);
+}
+
+function assertSameEvent(left: EventEnvelope, right: EventEnvelope): void {
+  if (
+    left.partitionId !== right.partitionId
+    || left.schemaVersion !== right.schemaVersion
+    || canonicalJson(left.payload) !== canonicalJson(right.payload)
+  ) {
+    throw new Error(
+      `event id conflict: ${right.sourceNodeId}/${right.eventId}`,
+    );
+  }
+}
+
+function canonicalJson(value: unknown): string {
+  return JSON.stringify(canonicalize(value));
+}
+
+function canonicalize(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(canonicalize);
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, child]) => [key, canonicalize(child)]),
+    );
+  }
+  return value;
 }
