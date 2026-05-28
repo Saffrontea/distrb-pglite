@@ -62,16 +62,17 @@ export class SyncNode {
     if (options?.recoverFrom) {
       this.recoverFrom.set(partitionId, options.recoverFrom);
     }
-    await this.requireConnection().subscribe(partitionId);
     await this.store.registerPartition(partitionId);
+    await this.requireConnection().subscribe(partitionId);
   }
 
   async write<TPayload>(
     input: LocalEventInput<TPayload>,
   ): Promise<EventEnvelope<TPayload>> {
+    const connection = this.requireConnection();
     return this.store
       .appendLocal(input)
-      .then((event) => this.requireConnection().publish(event).then(() => event));
+      .then((event) => connection.publish(event).then(() => event));
   }
 
   async writeEvent<TPayload>(
@@ -82,9 +83,10 @@ export class SyncNode {
       throw new Error("SyncNode.writeEvent requires an event-transactional partition store");
     }
 
+    const connection = this.requireConnection();
     return this.store
       .appendLocalEventTransaction(input, project)
-      .then((event) => this.requireConnection().publish(event).then(() => event));
+      .then((event) => connection.publish(event).then(() => event));
   }
 
   async catchUpFrom(peerNodeId: NodeId, partitionId: PartitionId): Promise<number> {
@@ -106,6 +108,20 @@ export class SyncNode {
       partitionId,
       cursors,
     );
+
+    if (response.partitionId !== partitionId) {
+      throw new Error(
+        `replay response partition mismatch: requested=${partitionId} response=${response.partitionId}`,
+      );
+    }
+
+    for (const event of response.events) {
+      if (event.partitionId !== partitionId) {
+        throw new Error(
+          `replay event partition mismatch: requested=${partitionId} event=${event.partitionId}`,
+        );
+      }
+    }
 
     let applied = 0;
     for (const event of response.events) {

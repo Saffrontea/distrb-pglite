@@ -1,4 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import type {
+  EventEnvelope,
+  EventProjection,
+  LocalEventInput,
+  ReplayResponse,
+  Transport,
+  TransportConnection,
+  TransportHandlers,
+} from "../src/index.js";
 import {
   InMemoryPartitionStore,
   compareHighWatermarks,
@@ -23,6 +32,19 @@ describe("UuidV7Factory", () => {
 
     expect(isUuidV7(first)).toBe(true);
     expect([first, second, third].toSorted()).toEqual([first, second, third]);
+  });
+
+  it("keeps UUID v7 ids unique and ordered when one millisecond overflows the sequence", () => {
+    const ids = new UuidV7Factory(
+      () => 1_700_000_000_000,
+      (length) => new Uint8Array(length).fill(0),
+    );
+
+    const generated = Array.from({ length: 4_097 }, () => ids.next());
+
+    expect(new Set(generated).size).toBe(generated.length);
+    expect(generated.toSorted()).toEqual(generated);
+    expect(generated[4_096]!.slice(0, 13)).toBe(generated[0]!.slice(0, 13));
   });
 });
 
@@ -56,6 +78,49 @@ describe("SyncNode", () => {
     expect(ignored).toHaveLength(0);
   });
 
+  it("does not append local events when write is attempted before start", async () => {
+    const store = new InMemoryPartitionStore("node-a");
+    const node = new SyncNode("node-a", store, new MemoryTransport());
+
+    await expect(node.write({
+      partitionId: "tenant:jp",
+      schemaVersion: 1,
+      payload: { title: "not connected" },
+    })).rejects.toThrow("SyncNode node-a has not been started");
+    await expect(store.listEventsAfterCursors("tenant:jp", new Map())).resolves.toHaveLength(0);
+  });
+
+  it("does not run transactional writes when writeEvent is attempted before start", async () => {
+    const store = new TransactionalMemoryStore("node-a");
+    const node = new SyncNode("node-a", store, new MemoryTransport());
+    const project = vi.fn();
+
+    await expect(node.writeEvent({
+      partitionId: "tenant:jp",
+      schemaVersion: 1,
+      payload: { title: "not connected" },
+    }, project)).rejects.toThrow("SyncNode node-a has not been started");
+    expect(project).not.toHaveBeenCalled();
+    await expect(store.listEventsAfterCursors("tenant:jp", new Map())).resolves.toHaveLength(0);
+  });
+
+  it("registers the local partition before exposing a transport subscription", async () => {
+    const event: EventEnvelope = {
+      eventId: "018bcfe5-6800-7001-8000-000000000001",
+      sourceNodeId: "node-a",
+      partitionId: "tenant:jp",
+      schemaVersion: 1,
+      payload: { title: "during subscribe" },
+    };
+    const store = new InMemoryPartitionStore("node-b");
+    const node = new SyncNode("node-b", store, new SubscribeEventTransport(event));
+
+    await node.start();
+    await node.subscribe("tenant:jp");
+
+    await expect(store.listEventsAfterCursors("tenant:jp", new Map())).resolves.toEqual([event]);
+  });
+
   it("applies duplicate events idempotently by source node and event id", async () => {
     const store = new InMemoryPartitionStore("node-b");
     await store.registerPartition("tenant:jp");
@@ -71,6 +136,44 @@ describe("SyncNode", () => {
     await expect(store.applyRemote(event)).resolves.toBe(true);
     await expect(store.applyRemote(event)).resolves.toBe(false);
     await expect(store.listEventsAfterCursors("tenant:jp", new Map())).resolves.toHaveLength(1);
+  });
+
+  it("rejects conflicting duplicate events from the same source node and event id", async () => {
+    const store = new InMemoryPartitionStore("node-b");
+    await store.registerPartition("tenant:jp");
+    await store.registerPartition("tenant:us");
+    const event = {
+      eventId: "018bcfe5-6800-7001-8000-000000000001",
+      sourceNodeId: "node-a",
+      partitionId: "tenant:jp",
+      schemaVersion: 1,
+      payload: { title: "once" },
+    };
+
+    await expect(store.applyRemote(event)).resolves.toBe(true);
+    await expect(store.applyRemote({
+      ...event,
+      partitionId: "tenant:us",
+      payload: { title: "conflict" },
+    })).rejects.toThrow("event id conflict");
+  });
+
+  it("treats duplicate JSON payloads with different object key order as the same event", async () => {
+    const store = new InMemoryPartitionStore("node-b");
+    await store.registerPartition("tenant:jp");
+    const event = {
+      eventId: "018bcfe5-6800-7001-8000-000000000001",
+      sourceNodeId: "node-a",
+      partitionId: "tenant:jp",
+      schemaVersion: 1,
+      payload: { a: 1, b: 2 },
+    };
+
+    await expect(store.applyRemote(event)).resolves.toBe(true);
+    await expect(store.applyRemote({
+      ...event,
+      payload: { b: 2, a: 1 },
+    })).resolves.toBe(false);
   });
 
   it("treats the same event id from different source nodes as distinct events", async () => {
@@ -241,6 +344,64 @@ describe("SyncNode", () => {
       { sourceNodeId: "node-a", payload: { value: "a2" } },
       { sourceNodeId: "node-b", payload: { value: "b1" } },
     ]);
+  });
+
+  it("rejects replay responses that do not match the requested partition", async () => {
+    const store = new InMemoryPartitionStore("target");
+    const node = new SyncNode(
+      "target",
+      store,
+      new ReplayResponseTransport({
+        partitionId: "tenant:us",
+        events: [
+          {
+            eventId: "018bcfe5-6800-7001-8000-000000000001",
+            sourceNodeId: "source",
+            partitionId: "tenant:us",
+            schemaVersion: 1,
+            payload: { leaked: true },
+          },
+        ],
+      }),
+    );
+
+    await node.start();
+    await node.subscribe("tenant:jp");
+    await node.subscribe("tenant:us");
+
+    await expect(node.catchUpFrom("source", "tenant:jp")).rejects.toThrow(
+      "replay response partition mismatch",
+    );
+    await expect(store.listEventsAfterCursors("tenant:us", new Map())).resolves.toHaveLength(0);
+  });
+
+  it("rejects replay events that do not match the requested partition", async () => {
+    const store = new InMemoryPartitionStore("target");
+    const node = new SyncNode(
+      "target",
+      store,
+      new ReplayResponseTransport({
+        partitionId: "tenant:jp",
+        events: [
+          {
+            eventId: "018bcfe5-6800-7001-8000-000000000001",
+            sourceNodeId: "source",
+            partitionId: "tenant:us",
+            schemaVersion: 1,
+            payload: { leaked: true },
+          },
+        ],
+      }),
+    );
+
+    await node.start();
+    await node.subscribe("tenant:jp");
+    await node.subscribe("tenant:us");
+
+    await expect(node.catchUpFrom("source", "tenant:jp")).rejects.toThrow(
+      "replay event partition mismatch",
+    );
+    await expect(store.listEventsAfterCursors("tenant:us", new Map())).resolves.toHaveLength(0);
   });
 
   it("does not apply remote events for unregistered partitions", async () => {
@@ -454,3 +615,59 @@ describe("SyncNode", () => {
     expect(eventSets[0]).toHaveLength(4);
   });
 });
+
+class ReplayResponseTransport implements Transport {
+  constructor(private readonly response: ReplayResponse) {}
+
+  async connect(
+    _nodeId: string,
+    _handlers: TransportHandlers,
+  ): Promise<TransportConnection> {
+    return {
+      subscribe: async () => {},
+      publish: async () => {},
+      requestReplay: async () => this.response,
+      close: async () => {},
+    };
+  }
+}
+
+class SubscribeEventTransport implements Transport {
+  constructor(private readonly event: EventEnvelope) {}
+
+  async connect(
+    _nodeId: string,
+    handlers: TransportHandlers,
+  ): Promise<TransportConnection> {
+    return {
+      subscribe: async () => {
+        await handlers.onEvent(this.event);
+      },
+      publish: async () => {},
+      requestReplay: async () => ({ partitionId: this.event.partitionId, events: [] }),
+      close: async () => {},
+    };
+  }
+}
+
+class TransactionalMemoryStore extends InMemoryPartitionStore {
+  async appendLocalEventTransaction<TPayload>(
+    input: LocalEventInput<TPayload>,
+    project?: EventProjection<TPayload>,
+  ): Promise<EventEnvelope<TPayload>> {
+    const event = await this.appendLocal(input);
+    await project?.(event);
+    return event;
+  }
+
+  async applyRemoteEventTransaction<TPayload>(
+    event: EventEnvelope<TPayload>,
+    project?: EventProjection<TPayload>,
+  ): Promise<boolean> {
+    const applied = await this.applyRemote(event);
+    if (applied) {
+      await project?.(event);
+    }
+    return applied;
+  }
+}
