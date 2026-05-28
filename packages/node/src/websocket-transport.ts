@@ -29,6 +29,7 @@ type WireMessage =
   | {
       type: "replay-response";
       requestId: string;
+      requesterNodeId: NodeId;
       partitionId: PartitionId;
       events: EventEnvelope[];
     };
@@ -80,29 +81,36 @@ export class WebSocketHub {
 
     socket.on("message", (data) => {
       void (async () => {
-        const message = await this.decode(data as Buffer);
-        if (message.type === "hello") {
-          record = {
-            nodeId: message.nodeId,
-            socket,
-            subscriptions: new Set(),
-          };
-          this.clients.set(message.nodeId, record);
-          return;
-        }
+        try {
+          const message = await this.decode(data as Buffer);
+          if (message.type === "hello") {
+            record = {
+              nodeId: message.nodeId,
+              socket,
+              subscriptions: new Set(),
+            };
+            this.clients.set(message.nodeId, record);
+            return;
+          }
 
-        if (!record) {
-          socket.close(1008, "hello required before other messages");
-          return;
-        }
+          if (!record) {
+            socket.close(1008, "hello required before other messages");
+            return;
+          }
 
-        this.handleMessage(record, message);
+          this.handleMessage(record, message);
+        } catch (error) {
+          console.error("[websocket-hub] message decode error", error);
+          socket.close(1003, "invalid message");
+        }
       })();
     });
 
     socket.on("close", () => {
       if (record) {
-        this.clients.delete(record.nodeId);
+        if (this.clients.get(record.nodeId)?.socket === socket) {
+          this.clients.delete(record.nodeId);
+        }
       }
     });
   }
@@ -148,6 +156,7 @@ export class WebSocketHub {
         void this.encode(requester.socket, {
           type: "replay-response",
           requestId: message.requestId,
+          requesterNodeId: message.requesterNodeId,
           partitionId: message.partitionId,
           events: [],
         });
@@ -159,8 +168,9 @@ export class WebSocketHub {
   }
 
   private forwardReplayResponse(message: Extract<WireMessage, { type: "replay-response" }>): void {
-    for (const client of this.clients.values()) {
-      void this.encode(client.socket, message);
+    const requester = this.clients.get(message.requesterNodeId);
+    if (requester) {
+      void this.encode(requester.socket, message);
     }
   }
 
@@ -252,7 +262,13 @@ class WebSocketTransportConnection implements TransportConnection {
 
   private attach(socket: WebSocket): void {
     socket.on("message", (data) => {
-      void this.handleMessage(this.decode(data as Buffer));
+      void (async () => {
+        try {
+          await this.handleMessage(this.decode(data as Buffer));
+        } catch (error) {
+          console.error("[websocket] message handling error", error);
+        }
+      })();
     });
     socket.on("close", () => {
       this.rejectAllPendingReplay("websocket connection closed");
@@ -312,6 +328,10 @@ class WebSocketTransportConnection implements TransportConnection {
     partitionId: PartitionId,
     cursors: ReadonlyMap<NodeId, EventId>,
   ): Promise<ReplayResponse> {
+    if (this.closed) {
+      throw new Error("websocket connection is closed");
+    }
+
     const requestId = uuidV7();
     const timeoutMs = this.replayRequestTimeoutMs();
     const response = new Promise<ReplayResponse>((resolve, reject) => {
@@ -323,14 +343,23 @@ class WebSocketTransportConnection implements TransportConnection {
       this.pendingReplay.set(requestId, { resolve, reject, timer });
     });
 
-    this.send({
-      type: "replay-request",
-      requestId,
-      requesterNodeId: this.nodeId,
-      targetNodeId,
-      partitionId,
-      cursors: [...cursors],
-    });
+    try {
+      this.send({
+        type: "replay-request",
+        requestId,
+        requesterNodeId: this.nodeId,
+        targetNodeId,
+        partitionId,
+        cursors: [...cursors],
+      });
+    } catch (error) {
+      const pending = this.pendingReplay.get(requestId);
+      if (pending) {
+        this.pendingReplay.delete(requestId);
+        clearTimeout(pending.timer);
+      }
+      throw error;
+    }
 
     return response;
   }
@@ -378,6 +407,7 @@ class WebSocketTransportConnection implements TransportConnection {
           this.send({
             type: "replay-response",
             requestId: message.requestId,
+            requesterNodeId: message.requesterNodeId,
             partitionId: message.partitionId,
             events: [],
           });
@@ -389,7 +419,12 @@ class WebSocketTransportConnection implements TransportConnection {
           partitionId: message.partitionId,
           cursors: new Map(message.cursors),
         });
-        this.send({ type: "replay-response", requestId: message.requestId, ...response });
+        this.send({
+          type: "replay-response",
+          requestId: message.requestId,
+          requesterNodeId: message.requesterNodeId,
+          ...response,
+        });
         break;
       }
       case "replay-response": {

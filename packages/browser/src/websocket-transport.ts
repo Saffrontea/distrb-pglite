@@ -27,6 +27,7 @@ type WireMessage =
   | {
       type: "replay-response";
       requestId: string;
+      requesterNodeId: NodeId;
       partitionId: PartitionId;
       events: EventEnvelope[];
     };
@@ -118,6 +119,10 @@ class BrowserWebSocketTransportConnection implements TransportConnection {
     partitionId: PartitionId,
     cursors: ReadonlyMap<NodeId, EventId>,
   ): Promise<ReplayResponse> {
+    if (this.closed) {
+      throw new Error("websocket connection is closed");
+    }
+
     const requestId = uuidV7();
     const timeoutMs = this.replayRequestTimeoutMs();
     const response = new Promise<ReplayResponse>((resolve, reject) => {
@@ -129,14 +134,23 @@ class BrowserWebSocketTransportConnection implements TransportConnection {
       this.pendingReplay.set(requestId, { resolve, reject, timer });
     });
 
-    this.send({
-      type: "replay-request",
-      requestId,
-      requesterNodeId: this.nodeId,
-      targetNodeId,
-      partitionId,
-      cursors: [...cursors],
-    });
+    try {
+      this.send({
+        type: "replay-request",
+        requestId,
+        requesterNodeId: this.nodeId,
+        targetNodeId,
+        partitionId,
+        cursors: [...cursors],
+      });
+    } catch (error) {
+      const pending = this.pendingReplay.get(requestId);
+      if (pending) {
+        this.pendingReplay.delete(requestId);
+        clearTimeout(pending.timer);
+      }
+      throw error;
+    }
 
     return response;
   }
@@ -150,7 +164,13 @@ class BrowserWebSocketTransportConnection implements TransportConnection {
 
   private attach(socket: WebSocket): void {
     socket.addEventListener("message", (event) => {
-      void this.handleMessage(decodeMessage(event.data));
+      void (async () => {
+        try {
+          await this.handleMessage(decodeMessage(event.data));
+        } catch (error) {
+          console.error("[browser-websocket] message handling error", error);
+        }
+      })();
     });
     socket.addEventListener("close", () => {
       this.rejectAllPendingReplay("websocket connection closed");
@@ -215,6 +235,7 @@ class BrowserWebSocketTransportConnection implements TransportConnection {
           this.send({
             type: "replay-response",
             requestId: message.requestId,
+            requesterNodeId: message.requesterNodeId,
             partitionId: message.partitionId,
             events: [],
           });
@@ -226,7 +247,12 @@ class BrowserWebSocketTransportConnection implements TransportConnection {
           partitionId: message.partitionId,
           cursors: new Map(message.cursors),
         });
-        this.send({ type: "replay-response", requestId: message.requestId, ...response });
+        this.send({
+          type: "replay-response",
+          requestId: message.requestId,
+          requesterNodeId: message.requesterNodeId,
+          ...response,
+        });
         break;
       }
       case "replay-response": {

@@ -201,6 +201,18 @@ describe("P2PWebSocketTransport (P2P 固有)", () => {
     })).rejects.toThrow("p2p connection is closed");
   });
 
+  it("requestReplay は connection close 後に失敗する", async () => {
+    const port = await getFreePort();
+    const connection = await new P2PWebSocketTransport({
+      publicUrl: `ws://127.0.0.1:${port}`,
+      port,
+    }).connect("node-a", { onEvent: () => {} });
+    await connection.close();
+
+    await expect(connection.requestReplay("node-b", "tenant:jp", new Map()))
+      .rejects.toThrow("p2p connection is closed");
+  });
+
   it("zstd 圧縮を有効にしてもP2Pイベントが届く", async () => {
     const portA = await getFreePort();
     const portB = await getFreePort();

@@ -55,7 +55,13 @@ type P2PWireMessage =
       partitionId: PartitionId;
       cursors: [NodeId, EventId][];
     }
-  | { type: "replay-response"; requestId: string; partitionId: PartitionId; events: EventEnvelope[] };
+  | {
+      type: "replay-response";
+      requestId: string;
+      requesterNodeId: NodeId;
+      partitionId: PartitionId;
+      events: EventEnvelope[];
+    };
 
 // ─── PeerSocket ───────────────────────────────────────────────────────────────
 
@@ -270,6 +276,10 @@ class P2PWebSocketConnection implements TransportConnection {
     partitionId: PartitionId,
     cursors: ReadonlyMap<NodeId, EventId>,
   ): Promise<ReplayResponse> {
+    if (this.closed) {
+      throw new Error("p2p connection is closed");
+    }
+
     const peer = this.peers.get(targetNodeId);
     if (!peer) return { partitionId, events: [] };
 
@@ -283,7 +293,7 @@ class P2PWebSocketConnection implements TransportConnection {
       }, timeoutMs);
       this.pendingReplay.set(requestId, { targetNodeId, resolve, reject, timer });
     });
-    peer.send({
+    const sent = peer.send({
       type: "replay-request",
       requestId,
       requesterNodeId: this.nodeId,
@@ -291,6 +301,14 @@ class P2PWebSocketConnection implements TransportConnection {
       partitionId,
       cursors: [...cursors],
     });
+    if (!sent) {
+      const pending = this.pendingReplay.get(requestId);
+      if (pending) {
+        this.pendingReplay.delete(requestId);
+        clearTimeout(pending.timer);
+      }
+      throw new Error("p2p peer connection is not open");
+    }
     return response;
   }
 
@@ -400,7 +418,13 @@ class P2PWebSocketConnection implements TransportConnection {
             break;
           case "replay-request": {
             if (!this.handlers.onReplayRequest) {
-              peer.send({ type: "replay-response", requestId: msg.requestId, partitionId: msg.partitionId, events: [] });
+              peer.send({
+                type: "replay-response",
+                requestId: msg.requestId,
+                requesterNodeId: msg.requesterNodeId,
+                partitionId: msg.partitionId,
+                events: [],
+              });
               return;
             }
             const response = await this.handlers.onReplayRequest({
@@ -408,7 +432,12 @@ class P2PWebSocketConnection implements TransportConnection {
               partitionId: msg.partitionId,
               cursors: new Map(msg.cursors),
             });
-            peer.send({ type: "replay-response", requestId: msg.requestId, ...response });
+            peer.send({
+              type: "replay-response",
+              requestId: msg.requestId,
+              requesterNodeId: msg.requesterNodeId,
+              ...response,
+            });
             break;
           }
           case "replay-response": {

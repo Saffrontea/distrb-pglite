@@ -67,6 +67,7 @@ describe("BrowserWebSocketTransport", () => {
     expect(parse(socket.sent.at(-1)!)).toMatchObject({
       type: "replay-response",
       requestId: "request-from-peer",
+      requesterNodeId: "browser-b",
       partitionId: "tenant:jp",
       events: [event],
     });
@@ -80,6 +81,7 @@ describe("BrowserWebSocketTransport", () => {
     socket.receive({
       type: "replay-response",
       requestId: request.requestId,
+      requesterNodeId: "browser-a",
       partitionId: "tenant:jp",
       events: [event],
     });
@@ -88,6 +90,62 @@ describe("BrowserWebSocketTransport", () => {
       partitionId: "tenant:jp",
       events: [event],
     });
+  });
+
+  it("captures replay handler failures without leaking unhandled rejections", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const transport = new BrowserWebSocketTransport("ws://relay.test");
+      const connected = transport.connect("browser-a", {
+        onEvent: vi.fn(),
+        onReplayRequest: async () => {
+          throw new Error("handler failed");
+        },
+      });
+      const socket = FakeWebSocket.instances[0]!;
+      socket.open();
+      await connected;
+
+      socket.receive({
+        type: "replay-request",
+        requestId: "request-from-peer",
+        requesterNodeId: "browser-b",
+        targetNodeId: "browser-a",
+        partitionId: "tenant:jp",
+        cursors: [],
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(errorSpy).toHaveBeenCalledWith(
+        "[browser-websocket] message handling error",
+        expect.any(Error),
+      );
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("captures malformed server messages without throwing from the browser listener", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const transport = new BrowserWebSocketTransport("ws://relay.test");
+      const connected = transport.connect("browser-a", { onEvent: vi.fn() });
+      const socket = FakeWebSocket.instances[0]!;
+      socket.open();
+      await connected;
+
+      expect(() => socket.receiveRaw("{")).not.toThrow();
+      await Promise.resolve();
+
+      expect(errorSpy).toHaveBeenCalledWith(
+        "[browser-websocket] message handling error",
+        expect.any(Error),
+      );
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 
   it("resubscribes and reports reconnect after a browser socket reconnect", async () => {
@@ -113,6 +171,19 @@ describe("BrowserWebSocketTransport", () => {
       { type: "subscribe", partitionId: "tenant:jp" },
     ]);
     expect(onReconnect).toHaveBeenCalledWith(new Set(["tenant:jp"]));
+  });
+
+  it("rejects replay requests after the browser connection is closed", async () => {
+    const transport = new BrowserWebSocketTransport("ws://relay.test");
+    const connected = transport.connect("browser-a", { onEvent: vi.fn() });
+    const socket = FakeWebSocket.instances[0]!;
+    socket.open();
+    const connection = await connected;
+
+    await connection.close();
+
+    await expect(connection.requestReplay("browser-b", "tenant:jp", new Map()))
+      .rejects.toThrow("websocket connection is closed");
   });
 });
 
@@ -175,6 +246,10 @@ class FakeWebSocket {
 
   receive(message: unknown): void {
     this.emit("message", { data: JSON.stringify(message) });
+  }
+
+  receiveRaw(data: string): void {
+    this.emit("message", { data });
   }
 
   private emit(type: string, event: unknown): void {
