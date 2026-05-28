@@ -1,4 +1,5 @@
 import type { EventId } from "./types.js";
+import { v7 as uuidV7FromLibrary } from "uuid";
 
 export type RandomBytes = (length: number) => Uint8Array;
 export type Now = () => number;
@@ -16,26 +17,25 @@ export class UuidV7Factory {
   ) {}
 
   next(): EventId {
-    const timestamp = Math.max(Math.trunc(this.now()), this.lastTimestamp);
+    let timestamp = Math.max(Math.trunc(this.now()), this.lastTimestamp);
     if (timestamp === this.lastTimestamp) {
-      this.sequence = (this.sequence + 1) & 0x0fff;
+      if (this.sequence === 0xffff_ffff) {
+        timestamp = this.lastTimestamp + 1;
+        this.sequence = 0;
+        this.lastTimestamp = timestamp;
+      } else {
+        this.sequence += 1;
+      }
     } else {
-      this.sequence = this.randomBytes(2)[1] & 0x0fff;
+      this.sequence = randomSequence(this.randomBytes(4));
       this.lastTimestamp = timestamp;
     }
 
-    const bytes = this.randomBytes(16);
-    bytes[0] = (timestamp / 0x10000000000) & 0xff;
-    bytes[1] = (timestamp / 0x100000000) & 0xff;
-    bytes[2] = (timestamp / 0x1000000) & 0xff;
-    bytes[3] = (timestamp / 0x10000) & 0xff;
-    bytes[4] = (timestamp / 0x100) & 0xff;
-    bytes[5] = timestamp & 0xff;
-    bytes[6] = 0x70 | ((this.sequence >> 8) & 0x0f);
-    bytes[7] = this.sequence & 0xff;
-    bytes[8] = 0x80 | (bytes[8] & 0x3f);
-
-    return formatUuid(bytes);
+    return uuidV7FromLibrary({
+      msecs: timestamp,
+      random: this.randomBytes(16),
+      seq: this.sequence,
+    });
   }
 }
 
@@ -62,13 +62,14 @@ function defaultRandomBytes(length: number): Uint8Array {
   return crypto.getRandomValues(new Uint8Array(length));
 }
 
-function formatUuid(bytes: Uint8Array): string {
-  const hex = [...bytes].map((byte) => byte.toString(16).padStart(2, "0"));
-  return [
-    hex.slice(0, 4).join(""),
-    hex.slice(4, 6).join(""),
-    hex.slice(6, 8).join(""),
-    hex.slice(8, 10).join(""),
-    hex.slice(10, 16).join(""),
-  ].join("-");
+function randomSequence(bytes: Uint8Array): number {
+  if (bytes.length < 4) {
+    throw new Error("randomBytes must return at least 4 bytes");
+  }
+  return (
+    (bytes[0]! * 0x1000000)
+    + (bytes[1]! << 16)
+    + (bytes[2]! << 8)
+    + bytes[3]!
+  ) >>> 0;
 }
