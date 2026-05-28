@@ -158,6 +158,20 @@ export async function restorePartitionDataOnlyCasSnapshot(options: {
   if (options.snapshot.storageBinding.snapshotScope !== "data-only") {
     throw new Error("only data-only partition snapshots can restore relation files into an existing data directory");
   }
+  if (
+    options.targetStorageBinding
+    && options.targetStorageBinding.partitionId !== options.snapshot.partitionId
+  ) {
+    throw new Error(
+      `target storage binding partition mismatch: ${options.targetStorageBinding.partitionId} !== ${options.snapshot.partitionId}`,
+    );
+  }
+  if (options.targetStorageBinding) {
+    validateDataOnlyTargetBinding(
+      options.snapshot.storageBinding,
+      options.targetStorageBinding,
+    );
+  }
 
   await restoreFromCas({
     manifest: options.targetStorageBinding
@@ -225,6 +239,42 @@ function validateStorageBinding(
     throw new Error(
       `storage binding partition mismatch: ${storageBinding.partitionId} !== ${partitionId}`,
     );
+  }
+}
+
+function validateDataOnlyTargetBinding(
+  sourceBinding: StoragePartitionBinding,
+  targetBinding: StoragePartitionBinding,
+): void {
+  if (targetBinding.snapshotScope !== "data-only") {
+    throw new Error("target storage binding must use data-only snapshot scope");
+  }
+  if (
+    sourceBinding.ddlGeneration !== undefined
+    && targetBinding.ddlGeneration !== undefined
+    && sourceBinding.ddlGeneration !== targetBinding.ddlGeneration
+  ) {
+    throw new Error(
+      `target storage binding DDL generation mismatch: ${targetBinding.ddlGeneration} !== ${sourceBinding.ddlGeneration}`,
+    );
+  }
+  if (sourceBinding.relations.length !== targetBinding.relations.length) {
+    throw new Error(
+      `target storage binding relation count mismatch: ${targetBinding.relations.length} !== ${sourceBinding.relations.length}`,
+    );
+  }
+
+  for (const [index, sourceRelation] of sourceBinding.relations.entries()) {
+    const targetRelation = targetBinding.relations[index];
+    if (!targetRelation) {
+      throw new Error(`target storage binding is missing relation at index ${index}`);
+    }
+    if (
+      sourceRelation.role !== targetRelation.role
+      || sourceRelation.parentRelationOid !== targetRelation.parentRelationOid
+    ) {
+      throw new Error(`target storage binding relation metadata mismatch at index ${index}`);
+    }
   }
 }
 

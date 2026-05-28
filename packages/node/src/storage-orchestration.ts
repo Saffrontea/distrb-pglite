@@ -164,6 +164,12 @@ function validatePullStorageCompatibility(
   entry: StorageSnapshotCatalogEntry<CasManifest>,
   storageBinding: StoragePartitionBinding,
 ): void {
+  if (storageBinding.partitionId !== entry.partitionId) {
+    throw new Error(
+      `storage binding partition mismatch for ${entry.groupId}/${entry.partitionId}: snapshot=${entry.partitionId} target=${storageBinding.partitionId}`,
+    );
+  }
+
   const bindingGeneration = storageBinding.ddlGeneration ?? 0;
   if (bindingGeneration !== entry.ddlGeneration) {
     throw new Error(

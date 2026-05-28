@@ -1119,6 +1119,63 @@ describe("discoverStoragePartitionBinding", () => {
     });
   }, 120_000);
 
+  it("preserves local snapshot catalog entries when applying a pulled storage catalog manifest", async () => {
+    const root = await makeTempDir("storage-catalog-preserve-snapshots");
+    const db = new PGlite(join(root, "data"));
+    const oldHash = "a".repeat(64);
+
+    await saveStorageBindingGroup(db, {
+      groupId: "sensor_readings",
+      rootRelationOid: 1,
+      ddlGeneration: 1,
+      bindings: [{
+        partitionId: "tenant:old",
+        rootRelationOid: 1,
+        relations: [storageRelation(1, "old.bin")],
+        snapshotScope: "data-only",
+      }],
+    });
+    await saveStorageSnapshotCatalogEntry(db, {
+      groupId: "sensor_readings",
+      partitionId: "tenant:old",
+      snapshotId: "local-snapshot",
+      components: ["data"],
+      highWatermark: [],
+      ddlGeneration: 1,
+      manifestKind: "cas",
+      manifest: casManifest("local-snapshot", oldHash, 1),
+    });
+
+    await applyStorageCatalogManifest({
+      db,
+      manifest: {
+        version: 1,
+        groupId: "sensor_readings",
+        rootRelationOid: 2,
+        ddlGeneration: 2,
+        bindings: [{
+          partitionId: "tenant:new",
+          rootRelationOid: 2,
+          relations: [storageRelation(2, "new.bin")],
+          snapshotScope: "data-only",
+        }],
+        snapshots: [],
+      },
+    });
+
+    const snapshot = await loadStorageSnapshotCatalogEntry({
+      db,
+      groupId: "sensor_readings",
+      partitionId: "tenant:old",
+      snapshotId: "local-snapshot",
+    });
+    const group = await loadStorageBindingGroup(db, "sensor_readings");
+    await db.close();
+
+    expect(snapshot?.snapshotId).toBe("local-snapshot");
+    expect(group?.bindings.map((binding) => binding.partitionId)).toEqual(["tenant:new"]);
+  });
+
   it("executes CAS block GC from snapshot catalog policy", async () => {
     const root = await makeTempDir("storage-cas-gc");
     const dataDir = join(root, "data");
@@ -1380,5 +1437,16 @@ function casManifest(snapshotId: string, hash: string, size: number) {
       components: ["data" as const],
       blocks: [{ hash, size }],
     }],
+  };
+}
+
+function storageRelation(relationOid: number, storagePath: string) {
+  return {
+    databaseOid: 1,
+    tablespaceOid: 1,
+    relationOid,
+    relfilenode: relationOid,
+    storagePath,
+    role: "child" as const,
   };
 }

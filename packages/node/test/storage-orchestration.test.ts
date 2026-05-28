@@ -234,6 +234,59 @@ describe("storage orchestration", () => {
       },
     })).rejects.toThrow("storage binding DDL generation mismatch");
   });
+
+  it("rejects pulls when an explicit target storage binding belongs to another partition", async () => {
+    const root = await makeTempDir("managed-pull-partition-mismatch");
+    const targetCasDir = join(root, "target-cas");
+    const targetDir = join(root, "target");
+    const content = Buffer.from("snapshot payload");
+    const hash = sha256(content);
+
+    await expect(pullPartitionCasSnapshot({
+      snapshotEntries: [{
+        groupId: "files",
+        partitionId: "tenant:jp",
+        snapshotId: "newer",
+        components: ["catalog", "data"],
+        highWatermark: [],
+        ddlGeneration: 2,
+        manifestKind: "cas",
+        manifest: {
+          version: 1,
+          snapshotId: "newer",
+          parentSnapshotIds: [],
+          chunkSize: 64 * 1024,
+          directories: [],
+          files: [{
+            path: "payload.txt",
+            size: content.length,
+            sha256: hash,
+            components: ["data"],
+            blocks: [{ hash, size: content.length }],
+          }],
+        },
+      }],
+      groupId: "files",
+      partitionId: "tenant:jp",
+      requirement: "bootstrap",
+      targetCasDir,
+      targetDir,
+      storageBinding: {
+        partitionId: "tenant:us",
+        rootRelationOid: 1,
+        relations: [{
+          databaseOid: 1,
+          tablespaceOid: 1,
+          relationOid: 1,
+          relfilenode: 1,
+          storagePath: "payload.txt",
+          role: "child",
+        }],
+        snapshotScope: "catalog-and-data",
+        ddlGeneration: 2,
+      },
+    })).rejects.toThrow("storage binding partition mismatch");
+  });
 });
 
 function sha256(content: Uint8Array): string {

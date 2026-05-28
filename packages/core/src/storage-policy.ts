@@ -96,6 +96,7 @@ export function selectStorageSnapshotCatalogEntryForPull<TEntry extends StorageS
   return [...entries]
     .sort((left, right) =>
       right.ddlGeneration - left.ddlGeneration
+      || (right.storageGeneration ?? right.ddlGeneration) - (left.storageGeneration ?? left.ddlGeneration)
       || right.snapshotId.localeCompare(left.snapshotId)
     )
     .find((entry) => canSatisfyStorageSnapshotCatalogPull(entry, requirement));

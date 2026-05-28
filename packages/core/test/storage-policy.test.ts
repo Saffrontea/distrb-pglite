@@ -82,6 +82,22 @@ describe("storage snapshot policy", () => {
     expect(selectStorageSnapshotCatalogEntryForPull(entries, "bootstrap")?.snapshotId)
       .toBe("bootstrap");
   });
+
+  it("prefers the newest storage generation for pulls that require data", () => {
+    const entries: StorageSnapshotCatalogEntry[] = [
+      {
+        ...snapshotEntry("z-old-storage", ["data"], 5),
+        storageGeneration: 1,
+      },
+      {
+        ...snapshotEntry("a-new-storage", ["data"], 5),
+        storageGeneration: 2,
+      },
+    ];
+
+    expect(selectStorageSnapshotCatalogEntryForPull(entries, "data-refresh")?.snapshotId)
+      .toBe("a-new-storage");
+  });
 });
 
 describe("storage GC policy", () => {

@@ -192,6 +192,113 @@ describe("partition CAS snapshots", () => {
     })).rejects.toThrow("storage binding partition mismatch");
   });
 
+  it("rejects data-only restore remapping with a target binding for another partition", async () => {
+    const root = await makeTempDir("partition-data-only-target-mismatch");
+    const casDir = join(root, "cas");
+    const targetDir = join(root, "target");
+    const sourceBinding = {
+      ...storageBinding("tenant:jp"),
+      snapshotScope: "data-only" as const,
+    };
+    const targetBinding = {
+      ...storageBinding("tenant:us"),
+      snapshotScope: "data-only" as const,
+    };
+
+    await expect(restorePartitionDataOnlyCasSnapshot({
+      snapshot: {
+        version: 1,
+        snapshotId: "partition-snapshot:tenant:jp:fixed",
+        partitionId: "tenant:jp",
+        storageBinding: sourceBinding,
+        highWatermark: [],
+        manifest: {
+          version: 1,
+          snapshotId: "partition-snapshot:tenant:jp:fixed",
+          parentSnapshotIds: [],
+          chunkSize: 64 * 1024,
+          directories: ["base", "base/5"],
+          files: [{
+            path: "base/5/16384",
+            size: 0,
+            sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            components: ["data"],
+            blocks: [],
+          }],
+        },
+      },
+      casDir,
+      targetDir,
+      targetStorageBinding: targetBinding,
+    })).rejects.toThrow("target storage binding partition mismatch");
+  });
+
+  it("rejects data-only restore remapping with a non-data-only target binding", async () => {
+    const root = await makeTempDir("partition-data-only-target-scope-mismatch");
+    const sourceBinding = {
+      ...storageBinding("tenant:jp"),
+      snapshotScope: "data-only" as const,
+    };
+
+    await expect(restorePartitionDataOnlyCasSnapshot({
+      snapshot: dataOnlySnapshot(sourceBinding),
+      casDir: join(root, "cas"),
+      targetDir: join(root, "target"),
+      targetStorageBinding: storageBinding("tenant:jp"),
+    })).rejects.toThrow("target storage binding must use data-only snapshot scope");
+  });
+
+  it("rejects data-only restore remapping when target binding DDL generation differs", async () => {
+    const root = await makeTempDir("partition-data-only-target-ddl-mismatch");
+    const sourceBinding = {
+      ...storageBinding("tenant:jp"),
+      snapshotScope: "data-only" as const,
+      ddlGeneration: 3,
+    };
+    const targetBinding = {
+      ...storageBinding("tenant:jp"),
+      snapshotScope: "data-only" as const,
+      ddlGeneration: 4,
+    };
+
+    await expect(restorePartitionDataOnlyCasSnapshot({
+      snapshot: dataOnlySnapshot(sourceBinding),
+      casDir: join(root, "cas"),
+      targetDir: join(root, "target"),
+      targetStorageBinding: targetBinding,
+    })).rejects.toThrow("target storage binding DDL generation mismatch");
+  });
+
+  it("rejects data-only restore remapping when target binding relation shape differs", async () => {
+    const root = await makeTempDir("partition-data-only-target-relation-mismatch");
+    const sourceBinding = {
+      ...storageBinding("tenant:jp"),
+      snapshotScope: "data-only" as const,
+      relations: [
+        ...storageBinding("tenant:jp").relations,
+        {
+          databaseOid: 5,
+          tablespaceOid: 1_668,
+          relationOid: 16_385,
+          relfilenode: 16_385,
+          role: "index" as const,
+          parentRelationOid: 16_384,
+        },
+      ],
+    };
+    const targetBinding = {
+      ...storageBinding("tenant:jp"),
+      snapshotScope: "data-only" as const,
+    };
+
+    await expect(restorePartitionDataOnlyCasSnapshot({
+      snapshot: dataOnlySnapshot(sourceBinding),
+      casDir: join(root, "cas"),
+      targetDir: join(root, "target"),
+      targetStorageBinding: targetBinding,
+    })).rejects.toThrow("target storage binding relation count mismatch");
+  });
+
   it("restores a catalog-and-data snapshot and replays only events after its high-watermark", async () => {
     const root = await makeTempDir("partition-pull");
     const sourceDir = join(root, "source");
@@ -444,5 +551,29 @@ function storageBinding(partitionId: string) {
         relfilenode: 16_384,
       },
     ],
+  };
+}
+
+function dataOnlySnapshot(storageBinding: ReturnType<typeof storageBinding>) {
+  return {
+    version: 1 as const,
+    snapshotId: `partition-snapshot:${storageBinding.partitionId}:fixed`,
+    partitionId: storageBinding.partitionId,
+    storageBinding,
+    highWatermark: [],
+    manifest: {
+      version: 1 as const,
+      snapshotId: `partition-snapshot:${storageBinding.partitionId}:fixed`,
+      parentSnapshotIds: [],
+      chunkSize: 64 * 1024,
+      directories: ["base", "base/5"],
+      files: [{
+        path: "base/5/16384",
+        size: 0,
+        sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        components: ["data" as const],
+        blocks: [],
+      }],
+    },
   };
 }

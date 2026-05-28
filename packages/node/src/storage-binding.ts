@@ -1701,7 +1701,7 @@ export async function applyStorageCatalogManifest(options: {
   await migrateStorageBindingCatalog(options.db);
   await options.db.query(
     `
-      DELETE FROM distrb_storage_binding_groups
+      DELETE FROM distrb_storage_bindings
       WHERE group_id = $1
     `,
     [options.manifest.groupId],
