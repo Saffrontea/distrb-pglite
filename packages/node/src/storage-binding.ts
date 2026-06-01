@@ -16,7 +16,7 @@ import type {
   StorageSnapshotComponent,
   StorageSnapshotScope,
 } from "@distrb-pglite/core";
-import type { PartitionCasSnapshot, PartitionFilesystemSnapshot } from "./partition-snapshot.js";
+import { validateHighWatermarkEntries, type PartitionCasSnapshot, type PartitionFilesystemSnapshot } from "./partition-snapshot.js";
 import type { PGliteClient } from "./pglite-store.js";
 import { gcCasBlocks, type CasGcResult, type CasManifest } from "./cas.js";
 
@@ -1378,6 +1378,7 @@ export async function saveStorageSnapshotCatalogEntry<TManifest>(
   entry: StorageSnapshotCatalogEntry<TManifest>,
 ): Promise<void> {
   await migrateStorageBindingCatalog(db);
+  const highWatermark = validateHighWatermarkEntries(entry.highWatermark);
   await db.query(
     `
       INSERT INTO distrb_storage_snapshots (
@@ -1405,7 +1406,7 @@ export async function saveStorageSnapshotCatalogEntry<TManifest>(
       entry.partitionId,
       entry.snapshotId,
       JSON.stringify(entry.components),
-      JSON.stringify(entry.highWatermark),
+      JSON.stringify(highWatermark),
       entry.ddlGeneration,
       entry.storageGeneration ?? entry.ddlGeneration,
       entry.manifestKind,
@@ -2121,12 +2122,13 @@ function relationFromDriftSide(row: {
 function snapshotCatalogEntryFromRow<TManifest>(
   row: SnapshotCatalogRow,
 ): StorageSnapshotCatalogEntry<TManifest> {
+  const highWatermark = validateHighWatermarkEntries(row.high_watermark as unknown[]);
   return {
     groupId: row.group_id,
     partitionId: row.partition_id,
     snapshotId: row.snapshot_id,
     components: row.components as StorageSnapshotComponent[],
-    highWatermark: row.high_watermark as StorageSnapshotCatalogEntry<TManifest>["highWatermark"],
+    highWatermark,
     ddlGeneration: row.ddl_generation,
     storageGeneration: row.storage_generation ?? row.ddl_generation,
     manifestKind: row.manifest_kind as StorageSnapshotCatalogEntry<TManifest>["manifestKind"],

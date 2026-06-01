@@ -108,6 +108,20 @@ describe("partition snapshot cursors", () => {
       ["node-a", "018bcfe5-6800-7002-8000-000000000002"],
     ]));
   });
+
+  it("rejects duplicate high-watermark cursors for the same source node", () => {
+    const snapshot: PartitionSnapshotCursor = {
+      partitionId: "tenant:jp",
+      highWatermark: [
+        ["node-a", "018bcfe5-6800-7001-8000-000000000001"],
+        ["node-a", "018bcfe5-6800-7002-8000-000000000002"],
+      ],
+    };
+
+    expect(() => highWatermarkMap(snapshot)).toThrow(
+      "duplicate high-watermark source node: node-a",
+    );
+  });
 });
 
 describe("storage binding snapshot filters", () => {

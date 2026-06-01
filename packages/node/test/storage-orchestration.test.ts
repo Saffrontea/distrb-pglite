@@ -235,6 +235,71 @@ describe("storage orchestration", () => {
     })).rejects.toThrow("storage binding DDL generation mismatch");
   });
 
+  it("skips incompatible newer pull snapshots when an older compatible entry exists", async () => {
+    const root = await makeTempDir("managed-pull-compatible-fallback");
+    const sourceCasDir = join(root, "source-cas");
+    const targetCasDir = join(root, "target-cas");
+    const targetDir = join(root, "target");
+    await mkdir(sourceCasDir, { recursive: true });
+    const compatibleContent = Buffer.from("compatible snapshot");
+    const compatibleHash = sha256(compatibleContent);
+    await writeFile(join(sourceCasDir, compatibleHash), compatibleContent);
+    const incompatibleContent = Buffer.from("incompatible snapshot");
+    const incompatibleHash = sha256(incompatibleContent);
+
+    const pulled = await pullPartitionCasSnapshot({
+      snapshotEntries: [
+        {
+          groupId: "files",
+          partitionId: "tenant:jp",
+          snapshotId: "incompatible-newer",
+          components: ["catalog", "data"],
+          highWatermark: [],
+          ddlGeneration: 3,
+          manifestKind: "cas",
+          manifest: manifestForPayload("incompatible-newer", incompatibleContent, incompatibleHash),
+        },
+        {
+          groupId: "files",
+          partitionId: "tenant:jp",
+          snapshotId: "compatible-older",
+          components: ["catalog", "data"],
+          highWatermark: [],
+          ddlGeneration: 2,
+          manifestKind: "cas",
+          manifest: manifestForPayload("compatible-older", compatibleContent, compatibleHash),
+        },
+      ],
+      groupId: "files",
+      partitionId: "tenant:jp",
+      requirement: "bootstrap",
+      sourceCasDir,
+      targetCasDir,
+      targetDir,
+      storageBinding: {
+        partitionId: "tenant:jp",
+        rootRelationOid: 1,
+        relations: [{
+          databaseOid: 1,
+          tablespaceOid: 1,
+          relationOid: 1,
+          relfilenode: 1,
+          storagePath: "payload.txt",
+          role: "child",
+        }],
+        snapshotScope: "catalog-and-data",
+        ddlGeneration: 2,
+      },
+    });
+    const restored = await readFile(join(targetDir, "payload.txt"), "utf8");
+
+    expect(pulled).toMatchObject({
+      transferredBlocks: 1,
+      entry: { snapshotId: "compatible-older" },
+    });
+    expect(restored).toBe("compatible snapshot");
+  });
+
   it("rejects pulls when an explicit target storage binding belongs to another partition", async () => {
     const root = await makeTempDir("managed-pull-partition-mismatch");
     const targetCasDir = join(root, "target-cas");
@@ -291,4 +356,21 @@ describe("storage orchestration", () => {
 
 function sha256(content: Uint8Array): string {
   return createHash("sha256").update(content).digest("hex");
+}
+
+function manifestForPayload(snapshotId: string, content: Uint8Array, hash: string): CasManifest {
+  return {
+    version: 1,
+    snapshotId,
+    parentSnapshotIds: [],
+    chunkSize: 64 * 1024,
+    directories: [],
+    files: [{
+      path: "payload.txt",
+      size: content.length,
+      sha256: hash,
+      components: ["data"],
+      blocks: [{ hash, size: content.length }],
+    }],
+  };
 }

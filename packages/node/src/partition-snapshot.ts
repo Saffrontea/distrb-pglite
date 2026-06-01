@@ -109,7 +109,32 @@ export async function createPartitionFilesystemSnapshot(options: {
 }
 
 export function highWatermarkMap(snapshot: PartitionSnapshotCursor): ReadonlyMap<NodeId, EventId> {
-  return new Map(snapshot.highWatermark);
+  return new Map(validateHighWatermarkEntries(snapshot.highWatermark));
+}
+
+export function validateHighWatermarkEntries(
+  highWatermark: readonly unknown[],
+): [NodeId, EventId][] {
+  const seen = new Set<NodeId>();
+  return highWatermark.map((entry, index) => {
+    if (!Array.isArray(entry) || entry.length !== 2) {
+      throw new Error(`invalid high-watermark entry at index ${index}`);
+    }
+
+    const [nodeId, eventId] = entry;
+    if (typeof nodeId !== "string" || nodeId.length === 0) {
+      throw new Error(`invalid high-watermark source node at index ${index}`);
+    }
+    if (typeof eventId !== "string" || eventId.length === 0) {
+      throw new Error(`invalid high-watermark event id at index ${index}`);
+    }
+    if (seen.has(nodeId)) {
+      throw new Error(`duplicate high-watermark source node: ${nodeId}`);
+    }
+
+    seen.add(nodeId);
+    return [nodeId, eventId];
+  });
 }
 
 export async function listEventsAfterPartitionSnapshot(

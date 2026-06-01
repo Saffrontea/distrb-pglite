@@ -4,6 +4,11 @@ import { describe, expect, it } from "vitest";
 import { PGlitePartitionStore } from "../src/index.js";
 
 describe("PGlitePartitionStore", () => {
+  it("rejects empty local node ids", () => {
+    expect(() => new PGlitePartitionStore("", new PGlite()))
+      .toThrow("nodeId must be a non-empty string");
+  });
+
   it("stores events in PGlite and applies remote events idempotently", async () => {
     const db = new PGlite();
     const store = new PGlitePartitionStore("node-a", db);
@@ -55,6 +60,34 @@ describe("PGlitePartitionStore", () => {
     ).resolves.toBe(false);
 
     await expect(store.listEventsAfterCursors("tenant:jp", new Map())).resolves.toHaveLength(0);
+  });
+
+  it("rejects empty partition ids on direct store access", async () => {
+    const db = new PGlite();
+    const store = new PGlitePartitionStore("node-a", db);
+    await store.migrate();
+
+    await expect(store.registerPartition("")).rejects.toThrow("partitionId must be a non-empty string");
+    await expect(store.hasPartition("")).rejects.toThrow("partitionId must be a non-empty string");
+    await expect(store.listEventsAfterCursors("", new Map()))
+      .rejects.toThrow("partitionId must be a non-empty string");
+    await expect(store.getHighWatermark(""))
+      .rejects.toThrow("partitionId must be a non-empty string");
+  });
+
+  it("rejects invalid replay cursors on direct store access", async () => {
+    const db = new PGlite();
+    const store = new PGlitePartitionStore("node-a", db);
+    await store.migrate();
+
+    await expect(store.listEventsAfter("tenant:jp", {
+      sourceNodeId: "node-b",
+      eventId: "not-a-uuid",
+    })).rejects.toThrow("cursor eventId must be a UUIDv7");
+    await expect(store.listEventsAfterCursors(
+      "tenant:jp",
+      new Map([["node-b", "not-a-uuid"]]),
+    )).rejects.toThrow("cursor eventId must be a UUIDv7");
   });
 
   it("uses source node plus event id as the idempotency key", async () => {
@@ -150,6 +183,54 @@ describe("PGlitePartitionStore", () => {
       ...event,
       payload: { b: 2, a: 1 },
     })).resolves.toBe(false);
+  });
+
+  it("rejects local events whose payload cannot round-trip as JSON", async () => {
+    const db = new PGlite();
+    const store = new PGlitePartitionStore("node-a", db);
+    await store.migrate();
+
+    await expect(store.appendLocal({
+      partitionId: "tenant:jp",
+      schemaVersion: 1,
+      payload: { value: Number.NaN },
+    })).rejects.toThrow("payload.value must be JSON-serializable");
+    await expect(store.appendLocal({
+      partitionId: "tenant:jp",
+      schemaVersion: 1,
+      payload: { value: undefined },
+    })).rejects.toThrow("payload.value must be JSON-serializable");
+    await expect(store.listEventsAfterCursors("tenant:jp", new Map())).resolves.toHaveLength(0);
+  });
+
+  it("rejects registered remote events with invalid envelope fields", async () => {
+    const db = new PGlite();
+    const store = new PGlitePartitionStore("node-a", db);
+    await store.migrate();
+    await store.registerPartition("tenant:jp");
+
+    await expect(store.applyRemote({
+      eventId: "not-a-uuid",
+      sourceNodeId: "node-b",
+      partitionId: "tenant:jp",
+      schemaVersion: 1,
+      payload: { ok: true },
+    })).rejects.toThrow("eventId must be a UUIDv7");
+    await expect(store.applyRemote({
+      eventId: "018bcfe5-6800-7001-8000-000000000001",
+      sourceNodeId: "node-b",
+      partitionId: "tenant:jp",
+      schemaVersion: 0,
+      payload: { ok: true },
+    })).rejects.toThrow("schemaVersion must be a positive integer");
+    await expect(store.applyRemote({
+      eventId: "018bcfe5-6800-7001-8000-000000000001",
+      sourceNodeId: "node-b",
+      partitionId: "tenant:jp",
+      schemaVersion: 1,
+      payload: { value: Infinity },
+    })).rejects.toThrow("payload.value must be JSON-serializable");
+    await expect(store.listEventsAfterCursors("tenant:jp", new Map())).resolves.toHaveLength(0);
   });
 
   it("replays events after each source node cursor independently", async () => {

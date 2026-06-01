@@ -1,4 +1,10 @@
 import {
+  assertValidEventEnvelope,
+  assertValidEventCursor,
+  assertValidEventCursors,
+  assertValidLocalEventInput,
+  assertValidNodeId,
+  assertValidPartitionId,
   UuidV7Factory,
   type EventCursor,
   type EventEnvelope,
@@ -33,7 +39,9 @@ export class PGlitePartitionStore implements PartitionStore {
     private readonly nodeId: NodeId,
     private readonly db: PGliteClient,
     private readonly ids = new UuidV7Factory(),
-  ) {}
+  ) {
+    assertValidNodeId(nodeId);
+  }
 
   async migrate(): Promise<void> {
     await this.db.exec(`
@@ -69,6 +77,7 @@ export class PGlitePartitionStore implements PartitionStore {
   }
 
   async registerPartition(partitionId: PartitionId): Promise<void> {
+    assertValidPartitionId(partitionId);
     await this.db.query(
       "INSERT INTO distrb_partitions (partition_id) VALUES ($1) ON CONFLICT DO NOTHING",
       [partitionId],
@@ -76,6 +85,7 @@ export class PGlitePartitionStore implements PartitionStore {
   }
 
   async hasPartition(partitionId: PartitionId): Promise<boolean> {
+    assertValidPartitionId(partitionId);
     const result = await this.db.query<{ exists: boolean }>(
       "SELECT EXISTS (SELECT 1 FROM distrb_partitions WHERE partition_id = $1) AS exists",
       [partitionId],
@@ -93,6 +103,7 @@ export class PGlitePartitionStore implements PartitionStore {
     input: LocalEventInput<TPayload>,
     project?: EventProjection<TPayload>,
   ): Promise<EventEnvelope<TPayload>> {
+    assertValidLocalEventInput(input);
     const event: EventEnvelope<TPayload> = {
       eventId: this.ids.next(),
       sourceNodeId: this.nodeId,
@@ -120,6 +131,7 @@ export class PGlitePartitionStore implements PartitionStore {
     if (!(await this.hasPartition(event.partitionId))) {
       return false;
     }
+    assertValidEventEnvelope(event);
 
     return this.withTransaction(async () => {
       const applied = await this.db.query<{ event_id: string }>(
@@ -147,6 +159,10 @@ export class PGlitePartitionStore implements PartitionStore {
     partitionId: PartitionId,
     cursor?: EventCursor,
   ): Promise<EventEnvelope[]> {
+    assertValidPartitionId(partitionId);
+    if (cursor) {
+      assertValidEventCursor(cursor);
+    }
     const rows = await this.loadPartitionEvents(partitionId);
     return rows
       .map(rowToEvent)
@@ -162,6 +178,8 @@ export class PGlitePartitionStore implements PartitionStore {
     partitionId: PartitionId,
     cursors: ReadonlyMap<NodeId, EventId>,
   ): Promise<EventEnvelope[]> {
+    assertValidPartitionId(partitionId);
+    assertValidEventCursors(cursors);
     const rows = await this.loadPartitionEvents(partitionId);
     return rows
       .map(rowToEvent)
@@ -172,6 +190,7 @@ export class PGlitePartitionStore implements PartitionStore {
   }
 
   async getHighWatermark(partitionId: PartitionId): Promise<HighWatermark> {
+    assertValidPartitionId(partitionId);
     const result = await this.db.query<{ source_node_id: string; event_id: string }>(
       `
         SELECT DISTINCT ON (source_node_id)
@@ -188,6 +207,7 @@ export class PGlitePartitionStore implements PartitionStore {
   }
 
   async createSnapshotMetadata(partitionId: PartitionId): Promise<SnapshotMetadata> {
+    assertValidPartitionId(partitionId);
     const highWatermark = await this.getHighWatermark(partitionId);
     const snapshotId = `snapshot:${partitionId}:${this.nodeId}:${this.ids.next()}`;
     await this.db.query(

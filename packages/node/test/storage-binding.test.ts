@@ -1176,6 +1176,27 @@ describe("discoverStoragePartitionBinding", () => {
     expect(group?.bindings.map((binding) => binding.partitionId)).toEqual(["tenant:new"]);
   });
 
+  it("rejects snapshot catalog entries with duplicate high-watermark source cursors", async () => {
+    const root = await makeTempDir("storage-catalog-duplicate-hwm");
+    const db = new PGlite(join(root, "data"));
+
+    await expect(saveStorageSnapshotCatalogEntry(db, {
+      groupId: "sensor_readings",
+      partitionId: "tenant:jp",
+      snapshotId: "bad-snapshot",
+      components: ["data"],
+      highWatermark: [
+        ["node-a", "018bcfe5-6800-7001-8000-000000000001"],
+        ["node-a", "018bcfe5-6800-7002-8000-000000000002"],
+      ],
+      ddlGeneration: 1,
+      manifestKind: "cas",
+      manifest: casManifest("bad-snapshot", "a".repeat(64), 1),
+    })).rejects.toThrow("duplicate high-watermark source node: node-a");
+
+    await db.close();
+  });
+
   it("executes CAS block GC from snapshot catalog policy", async () => {
     const root = await makeTempDir("storage-cas-gc");
     const dataDir = join(root, "data");

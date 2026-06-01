@@ -115,19 +115,37 @@ export async function pullPartitionCasSnapshot(options: {
   const appliedCatalog = options.db && options.catalogManifest
     ? await applyStorageCatalogManifest({ db: options.db, manifest: options.catalogManifest })
     : undefined;
-  const entry = selectStorageSnapshotCatalogEntryForPull(
-    options.snapshotEntries.filter((candidate) =>
+  const storageBinding = options.storageBinding ?? appliedCatalog?.bindings.find((binding) =>
+    binding.partitionId === options.partitionId
+  );
+  const candidateEntries = options.snapshotEntries.filter((candidate) =>
       candidate.groupId === options.groupId && candidate.partitionId === options.partitionId
-    ),
+  );
+  const compatibleEntries = storageBinding
+    ? candidateEntries.filter((candidate) => isPullStorageCompatible(candidate, storageBinding))
+    : candidateEntries;
+  const entry = selectStorageSnapshotCatalogEntryForPull(
+    compatibleEntries,
     options.requirement,
   );
   if (!entry) {
+    const incompatibleEntry = storageBinding
+      ? selectStorageSnapshotCatalogEntryForPull(candidateEntries, options.requirement)
+      : undefined;
+    if (incompatibleEntry) {
+      validatePullStorageCompatibility(incompatibleEntry, storageBinding!);
+    }
     throw new Error(`no snapshot entry satisfies ${options.requirement}: ${options.groupId}/${options.partitionId}`);
   }
   if (entry.manifestKind !== "cas") {
     throw new Error(`only cas snapshot entries can be pulled by this helper: ${entry.manifestKind}`);
   }
 
+  const snapshot = catalogEntryToPartitionCasSnapshot(
+    entry,
+    storageBinding,
+  );
+  validatePullStorageCompatibility(entry, snapshot.storageBinding);
   const transferredBlocks = options.sourceCasDir
     ? (await transferMissingBlocks({
         manifest: entry.manifest,
@@ -135,13 +153,6 @@ export async function pullPartitionCasSnapshot(options: {
         targetCasDir: options.targetCasDir,
       })).length
     : 0;
-  const snapshot = catalogEntryToPartitionCasSnapshot(
-    entry,
-    options.storageBinding ?? appliedCatalog?.bindings.find((binding) =>
-      binding.partitionId === options.partitionId
-    ),
-  );
-  validatePullStorageCompatibility(entry, snapshot.storageBinding);
   if (snapshot.storageBinding.snapshotScope === "catalog-and-data") {
     await restorePartitionCasSnapshot({
       snapshot,
@@ -189,6 +200,27 @@ function validatePullStorageCompatibility(
       `data-only storage binding cannot apply catalog snapshot components: ${entry.groupId}/${entry.partitionId}`,
     );
   }
+}
+
+function isPullStorageCompatible(
+  entry: StorageSnapshotCatalogEntry<CasManifest>,
+  storageBinding: StoragePartitionBinding,
+): boolean {
+  if (storageBinding.partitionId !== entry.partitionId) {
+    return false;
+  }
+
+  const bindingGeneration = storageBinding.ddlGeneration ?? 0;
+  if (bindingGeneration !== entry.ddlGeneration) {
+    return false;
+  }
+  const bindingStorageGeneration = storageBinding.storageGeneration ?? bindingGeneration;
+  const entryStorageGeneration = entry.storageGeneration ?? entry.ddlGeneration;
+  if (bindingStorageGeneration !== entryStorageGeneration) {
+    return false;
+  }
+
+  return !(storageBinding.snapshotScope === "data-only" && entry.components.includes("catalog"));
 }
 
 function catalogEntryToPartitionCasSnapshot(
