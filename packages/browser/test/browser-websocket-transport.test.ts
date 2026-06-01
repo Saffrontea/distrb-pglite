@@ -34,6 +34,14 @@ describe("BrowserWebSocketTransport", () => {
     ]);
   });
 
+  it("rejects empty node ids before opening a browser websocket", async () => {
+    const transport = new BrowserWebSocketTransport("ws://relay.test");
+
+    await expect(transport.connect("", { onEvent: vi.fn() }))
+      .rejects.toThrow("nodeId must be a non-empty string");
+    expect(FakeWebSocket.instances).toHaveLength(0);
+  });
+
   it("handles replay requests and resolves replay responses", async () => {
     const event = sampleEvent("browser-b", "02");
     const onReplayRequest = vi.fn(async () => ({
@@ -55,14 +63,14 @@ describe("BrowserWebSocketTransport", () => {
       requesterNodeId: "browser-b",
       targetNodeId: "browser-a",
       partitionId: "tenant:jp",
-      cursors: [["browser-b", "01"]],
+      cursors: [["browser-b", sampleEventId("01")]],
     });
     await Promise.resolve();
 
     expect(onReplayRequest).toHaveBeenCalledWith({
       requesterNodeId: "browser-b",
       partitionId: "tenant:jp",
-      cursors: new Map([["browser-b", "01"]]),
+      cursors: new Map([["browser-b", sampleEventId("01")]]),
     });
     expect(parse(socket.sent.at(-1)!)).toMatchObject({
       type: "replay-response",
@@ -75,7 +83,7 @@ describe("BrowserWebSocketTransport", () => {
     const response = connection.requestReplay(
       "browser-b",
       "tenant:jp",
-      new Map([["browser-a", "01"]]),
+      new Map([["browser-a", sampleEventId("01")]]),
     );
     const request = parse(socket.sent.at(-1)!) as { requestId: string };
     socket.receive({
@@ -90,6 +98,26 @@ describe("BrowserWebSocketTransport", () => {
       partitionId: "tenant:jp",
       events: [event],
     });
+  });
+
+  it("rejects replay responses that do not match the pending browser request", async () => {
+    const transport = new BrowserWebSocketTransport("ws://relay.test");
+    const connected = transport.connect("browser-a", { onEvent: vi.fn() });
+    const socket = FakeWebSocket.instances[0]!;
+    socket.open();
+    const connection = await connected;
+
+    const response = connection.requestReplay("browser-b", "tenant:jp", new Map());
+    const request = parse(socket.sent.at(-1)!) as { requestId: string };
+    socket.receive({
+      type: "replay-response",
+      requestId: request.requestId,
+      requesterNodeId: "browser-a",
+      partitionId: "tenant:us",
+      events: [],
+    });
+
+    await expect(response).rejects.toThrow("replay response mismatch");
   });
 
   it("captures replay handler failures without leaking unhandled rejections", async () => {
@@ -118,6 +146,72 @@ describe("BrowserWebSocketTransport", () => {
       await Promise.resolve();
       await Promise.resolve();
 
+      expect(errorSpy).toHaveBeenCalledWith(
+        "[browser-websocket] message handling error",
+        expect.any(Error),
+      );
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("rejects replay requests targeted at another node", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const onReplayRequest = vi.fn();
+      const transport = new BrowserWebSocketTransport("ws://relay.test");
+      const connected = transport.connect("browser-a", {
+        onEvent: vi.fn(),
+        onReplayRequest,
+      });
+      const socket = FakeWebSocket.instances[0]!;
+      socket.open();
+      await connected;
+
+      socket.receive({
+        type: "replay-request",
+        requestId: "wrong-target",
+        requesterNodeId: "browser-b",
+        targetNodeId: "browser-c",
+        partitionId: "tenant:jp",
+        cursors: [],
+      });
+      await Promise.resolve();
+
+      expect(onReplayRequest).not.toHaveBeenCalled();
+      expect(errorSpy).toHaveBeenCalledWith(
+        "[browser-websocket] message handling error",
+        expect.any(Error),
+      );
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("rejects replay requests with an empty request id", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const onReplayRequest = vi.fn();
+      const transport = new BrowserWebSocketTransport("ws://relay.test");
+      const connected = transport.connect("browser-a", {
+        onEvent: vi.fn(),
+        onReplayRequest,
+      });
+      const socket = FakeWebSocket.instances[0]!;
+      socket.open();
+      await connected;
+
+      socket.receive({
+        type: "replay-request",
+        requestId: "",
+        requesterNodeId: "browser-b",
+        targetNodeId: "browser-a",
+        partitionId: "tenant:jp",
+        cursors: [],
+      });
+      await Promise.resolve();
+
+      expect(onReplayRequest).not.toHaveBeenCalled();
       expect(errorSpy).toHaveBeenCalledWith(
         "[browser-websocket] message handling error",
         expect.any(Error),
@@ -185,16 +279,89 @@ describe("BrowserWebSocketTransport", () => {
     await expect(connection.requestReplay("browser-b", "tenant:jp", new Map()))
       .rejects.toThrow("websocket connection is closed");
   });
+
+  it("rejects subscriptions after the browser connection is closed", async () => {
+    const transport = new BrowserWebSocketTransport("ws://relay.test");
+    const connected = transport.connect("browser-a", { onEvent: vi.fn() });
+    const socket = FakeWebSocket.instances[0]!;
+    socket.open();
+    const connection = await connected;
+
+    await connection.close();
+
+    await expect(connection.subscribe("tenant:jp"))
+      .rejects.toThrow("websocket connection is closed");
+  });
+
+  it("rejects invalid events before publishing", async () => {
+    const transport = new BrowserWebSocketTransport("ws://relay.test");
+    const connected = transport.connect("browser-a", { onEvent: vi.fn() });
+    const socket = FakeWebSocket.instances[0]!;
+    socket.open();
+    const connection = await connected;
+
+    await expect(connection.publish({
+      eventId: "not-a-uuid",
+      sourceNodeId: "browser-a",
+      partitionId: "tenant:jp",
+      schemaVersion: 1,
+      payload: {},
+    })).rejects.toThrow("eventId must be a UUIDv7");
+
+    expect(socket.sent).toHaveLength(1);
+  });
+
+  it("rejects events whose source does not match the browser connection", async () => {
+    const transport = new BrowserWebSocketTransport("ws://relay.test");
+    const connected = transport.connect("browser-a", { onEvent: vi.fn() });
+    const socket = FakeWebSocket.instances[0]!;
+    socket.open();
+    const connection = await connected;
+
+    await expect(connection.publish({
+      eventId: sampleEventId("01"),
+      sourceNodeId: "browser-b",
+      partitionId: "tenant:jp",
+      schemaVersion: 1,
+      payload: {},
+    })).rejects.toThrow("event source mismatch");
+
+    expect(socket.sent).toHaveLength(1);
+  });
+
+  it("rejects empty partition ids before sending subscribe or replay requests", async () => {
+    const transport = new BrowserWebSocketTransport("ws://relay.test");
+    const connected = transport.connect("browser-a", { onEvent: vi.fn() });
+    const socket = FakeWebSocket.instances[0]!;
+    socket.open();
+    const connection = await connected;
+
+    await expect(connection.subscribe(""))
+      .rejects.toThrow("partitionId must be a non-empty string");
+    await expect(connection.requestReplay("browser-b", "", new Map()))
+      .rejects.toThrow("partitionId must be a non-empty string");
+    await expect(connection.requestReplay("", "tenant:jp", new Map()))
+      .rejects.toThrow("nodeId must be a non-empty string");
+    await expect(connection.requestReplay(
+      "browser-b",
+      "tenant:jp",
+      new Map([["browser-a", "not-a-uuid"]]),
+    )).rejects.toThrow("cursor eventId must be a UUIDv7");
+  });
 });
 
-function sampleEvent(sourceNodeId: string, eventId: string): EventEnvelope {
+function sampleEvent(sourceNodeId: string, suffix: string): EventEnvelope {
   return {
-    eventId,
+    eventId: sampleEventId(suffix),
     sourceNodeId,
     partitionId: "tenant:jp",
     schemaVersion: 1,
     payload: { sensorId: "s1", reading: 21 },
   };
+}
+
+function sampleEventId(suffix: string): string {
+  return `018bcfe5-6800-7001-8000-${suffix.padStart(12, "0")}`;
 }
 
 function parse(data: string): unknown {

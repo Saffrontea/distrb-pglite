@@ -1,5 +1,9 @@
 import {
+  assertValidEventEnvelope,
+  assertValidNodeId,
+  assertValidPartitionId,
   uuidV7,
+  validateEventCursorEntries,
   type EventEnvelope,
   type EventId,
   type NodeId,
@@ -65,6 +69,7 @@ export class BrowserWebSocketTransport implements Transport {
   }
 
   async connect(nodeId: NodeId, handlers: TransportHandlers): Promise<TransportConnection> {
+    assertValidNodeId(nodeId);
     const socket = new WebSocket(this.url);
     await waitForOpen(socket);
     return new BrowserWebSocketTransportConnection(
@@ -81,6 +86,7 @@ class BrowserWebSocketTransportConnection implements TransportConnection {
   private socket: WebSocket;
   private readonly subscriptions = new Set<PartitionId>();
   private readonly pendingReplay = new Map<string, {
+    partitionId: PartitionId;
     resolve: (response: ReplayResponse) => void;
     reject: (error: Error) => void;
     timer: ReturnType<typeof setTimeout>;
@@ -103,6 +109,10 @@ class BrowserWebSocketTransportConnection implements TransportConnection {
   }
 
   async subscribe(partitionId: PartitionId): Promise<void> {
+    if (this.closed) {
+      throw new Error("websocket connection is closed");
+    }
+    assertValidPartitionId(partitionId);
     this.subscriptions.add(partitionId);
     this.sendIfOpen({ type: "subscribe", partitionId });
   }
@@ -111,6 +121,8 @@ class BrowserWebSocketTransportConnection implements TransportConnection {
     if (this.closed) {
       throw new Error("websocket connection is closed");
     }
+    assertValidEventEnvelope(event);
+    assertNodeMatches("event source", this.nodeId, event.sourceNodeId);
     this.send({ type: "event", event });
   }
 
@@ -122,6 +134,9 @@ class BrowserWebSocketTransportConnection implements TransportConnection {
     if (this.closed) {
       throw new Error("websocket connection is closed");
     }
+    assertValidNodeId(targetNodeId);
+    assertValidPartitionId(partitionId);
+    validateEventCursorEntries([...cursors]);
 
     const requestId = uuidV7();
     const timeoutMs = this.replayRequestTimeoutMs();
@@ -131,7 +146,7 @@ class BrowserWebSocketTransportConnection implements TransportConnection {
           reject(new Error(`replay request timed out after ${timeoutMs}ms`));
         }
       }, timeoutMs);
-      this.pendingReplay.set(requestId, { resolve, reject, timer });
+      this.pendingReplay.set(requestId, { partitionId, resolve, reject, timer });
     });
 
     try {
@@ -228,9 +243,23 @@ class BrowserWebSocketTransportConnection implements TransportConnection {
   private async handleMessage(message: WireMessage): Promise<void> {
     switch (message.type) {
       case "event":
+        assertValidEventEnvelope(message.event);
         await this.handlers.onEvent(message.event);
         break;
       case "replay-request": {
+        assertValidRequestId(message.requestId);
+        assertValidNodeId(message.requesterNodeId);
+        assertValidNodeId(message.targetNodeId);
+        assertValidPartitionId(message.partitionId);
+        if (message.requesterNodeId === this.nodeId) {
+          throw new Error(`replay requester must not be the local node: ${this.nodeId}`);
+        }
+        if (message.targetNodeId !== this.nodeId) {
+          throw new Error(
+            `replay request target mismatch: local=${this.nodeId} target=${message.targetNodeId}`,
+          );
+        }
+        const cursors = validateEventCursorEntries(message.cursors);
         if (!this.handlers.onReplayRequest) {
           this.send({
             type: "replay-response",
@@ -245,7 +274,7 @@ class BrowserWebSocketTransportConnection implements TransportConnection {
         const response = await this.handlers.onReplayRequest({
           requesterNodeId: message.requesterNodeId,
           partitionId: message.partitionId,
-          cursors: new Map(message.cursors),
+          cursors: new Map(cursors),
         });
         this.send({
           type: "replay-response",
@@ -256,8 +285,29 @@ class BrowserWebSocketTransportConnection implements TransportConnection {
         break;
       }
       case "replay-response": {
+        assertValidRequestId(message.requestId);
+        assertValidNodeId(message.requesterNodeId);
+        assertValidPartitionId(message.partitionId);
+        for (const event of message.events) {
+          assertValidEventEnvelope(event);
+        }
         const pending = this.pendingReplay.get(message.requestId);
         if (pending) {
+          if (message.requesterNodeId !== this.nodeId || message.partitionId !== pending.partitionId) {
+            this.rejectPendingReplay(
+              message.requestId,
+              `replay response mismatch: ${message.requestId}`,
+            );
+            break;
+          }
+          const mismatchedEvent = message.events.find((event) => event.partitionId !== message.partitionId);
+          if (mismatchedEvent) {
+            this.rejectPendingReplay(
+              message.requestId,
+              `replay event partition mismatch: response=${message.partitionId} event=${mismatchedEvent.partitionId}`,
+            );
+            break;
+          }
           this.pendingReplay.delete(message.requestId);
           clearTimeout(pending.timer);
           pending.resolve({ partitionId: message.partitionId, events: message.events });
@@ -282,6 +332,16 @@ class BrowserWebSocketTransportConnection implements TransportConnection {
       clearTimeout(pending.timer);
       pending.reject(new Error(reason));
     }
+  }
+
+  private rejectPendingReplay(requestId: string, reason: string): void {
+    const pending = this.pendingReplay.get(requestId);
+    if (!pending) {
+      return;
+    }
+    this.pendingReplay.delete(requestId);
+    clearTimeout(pending.timer);
+    pending.reject(new Error(reason));
   }
 
   private startPing(): void {
@@ -352,4 +412,16 @@ function sleep(ms: number): Promise<void> {
 
 function clampTimeout(ms: number): number {
   return Math.max(REPLAY_REQUEST_MIN_TIMEOUT_MS, Math.min(REPLAY_REQUEST_MAX_TIMEOUT_MS, ms));
+}
+
+function assertValidRequestId(requestId: unknown): asserts requestId is string {
+  if (typeof requestId !== "string" || requestId.length === 0) {
+    throw new Error("requestId must be a non-empty string");
+  }
+}
+
+function assertNodeMatches(name: string, expected: NodeId, actual: NodeId): void {
+  if (actual !== expected) {
+    throw new Error(`${name} mismatch: expected=${expected} actual=${actual}`);
+  }
 }

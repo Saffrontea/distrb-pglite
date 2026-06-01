@@ -1,5 +1,9 @@
 import {
+  assertValidEventEnvelope,
+  assertValidNodeId,
+  assertValidPartitionId,
   uuidV7,
+  validateEventCursorEntries,
   type EventEnvelope,
   type EventId,
   type NodeId,
@@ -40,17 +44,26 @@ type ClientRecord = {
   subscriptions: Set<PartitionId>;
 };
 
+type PendingHubReplay = {
+  requesterNodeId: NodeId;
+  targetNodeId: NodeId;
+  partitionId: PartitionId;
+  timer: ReturnType<typeof setTimeout>;
+};
+
 const REPLAY_REQUEST_FALLBACK_TIMEOUT_MS = 1_000;
 const REPLAY_REQUEST_MIN_TIMEOUT_MS = 250;
 const REPLAY_REQUEST_MAX_TIMEOUT_MS = 5_000;
 const REPLAY_REQUEST_BASE_TIMEOUT_MS = 250;
 const REPLAY_REQUEST_RTT_MULTIPLIER = 4;
+const HUB_REPLAY_PENDING_TIMEOUT_MS = REPLAY_REQUEST_MAX_TIMEOUT_MS;
 const PING_INTERVAL_MS = 500;
 const RTT_EWMA_ALPHA = 0.2;
 
 export class WebSocketHub {
   private readonly server: WebSocketServer;
   private readonly clients = new Map<NodeId, ClientRecord>();
+  private readonly pendingReplay = new Map<string, PendingHubReplay>();
   private readonly compress: boolean;
 
   constructor(options: { port: number; compress?: boolean }) {
@@ -60,6 +73,7 @@ export class WebSocketHub {
   }
 
   async close(): Promise<void> {
+    this.clearPendingReplay();
     for (const client of this.clients.values()) {
       client.socket.terminate();
     }
@@ -84,6 +98,7 @@ export class WebSocketHub {
         try {
           const message = await this.decode(data as Buffer);
           if (message.type === "hello") {
+            assertValidNodeId(message.nodeId);
             record = {
               nodeId: message.nodeId,
               socket,
@@ -111,6 +126,11 @@ export class WebSocketHub {
         if (this.clients.get(record.nodeId)?.socket === socket) {
           this.clients.delete(record.nodeId);
         }
+        for (const [requestId, pending] of this.pendingReplay) {
+          if (pending.requesterNodeId === record.nodeId || pending.targetNodeId === record.nodeId) {
+            this.deletePendingReplay(requestId);
+          }
+        }
       }
     });
   }
@@ -118,19 +138,34 @@ export class WebSocketHub {
   private handleMessage(source: ClientRecord, message: WireMessage): void {
     switch (message.type) {
       case "subscribe":
+        assertValidPartitionId(message.partitionId);
         source.subscriptions.add(message.partitionId);
         break;
       case "event":
+        assertValidEventEnvelope(message.event);
+        assertNodeMatches("event source", source.nodeId, message.event.sourceNodeId);
         this.broadcastEvent(source.nodeId, message.event);
         break;
       case "ping":
         void this.encode(source.socket, { type: "pong", sentAt: message.sentAt });
         break;
       case "replay-request":
+        assertValidRequestId(message.requestId);
+        assertValidNodeId(message.requesterNodeId);
+        assertValidNodeId(message.targetNodeId);
+        assertValidPartitionId(message.partitionId);
+        assertNodeMatches("replay requester", source.nodeId, message.requesterNodeId);
+        validateEventCursorEntries(message.cursors);
         this.forwardReplayRequest(message);
         break;
       case "replay-response":
-        this.forwardReplayResponse(message);
+        assertValidRequestId(message.requestId);
+        assertValidNodeId(message.requesterNodeId);
+        assertValidPartitionId(message.partitionId);
+        for (const event of message.events) {
+          assertValidEventEnvelope(event);
+        }
+        this.forwardReplayResponse(source, message);
         break;
       case "hello":
       case "pong":
@@ -149,6 +184,9 @@ export class WebSocketHub {
   }
 
   private forwardReplayRequest(message: Extract<WireMessage, { type: "replay-request" }>): void {
+    if (this.pendingReplay.has(message.requestId)) {
+      throw new Error(`duplicate replay request id: ${message.requestId}`);
+    }
     const target = this.clients.get(message.targetNodeId);
     if (!target) {
       const requester = this.clients.get(message.requesterNodeId);
@@ -164,13 +202,53 @@ export class WebSocketHub {
       return;
     }
 
+    const timer = setTimeout(() => {
+      this.pendingReplay.delete(message.requestId);
+    }, HUB_REPLAY_PENDING_TIMEOUT_MS);
+    timer.unref?.();
+    this.pendingReplay.set(message.requestId, {
+      requesterNodeId: message.requesterNodeId,
+      targetNodeId: message.targetNodeId,
+      partitionId: message.partitionId,
+      timer,
+    });
     void this.encode(target.socket, message);
   }
 
-  private forwardReplayResponse(message: Extract<WireMessage, { type: "replay-response" }>): void {
+  private forwardReplayResponse(
+    source: ClientRecord,
+    message: Extract<WireMessage, { type: "replay-response" }>,
+  ): void {
+    const pending = this.pendingReplay.get(message.requestId);
+    if (!pending) {
+      throw new Error(`unexpected replay response: ${message.requestId}`);
+    }
+    if (
+      source.nodeId !== pending.targetNodeId
+      || message.requesterNodeId !== pending.requesterNodeId
+      || message.partitionId !== pending.partitionId
+    ) {
+      throw new Error(`replay response mismatch: ${message.requestId}`);
+    }
+    this.deletePendingReplay(message.requestId);
     const requester = this.clients.get(message.requesterNodeId);
     if (requester) {
       void this.encode(requester.socket, message);
+    }
+  }
+
+  private deletePendingReplay(requestId: string): void {
+    const pending = this.pendingReplay.get(requestId);
+    if (!pending) {
+      return;
+    }
+    this.pendingReplay.delete(requestId);
+    clearTimeout(pending.timer);
+  }
+
+  private clearPendingReplay(): void {
+    for (const requestId of this.pendingReplay.keys()) {
+      this.deletePendingReplay(requestId);
     }
   }
 
@@ -223,6 +301,7 @@ export class WebSocketTransport implements Transport {
   }
 
   async connect(nodeId: NodeId, handlers: TransportHandlers): Promise<TransportConnection> {
+    assertValidNodeId(nodeId);
     const socket = new WebSocket(this.url);
     await new Promise<void>((resolve, reject) => {
       socket.once("open", resolve);
@@ -238,6 +317,7 @@ class WebSocketTransportConnection implements TransportConnection {
   private socket: WebSocket;
   private readonly subscriptions = new Set<PartitionId>();
   private readonly pendingReplay = new Map<string, {
+    partitionId: PartitionId;
     resolve: (response: ReplayResponse) => void;
     reject: (error: Error) => void;
     timer: ReturnType<typeof setTimeout>;
@@ -312,6 +392,10 @@ class WebSocketTransportConnection implements TransportConnection {
   }
 
   async subscribe(partitionId: PartitionId): Promise<void> {
+    if (this.closed) {
+      throw new Error("websocket connection is closed");
+    }
+    assertValidPartitionId(partitionId);
     this.subscriptions.add(partitionId);
     this.sendIfOpen({ type: "subscribe", partitionId });
   }
@@ -320,6 +404,8 @@ class WebSocketTransportConnection implements TransportConnection {
     if (this.closed) {
       throw new Error("websocket connection is closed");
     }
+    assertValidEventEnvelope(event);
+    assertNodeMatches("event source", this.nodeId, event.sourceNodeId);
     this.send({ type: "event", event });
   }
 
@@ -331,6 +417,9 @@ class WebSocketTransportConnection implements TransportConnection {
     if (this.closed) {
       throw new Error("websocket connection is closed");
     }
+    assertValidNodeId(targetNodeId);
+    assertValidPartitionId(partitionId);
+    validateEventCursorEntries([...cursors]);
 
     const requestId = uuidV7();
     const timeoutMs = this.replayRequestTimeoutMs();
@@ -340,7 +429,7 @@ class WebSocketTransportConnection implements TransportConnection {
           reject(new Error(`replay request timed out after ${timeoutMs}ms`));
         }
       }, timeoutMs);
-      this.pendingReplay.set(requestId, { resolve, reject, timer });
+      this.pendingReplay.set(requestId, { partitionId, resolve, reject, timer });
     });
 
     try {
@@ -400,9 +489,23 @@ class WebSocketTransportConnection implements TransportConnection {
   private async handleMessage(message: WireMessage): Promise<void> {
     switch (message.type) {
       case "event":
+        assertValidEventEnvelope(message.event);
         await this.handlers.onEvent(message.event);
         break;
       case "replay-request": {
+        assertValidRequestId(message.requestId);
+        assertValidNodeId(message.requesterNodeId);
+        assertValidNodeId(message.targetNodeId);
+        assertValidPartitionId(message.partitionId);
+        if (message.requesterNodeId === this.nodeId) {
+          throw new Error(`replay requester must not be the local node: ${this.nodeId}`);
+        }
+        if (message.targetNodeId !== this.nodeId) {
+          throw new Error(
+            `replay request target mismatch: local=${this.nodeId} target=${message.targetNodeId}`,
+          );
+        }
+        const cursors = validateEventCursorEntries(message.cursors);
         if (!this.handlers.onReplayRequest) {
           this.send({
             type: "replay-response",
@@ -417,7 +520,7 @@ class WebSocketTransportConnection implements TransportConnection {
         const response = await this.handlers.onReplayRequest({
           requesterNodeId: message.requesterNodeId,
           partitionId: message.partitionId,
-          cursors: new Map(message.cursors),
+          cursors: new Map(cursors),
         });
         this.send({
           type: "replay-response",
@@ -428,8 +531,29 @@ class WebSocketTransportConnection implements TransportConnection {
         break;
       }
       case "replay-response": {
+        assertValidRequestId(message.requestId);
+        assertValidNodeId(message.requesterNodeId);
+        assertValidPartitionId(message.partitionId);
+        for (const event of message.events) {
+          assertValidEventEnvelope(event);
+        }
         const pending = this.pendingReplay.get(message.requestId);
         if (pending) {
+          if (message.requesterNodeId !== this.nodeId || message.partitionId !== pending.partitionId) {
+            this.rejectPendingReplay(
+              message.requestId,
+              `replay response mismatch: ${message.requestId}`,
+            );
+            break;
+          }
+          const mismatchedEvent = message.events.find((event) => event.partitionId !== message.partitionId);
+          if (mismatchedEvent) {
+            this.rejectPendingReplay(
+              message.requestId,
+              `replay event partition mismatch: response=${message.partitionId} event=${mismatchedEvent.partitionId}`,
+            );
+            break;
+          }
           this.pendingReplay.delete(message.requestId);
           clearTimeout(pending.timer);
           pending.resolve({ partitionId: message.partitionId, events: message.events });
@@ -454,6 +578,16 @@ class WebSocketTransportConnection implements TransportConnection {
       clearTimeout(pending.timer);
       pending.reject(new Error(reason));
     }
+  }
+
+  private rejectPendingReplay(requestId: string, reason: string): void {
+    const pending = this.pendingReplay.get(requestId);
+    if (!pending) {
+      return;
+    }
+    this.pendingReplay.delete(requestId);
+    clearTimeout(pending.timer);
+    pending.reject(new Error(reason));
   }
 
   private startPing(): void {
@@ -499,4 +633,16 @@ function sleep(ms: number): Promise<void> {
 
 function clampTimeout(ms: number): number {
   return Math.max(REPLAY_REQUEST_MIN_TIMEOUT_MS, Math.min(REPLAY_REQUEST_MAX_TIMEOUT_MS, ms));
+}
+
+function assertValidRequestId(requestId: unknown): asserts requestId is string {
+  if (typeof requestId !== "string" || requestId.length === 0) {
+    throw new Error("requestId must be a non-empty string");
+  }
+}
+
+function assertNodeMatches(name: string, expected: NodeId, actual: NodeId): void {
+  if (actual !== expected) {
+    throw new Error(`${name} mismatch: expected=${expected} actual=${actual}`);
+  }
 }
