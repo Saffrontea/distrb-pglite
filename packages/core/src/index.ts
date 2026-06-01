@@ -24,7 +24,17 @@ export type {
   StorageSnapshotScope,
 } from "./types.js";
 export { compareEventIds, isUuidV7, uuidV7, UuidV7Factory } from "./uuid-v7.js";
-export { InMemoryPartitionStore, isEventTransactionalPartitionStore } from "./store.js";
+export {
+  assertValidEventEnvelope,
+  assertValidEventCursor,
+  assertValidEventCursors,
+  assertValidLocalEventInput,
+  assertValidNodeId,
+  assertValidPartitionId,
+  InMemoryPartitionStore,
+  isEventTransactionalPartitionStore,
+  validateEventCursorEntries,
+} from "./store.js";
 export type {
   EventProjection,
   EventTransactionalPartitionStore,
