@@ -122,6 +122,14 @@ export function normalizeBrowserLogicalPath(path: string): string {
     .replace(/\/$/, "");
 }
 
+export function validateBrowserLogicalPath(path: string): string {
+  const normalized = normalizeBrowserLogicalPath(path);
+  if (normalized.split("/").some((part) => part === "..")) {
+    throw new Error(`logical path escapes filesystem root: ${path}`);
+  }
+  return normalized;
+}
+
 async function walkFilesystem(
   fs: BrowserSnapshotDataFilesystem,
   dir = "",
@@ -156,7 +164,7 @@ function joinLogicalPath(dir: string, name: string): string {
 }
 
 function splitLogicalPath(path: string): string[] {
-  const normalized = normalizeBrowserLogicalPath(path);
+  const normalized = validateBrowserLogicalPath(path);
   return normalized ? normalized.split("/") : [];
 }
 

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { cp, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join, relative, sep } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 
 export type SnapshotFilesystemEntry = {
   name: string;
@@ -60,7 +60,12 @@ export class NodeDataDirFilesystem implements SnapshotDataFilesystem {
   }
 
   private absolute(path: string): string {
-    return join(this.root, fromLogicalPath(path));
+    const root = resolve(this.root);
+    const target = resolve(root, fromLogicalPath(path));
+    if (target !== root && !target.startsWith(`${root}${sep}`)) {
+      throw new Error(`logical path escapes filesystem root: ${path}`);
+    }
+    return target;
   }
 }
 
@@ -149,4 +154,3 @@ function fromLogicalPath(path: string): string {
 function sha256(content: Uint8Array): string {
   return createHash("sha256").update(content).digest("hex");
 }
-
