@@ -8,6 +8,7 @@ import {
 import {
   inventoryBrowserFilesystem,
   normalizeBrowserLogicalPath,
+  validateBrowserLogicalPath,
   type BrowserDataDirInventory,
   type BrowserFileInventoryEntry,
   type BrowserSnapshotDataFilesystem,
@@ -36,11 +37,13 @@ export class OpfsCasBlockStore implements BrowserCasBlockStore {
   }
 
   async readBlock(hash: string): Promise<Uint8Array> {
+    assertCasBlockHash(hash);
     const file = await this.root.getFileHandle(hash);
     return new Uint8Array(await (await file.getFile()).arrayBuffer());
   }
 
   async writeBlock(hash: string, content: Uint8Array): Promise<void> {
+    assertCasBlockHash(hash);
     const file = await this.root.getFileHandle(hash, { create: true });
     const writable = await file.createWritable();
     await writable.write(new Uint8Array(content));
@@ -58,6 +61,7 @@ export class OpfsCasBlockStore implements BrowserCasBlockStore {
   }
 
   async deleteBlock(hash: string): Promise<void> {
+    assertCasBlockHash(hash);
     await this.root.removeEntry(hash).catch((error: unknown) => {
       if (!isNotFoundError(error)) {
         throw error;
@@ -139,14 +143,26 @@ export async function restoreBrowserFilesystemFromCas(options: {
   casStore: BrowserCasBlockStore;
   fs: BrowserSnapshotDataFilesystem;
 }): Promise<void> {
+  assertPositiveInteger(options.manifest.chunkSize, "manifest chunkSize");
   await options.fs.mkdir("");
   for (const directory of options.manifest.directories) {
+    validateBrowserLogicalPath(directory);
     await options.fs.mkdir(directory);
   }
 
   for (const file of options.manifest.files) {
+    validateBrowserLogicalPath(file.path);
     if (options.fs.writeFileChunks) {
-      await options.fs.writeFileChunks(file.path, verifiedBlockChunks(options.casStore, file.blocks), file.size);
+      const chunks: Uint8Array[] = [];
+      await options.fs.writeFileChunks(
+        file.path,
+        collectVerifiedBlockChunks(options.casStore, file.blocks, chunks),
+        file.size,
+      );
+      const restored = concat(chunks);
+      if (restored.length !== file.size || await sha256(restored) !== file.sha256) {
+        throw new Error(`CAS file integrity check failed: ${file.path}`);
+      }
       continue;
     }
 
@@ -279,14 +295,33 @@ function chunkRanges(size: number, chunking: BrowserCasChunking): Array<[number,
 }
 
 function fixedChunking(chunkSize: number): BrowserCasChunking {
+  assertPositiveInteger(chunkSize, "chunkSize");
   return { strategy: "fixed", chunkSize };
 }
 
 function manifestChunkSize(chunking: BrowserCasChunking): number {
   if (chunking.strategy === "fixed") {
+    assertPositiveInteger(chunking.chunkSize, "chunkSize");
     return chunking.chunkSize;
   }
+  assertPositiveInteger(chunking.pageSize, "pageSize");
+  assertPositiveInteger(chunking.maxChunkSize, "maxChunkSize");
+  if (chunking.maxChunkSize < chunking.pageSize) {
+    throw new Error(`maxChunkSize must be greater than or equal to pageSize: ${chunking.maxChunkSize} < ${chunking.pageSize}`);
+  }
   return Math.max(chunking.pageSize, Math.floor(chunking.maxChunkSize / chunking.pageSize) * chunking.pageSize);
+}
+
+function assertPositiveInteger(value: number, name: string): void {
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new Error(`${name} must be a positive integer`);
+  }
+}
+
+function assertCasBlockHash(hash: string): void {
+  if (!/^[0-9a-f]{64}$/.test(hash)) {
+    throw new Error(`invalid CAS block hash: ${hash}`);
+  }
 }
 
 function selectedDirectories(
@@ -351,10 +386,22 @@ async function* verifiedBlockChunks(
   }
 }
 
+async function* collectVerifiedBlockChunks(
+  casStore: BrowserCasBlockStore,
+  blocks: readonly BrowserCasBlock[],
+  collected: Uint8Array[],
+): AsyncIterable<Uint8Array> {
+  for await (const chunk of verifiedBlockChunks(casStore, blocks)) {
+    collected.push(chunk);
+    yield chunk;
+  }
+}
+
 async function readVerifiedBlock(
   casStore: BrowserCasBlockStore,
   block: BrowserCasBlock,
 ): Promise<Uint8Array> {
+  assertCasBlockHash(block.hash);
   const stored = await casStore.readBlock(block.hash);
   if (stored.length !== block.size || await sha256(stored) !== block.hash) {
     throw new Error(`CAS block integrity check failed: ${block.hash}`);

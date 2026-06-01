@@ -1,5 +1,6 @@
+import { createHash } from "node:crypto";
 import { PGlite } from "@electric-sql/pglite";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
@@ -91,6 +92,39 @@ describe("CAS snapshots", () => {
     expect(manifest.files[0]?.blocks).toHaveLength(3);
   });
 
+  it("rejects invalid fixed chunk sizes before snapshotting", async () => {
+    const root = await makeTempDir("cas-invalid-fixed-chunking");
+    const dataDir = join(root, "data");
+    const casDir = join(root, "cas");
+    await mkdir(dataDir, { recursive: true });
+    await writeFile(join(dataDir, "payload.txt"), "payload");
+
+    await expect(snapshotToCas({
+      dataDir,
+      casDir,
+      chunkSize: 0,
+    })).rejects.toThrow("chunkSize must be a positive integer");
+  });
+
+  it("rejects invalid page-aligned chunking parameters before snapshotting", async () => {
+    const root = await makeTempDir("cas-invalid-page-chunking");
+    const dataDir = join(root, "data");
+    const casDir = join(root, "cas");
+    await mkdir(dataDir, { recursive: true });
+    await writeFile(join(dataDir, "payload.txt"), "payload");
+
+    await expect(snapshotToCas({
+      dataDir,
+      casDir,
+      chunking: { strategy: "page-aligned", pageSize: 0, maxChunkSize: 4096 },
+    })).rejects.toThrow("pageSize must be a positive integer");
+    await expect(snapshotToCas({
+      dataDir,
+      casDir,
+      chunking: { strategy: "page-aligned", pageSize: 4096, maxChunkSize: 2048 },
+    })).rejects.toThrow("maxChunkSize must be greater than or equal to pageSize");
+  });
+
   it("garbage collects CAS blocks not referenced by retained manifests", async () => {
     const root = await makeTempDir("cas-gc");
     const dataDir = join(root, "data");
@@ -121,6 +155,76 @@ describe("CAS snapshots", () => {
     expect(before.size).toBeGreaterThan(after.size);
     expect(gc.deleted.length).toBeGreaterThan(0);
     expect(after).toEqual(secondHashes);
+  });
+
+  it("rejects restore manifests whose file paths escape the target directory", async () => {
+    const root = await makeTempDir("cas-path-traversal");
+    const casDir = join(root, "cas");
+    const targetDir = join(root, "restore");
+    const outside = join(root, "outside.txt");
+    const content = Buffer.from("escape");
+    const hash = sha256(content);
+    await mkdir(casDir, { recursive: true });
+    await writeFile(join(casDir, hash), content);
+
+    await expect(restoreFromCas({
+      manifest: {
+        version: 1,
+        snapshotId: "bad-path",
+        parentSnapshotIds: [],
+        chunkSize: 64 * 1024,
+        directories: [],
+        files: [{
+          path: "../outside.txt",
+          size: content.length,
+          sha256: hash,
+          blocks: [{ hash, size: content.length }],
+        }],
+      },
+      casDir,
+      targetDir,
+    })).rejects.toThrow("logical path escapes filesystem root");
+    await expect(readFile(outside)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects CAS block hashes that are not canonical hex digests", async () => {
+    const root = await makeTempDir("cas-invalid-hash");
+    const targetDir = join(root, "restore");
+
+    await expect(restoreFromCas({
+      manifest: {
+        version: 1,
+        snapshotId: "bad-hash",
+        parentSnapshotIds: [],
+        chunkSize: 64 * 1024,
+        directories: [],
+        files: [{
+          path: "payload.txt",
+          size: 0,
+          sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          blocks: [{ hash: "../escape", size: 0 }],
+        }],
+      },
+      casDir: join(root, "cas"),
+      targetDir,
+    })).rejects.toThrow("invalid CAS block hash: ../escape");
+  });
+
+  it("rejects restore manifests with invalid chunk sizes", async () => {
+    const root = await makeTempDir("cas-invalid-restore-chunk");
+
+    await expect(restoreFromCas({
+      manifest: {
+        version: 1,
+        snapshotId: "bad-chunk-size",
+        parentSnapshotIds: [],
+        chunkSize: 0,
+        directories: [],
+        files: [],
+      },
+      casDir: join(root, "cas"),
+      targetDir: join(root, "restore"),
+    })).rejects.toThrow("manifest chunkSize must be a positive integer");
   });
 
   it("transfers only missing blocks between parented snapshots and restores a readable PGlite data directory", async () => {
@@ -230,3 +334,7 @@ describe("CAS snapshots", () => {
     await restoredDb.close();
   }, 120_000);
 });
+
+function sha256(content: Uint8Array): string {
+  return createHash("sha256").update(content).digest("hex");
+}

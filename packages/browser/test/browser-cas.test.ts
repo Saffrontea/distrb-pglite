@@ -71,6 +71,116 @@ describe("browser CAS helpers", () => {
     expect(restoredFs.chunkWrites).toBe(3);
     expect(new TextDecoder().decode(await restoredFs.readFile("large"))).toBe("aaaabbbbcccc");
   });
+
+  it("rejects chunked restores when the file hash does not match verified blocks", async () => {
+    const sourceFs = new MemoryDataFilesystem();
+    await sourceFs.writeFile("large", new TextEncoder().encode("aaaabbbbcccc"));
+    const sourceCas = new MemoryCasBlockStore();
+    const manifest = await snapshotBrowserFilesystemToCas({
+      fs: sourceFs,
+      casStore: sourceCas,
+      chunkSize: 4,
+      snapshotId: "snapshot-1",
+    });
+    const restoredFs = new ChunkedMemoryDataFilesystem();
+
+    await expect(restoreBrowserFilesystemFromCas({
+      manifest: {
+        ...manifest,
+        files: [{
+          ...manifest.files[0]!,
+          sha256: await digest(new TextEncoder().encode("different")),
+        }],
+      },
+      casStore: sourceCas,
+      fs: restoredFs,
+    })).rejects.toThrow("CAS file integrity check failed: large");
+  });
+
+  it("rejects invalid chunking before browser snapshotting", async () => {
+    const sourceFs = new MemoryDataFilesystem();
+    await sourceFs.writeFile("payload", new TextEncoder().encode("payload"));
+    const sourceCas = new MemoryCasBlockStore();
+
+    await expect(snapshotBrowserFilesystemToCas({
+      fs: sourceFs,
+      casStore: sourceCas,
+      chunkSize: 0,
+    })).rejects.toThrow("chunkSize must be a positive integer");
+    await expect(snapshotBrowserFilesystemToCas({
+      fs: sourceFs,
+      casStore: sourceCas,
+      chunking: { strategy: "page-aligned", pageSize: 0, maxChunkSize: 4096 },
+    })).rejects.toThrow("pageSize must be a positive integer");
+    await expect(snapshotBrowserFilesystemToCas({
+      fs: sourceFs,
+      casStore: sourceCas,
+      chunking: { strategy: "page-aligned", pageSize: 4096, maxChunkSize: 2048 },
+    })).rejects.toThrow("maxChunkSize must be greater than or equal to pageSize");
+  });
+
+  it("rejects restore manifests whose browser file paths escape the target root", async () => {
+    const content = new TextEncoder().encode("escape");
+    const hash = await digest(content);
+    const sourceCas = new MemoryCasBlockStore();
+    await sourceCas.writeBlock(hash, content);
+    const restoredFs = new MemoryDataFilesystem();
+
+    await expect(restoreBrowserFilesystemFromCas({
+      manifest: {
+        version: 1,
+        snapshotId: "bad-path",
+        parentSnapshotIds: [],
+        chunkSize: 64 * 1024,
+        directories: [],
+        files: [{
+          path: "../outside",
+          size: content.length,
+          sha256: hash,
+          blocks: [{ hash, size: content.length }],
+        }],
+      },
+      casStore: sourceCas,
+      fs: restoredFs,
+    })).rejects.toThrow("logical path escapes filesystem root");
+  });
+
+  it("rejects restore manifests with non-canonical browser CAS block hashes", async () => {
+    const restoredFs = new MemoryDataFilesystem();
+
+    await expect(restoreBrowserFilesystemFromCas({
+      manifest: {
+        version: 1,
+        snapshotId: "bad-hash",
+        parentSnapshotIds: [],
+        chunkSize: 64 * 1024,
+        directories: [],
+        files: [{
+          path: "payload",
+          size: 0,
+          sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          blocks: [{ hash: "../escape", size: 0 }],
+        }],
+      },
+      casStore: new MemoryCasBlockStore(),
+      fs: restoredFs,
+    })).rejects.toThrow("invalid CAS block hash: ../escape");
+  });
+
+  it("rejects restore manifests with invalid browser chunk sizes", async () => {
+    await expect(restoreBrowserFilesystemFromCas({
+      manifest: {
+        version: 1,
+        snapshotId: "bad-chunk-size",
+        parentSnapshotIds: [],
+        chunkSize: 0,
+        directories: [],
+        files: [],
+      },
+      casStore: new MemoryCasBlockStore(),
+      fs: new MemoryDataFilesystem(),
+    })).rejects.toThrow("manifest chunkSize must be a positive integer");
+  });
 });
 
 describe("BrowserPGliteCasFilesystem", () => {
@@ -256,4 +366,11 @@ function normalize(path: string): string {
 function dirname(path: string): string {
   const index = path.lastIndexOf("/");
   return index <= 0 ? "" : path.slice(0, index);
+}
+
+async function digest(content: Uint8Array): Promise<string> {
+  const hash = await crypto.subtle.digest("SHA-256", content);
+  return [...new Uint8Array(hash)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
 }

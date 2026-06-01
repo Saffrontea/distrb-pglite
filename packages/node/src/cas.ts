@@ -63,6 +63,9 @@ export class NodeCasBlockStore implements CasBlockStore {
   }
 
   private blockPath(hash: string): string {
+    if (!/^[0-9a-f]{64}$/.test(hash)) {
+      throw new Error(`invalid CAS block hash: ${hash}`);
+    }
     return join(this.root, hash);
   }
 }
@@ -236,6 +239,7 @@ export async function restoreFilesystemFromCas(options: {
   fs: SnapshotDataFilesystem;
 } & CasBlockStoreOption): Promise<void> {
   const casStore = resolveCasBlockStore(options);
+  assertPositiveInteger(options.manifest.chunkSize, "manifest chunkSize");
   await options.fs.mkdir("");
 
   const zstd = options.manifest.compression === "zstd" ? await loadZstd() : undefined;
@@ -367,14 +371,27 @@ function chunkRanges(size: number, chunking: CasChunking): Array<[number, number
 }
 
 function fixedChunking(chunkSize: number): CasChunking {
+  assertPositiveInteger(chunkSize, "chunkSize");
   return { strategy: "fixed", chunkSize };
 }
 
 function manifestChunkSize(chunking: CasChunking): number {
   if (chunking.strategy === "fixed") {
+    assertPositiveInteger(chunking.chunkSize, "chunkSize");
     return chunking.chunkSize;
   }
+  assertPositiveInteger(chunking.pageSize, "pageSize");
+  assertPositiveInteger(chunking.maxChunkSize, "maxChunkSize");
+  if (chunking.maxChunkSize < chunking.pageSize) {
+    throw new Error(`maxChunkSize must be greater than or equal to pageSize: ${chunking.maxChunkSize} < ${chunking.pageSize}`);
+  }
   return Math.max(chunking.pageSize, Math.floor(chunking.maxChunkSize / chunking.pageSize) * chunking.pageSize);
+}
+
+function assertPositiveInteger(value: number, name: string): void {
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new Error(`${name} must be a positive integer`);
+  }
 }
 
 function sha256(content: Uint8Array): string {
