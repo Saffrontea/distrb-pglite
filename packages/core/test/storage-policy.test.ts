@@ -98,6 +98,22 @@ describe("storage snapshot policy", () => {
     expect(selectStorageSnapshotCatalogEntryForPull(entries, "data-refresh")?.snapshotId)
       .toBe("a-new-storage");
   });
+
+  it("prefers DDL generation over storage generation when selecting pull snapshots", () => {
+    const entries: StorageSnapshotCatalogEntry[] = [
+      {
+        ...snapshotEntry("older-ddl-fresh-storage", ["catalog"], 5),
+        storageGeneration: 8,
+      },
+      {
+        ...snapshotEntry("newer-ddl-stale-storage", ["catalog"], 6),
+        storageGeneration: 6,
+      },
+    ];
+
+    expect(selectStorageSnapshotCatalogEntryForPull(entries, "catalog-refresh")?.snapshotId)
+      .toBe("newer-ddl-stale-storage");
+  });
 });
 
 describe("storage GC policy", () => {

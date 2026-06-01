@@ -1,4 +1,10 @@
-import { isEventTransactionalPartitionStore, type EventProjection, type PartitionStore } from "./store.js";
+import {
+  assertValidNodeId,
+  assertValidPartitionId,
+  isEventTransactionalPartitionStore,
+  type EventProjection,
+  type PartitionStore,
+} from "./store.js";
 import type {
   EventEnvelope,
   EventId,
@@ -31,7 +37,9 @@ export class SyncNode {
     readonly nodeId: NodeId,
     private readonly store: PartitionStore,
     private readonly transport: Transport,
-  ) {}
+  ) {
+    assertValidNodeId(nodeId);
+  }
 
   async start(options?: SyncNodeStartOptions): Promise<void> {
     this.connection = await this.transport.connect(this.nodeId, {
@@ -59,6 +67,7 @@ export class SyncNode {
   }
 
   async subscribe(partitionId: PartitionId, options?: SubscribeOptions): Promise<void> {
+    assertValidPartitionId(partitionId);
     if (options?.recoverFrom) {
       this.recoverFrom.set(partitionId, options.recoverFrom);
     }
@@ -90,11 +99,15 @@ export class SyncNode {
   }
 
   async catchUpFrom(peerNodeId: NodeId, partitionId: PartitionId): Promise<number> {
+    assertValidNodeId(peerNodeId);
+    assertValidPartitionId(partitionId);
     const cursors = await this.store.getHighWatermark(partitionId);
     return this.applyReplayFrom(peerNodeId, partitionId, cursors);
   }
 
   async reconcileFrom(peerNodeId: NodeId, partitionId: PartitionId): Promise<number> {
+    assertValidNodeId(peerNodeId);
+    assertValidPartitionId(partitionId);
     return this.applyReplayFrom(peerNodeId, partitionId, new Map());
   }
 
@@ -134,6 +147,7 @@ export class SyncNode {
   }
 
   async highWatermark(partitionId: PartitionId): Promise<ReadonlyMap<NodeId, EventId>> {
+    assertValidPartitionId(partitionId);
     return this.store.getHighWatermark(partitionId);
   }
 
@@ -141,6 +155,7 @@ export class SyncNode {
     partitionId: PartitionId,
     remote?: ReadonlyMap<NodeId, EventId>,
   ): Promise<PartitionConvergenceStatus> {
+    assertValidPartitionId(partitionId);
     return convergenceStatus({
       partitionId,
       local: await this.store.getHighWatermark(partitionId),
@@ -152,6 +167,7 @@ export class SyncNode {
     partitionId: PartitionId,
     remote: ReadonlyMap<NodeId, EventId>,
   ): Promise<CatchupPlan> {
+    assertValidPartitionId(partitionId);
     return planCatchupFromStatus(await this.convergenceStatus(partitionId, remote));
   }
 

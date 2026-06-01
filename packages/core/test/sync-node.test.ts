@@ -49,6 +49,13 @@ describe("UuidV7Factory", () => {
 });
 
 describe("SyncNode", () => {
+  it("rejects empty local node ids", () => {
+    expect(() => new InMemoryPartitionStore(""))
+      .toThrow("nodeId must be a non-empty string");
+    expect(() => new SyncNode("", new InMemoryPartitionStore("node-a"), new MemoryTransport()))
+      .toThrow("nodeId must be a non-empty string");
+  });
+
   it("replicates subscribed partitions and ignores unsubscribed partitions", async () => {
     const transport = new MemoryTransport();
     const nodeA = new SyncNode("node-a", new InMemoryPartitionStore("node-a"), transport);
@@ -104,6 +111,15 @@ describe("SyncNode", () => {
     await expect(store.listEventsAfterCursors("tenant:jp", new Map())).resolves.toHaveLength(0);
   });
 
+  it("rejects empty partition ids before registering subscriptions", async () => {
+    const store = new InMemoryPartitionStore("node-a");
+    const node = new SyncNode("node-a", store, new MemoryTransport());
+
+    await node.start();
+    await expect(node.subscribe("")).rejects.toThrow("partitionId must be a non-empty string");
+    await expect(store.hasPartition("")).rejects.toThrow("partitionId must be a non-empty string");
+  });
+
   it("registers the local partition before exposing a transport subscription", async () => {
     const event: EventEnvelope = {
       eventId: "018bcfe5-6800-7001-8000-000000000001",
@@ -136,6 +152,29 @@ describe("SyncNode", () => {
     await expect(store.applyRemote(event)).resolves.toBe(true);
     await expect(store.applyRemote(event)).resolves.toBe(false);
     await expect(store.listEventsAfterCursors("tenant:jp", new Map())).resolves.toHaveLength(1);
+  });
+
+  it("rejects empty partition ids on direct store access", async () => {
+    const store = new InMemoryPartitionStore("node-a");
+
+    await expect(store.registerPartition("")).rejects.toThrow("partitionId must be a non-empty string");
+    await expect(store.listEventsAfterCursors("", new Map()))
+      .rejects.toThrow("partitionId must be a non-empty string");
+    await expect(store.getHighWatermark(""))
+      .rejects.toThrow("partitionId must be a non-empty string");
+  });
+
+  it("rejects invalid replay cursors on direct store access", async () => {
+    const store = new InMemoryPartitionStore("node-a");
+
+    await expect(store.listEventsAfter("tenant:jp", {
+      sourceNodeId: "node-b",
+      eventId: "not-a-uuid",
+    })).rejects.toThrow("cursor eventId must be a UUIDv7");
+    await expect(store.listEventsAfterCursors(
+      "tenant:jp",
+      new Map([["node-b", "not-a-uuid"]]),
+    )).rejects.toThrow("cursor eventId must be a UUIDv7");
   });
 
   it("rejects conflicting duplicate events from the same source node and event id", async () => {
@@ -174,6 +213,50 @@ describe("SyncNode", () => {
       ...event,
       payload: { b: 2, a: 1 },
     })).resolves.toBe(false);
+  });
+
+  it("rejects local events whose payload cannot round-trip as JSON", async () => {
+    const store = new InMemoryPartitionStore("node-a");
+
+    await expect(store.appendLocal({
+      partitionId: "tenant:jp",
+      schemaVersion: 1,
+      payload: { value: Number.NaN },
+    })).rejects.toThrow("payload.value must be JSON-serializable");
+    await expect(store.appendLocal({
+      partitionId: "tenant:jp",
+      schemaVersion: 1,
+      payload: { value: undefined },
+    })).rejects.toThrow("payload.value must be JSON-serializable");
+    await expect(store.listEventsAfterCursors("tenant:jp", new Map())).resolves.toHaveLength(0);
+  });
+
+  it("rejects registered remote events with invalid envelope fields", async () => {
+    const store = new InMemoryPartitionStore("node-b");
+    await store.registerPartition("tenant:jp");
+
+    await expect(store.applyRemote({
+      eventId: "not-a-uuid",
+      sourceNodeId: "node-a",
+      partitionId: "tenant:jp",
+      schemaVersion: 1,
+      payload: { ok: true },
+    })).rejects.toThrow("eventId must be a UUIDv7");
+    await expect(store.applyRemote({
+      eventId: "018bcfe5-6800-7001-8000-000000000001",
+      sourceNodeId: "node-a",
+      partitionId: "tenant:jp",
+      schemaVersion: 0,
+      payload: { ok: true },
+    })).rejects.toThrow("schemaVersion must be a positive integer");
+    await expect(store.applyRemote({
+      eventId: "018bcfe5-6800-7001-8000-000000000001",
+      sourceNodeId: "node-a",
+      partitionId: "tenant:jp",
+      schemaVersion: 1,
+      payload: { value: Infinity },
+    })).rejects.toThrow("payload.value must be JSON-serializable");
+    await expect(store.listEventsAfterCursors("tenant:jp", new Map())).resolves.toHaveLength(0);
   });
 
   it("treats the same event id from different source nodes as distinct events", async () => {
@@ -448,6 +531,25 @@ describe("SyncNode", () => {
     expect(watermark.has("node-a")).toBe(true);
   });
 
+  it("rejects empty partition ids before replay requests", async () => {
+    const node = new SyncNode("node-a", new InMemoryPartitionStore("node-a"), new MemoryTransport());
+
+    await node.start();
+
+    await expect(node.catchUpFrom("node-b", "")).rejects.toThrow("partitionId must be a non-empty string");
+    await expect(node.reconcileFrom("node-b", "")).rejects.toThrow("partitionId must be a non-empty string");
+    await expect(node.highWatermark("")).rejects.toThrow("partitionId must be a non-empty string");
+  });
+
+  it("rejects empty peer node ids before replay requests", async () => {
+    const node = new SyncNode("node-a", new InMemoryPartitionStore("node-a"), new MemoryTransport());
+
+    await node.start();
+
+    await expect(node.catchUpFrom("", "tenant:jp")).rejects.toThrow("nodeId must be a non-empty string");
+    await expect(node.reconcileFrom("", "tenant:jp")).rejects.toThrow("nodeId must be a non-empty string");
+  });
+
   it("can reconcile a partition to recover older events hidden behind a newer high-watermark", async () => {
     const transport = new MemoryTransport();
     const sourceStore = new InMemoryPartitionStore("source");
@@ -613,6 +715,145 @@ describe("SyncNode", () => {
     expect(eventSets[1]).toEqual(eventSets[0]);
     expect(eventSets[2]).toEqual(eventSets[0]);
     expect(eventSets[0]).toHaveLength(4);
+  });
+});
+
+describe("MemoryTransport", () => {
+  it("rejects empty node ids before connecting", async () => {
+    await expect(new MemoryTransport().connect("", { onEvent: async () => {} }))
+      .rejects.toThrow("nodeId must be a non-empty string");
+  });
+
+  it("keeps the latest duplicate node connection when an older connection closes", async () => {
+    const transport = new MemoryTransport();
+    const first = await transport.connect("node-a", {
+      onEvent: async () => {},
+    });
+    const second = await transport.connect("node-a", {
+      onEvent: async () => {},
+      onReplayRequest: async (request) => ({
+        partitionId: request.partitionId,
+        events: [{
+          eventId: "018bcfe5-6800-7001-8000-000000000001",
+          sourceNodeId: "node-a",
+          partitionId: request.partitionId,
+          schemaVersion: 1,
+          payload: { from: "latest" },
+        }],
+      }),
+    });
+    const requester = await transport.connect("requester", {
+      onEvent: async () => {},
+    });
+
+    await first.close();
+
+    await expect(requester.requestReplay("node-a", "tenant:jp", new Map()))
+      .resolves.toMatchObject({
+        partitionId: "tenant:jp",
+        events: [{ payload: { from: "latest" } }],
+      });
+    await expect(second.requestReplay("missing", "tenant:jp", new Map()))
+      .resolves.toEqual({ partitionId: "tenant:jp", events: [] });
+  });
+
+  it("rejects operations attempted through closed memory connections", async () => {
+    const transport = new MemoryTransport();
+    const connection = await transport.connect("node-a", {
+      onEvent: async () => {},
+    });
+
+    await connection.close();
+
+    await expect(connection.subscribe("tenant:jp")).rejects.toThrow("connection for node-a is closed");
+    await expect(connection.publish({
+      eventId: "018bcfe5-6800-7001-8000-000000000001",
+      sourceNodeId: "node-a",
+      partitionId: "tenant:jp",
+      schemaVersion: 1,
+      payload: { closed: true },
+    })).rejects.toThrow("connection for node-a is closed");
+    await expect(connection.requestReplay("node-b", "tenant:jp", new Map()))
+      .rejects.toThrow("connection for node-a is closed");
+  });
+
+  it("rejects invalid events before publishing through memory transport", async () => {
+    const connection = await new MemoryTransport().connect("node-a", {
+      onEvent: async () => {},
+    });
+
+    await expect(connection.publish({
+      eventId: "not-a-uuid",
+      sourceNodeId: "node-a",
+      partitionId: "tenant:jp",
+      schemaVersion: 1,
+      payload: {},
+    })).rejects.toThrow("eventId must be a UUIDv7");
+
+    await connection.close();
+  });
+
+  it("rejects events whose source does not match the memory connection", async () => {
+    const connection = await new MemoryTransport().connect("node-a", {
+      onEvent: async () => {},
+    });
+
+    await expect(connection.publish({
+      eventId: "018bcfe5-6800-7001-8000-000000000001",
+      sourceNodeId: "node-b",
+      partitionId: "tenant:jp",
+      schemaVersion: 1,
+      payload: {},
+    })).rejects.toThrow("event source mismatch");
+
+    await connection.close();
+  });
+
+  it("rejects invalid cursors before requesting memory replay", async () => {
+    const connection = await new MemoryTransport().connect("node-a", {
+      onEvent: async () => {},
+    });
+
+    await expect(connection.requestReplay(
+      "node-b",
+      "tenant:jp",
+      new Map([["node-a", "not-a-uuid"]]),
+    )).rejects.toThrow("cursor eventId must be a UUIDv7");
+
+    await connection.close();
+  });
+
+  it("rejects memory replay responses for a different partition", async () => {
+    const transport = new MemoryTransport();
+    await transport.connect("target", {
+      onEvent: async () => {},
+      onReplayRequest: async () => ({
+        partitionId: "tenant:us",
+        events: [],
+      }),
+    });
+    const requester = await transport.connect("requester", {
+      onEvent: async () => {},
+    });
+
+    await expect(requester.requestReplay("target", "tenant:jp", new Map()))
+      .rejects.toThrow("replay response partition mismatch");
+
+    await requester.close();
+  });
+
+  it("rejects an older duplicate connection after it has been replaced", async () => {
+    const transport = new MemoryTransport();
+    const first = await transport.connect("node-a", {
+      onEvent: async () => {},
+    });
+    await transport.connect("node-a", {
+      onEvent: async () => {},
+    });
+
+    await expect(first.subscribe("tenant:jp")).rejects.toThrow("connection for node-a is closed");
+    await expect(first.requestReplay("node-b", "tenant:jp", new Map()))
+      .rejects.toThrow("connection for node-a is closed");
   });
 });
 
