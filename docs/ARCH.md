@@ -219,7 +219,7 @@ graph LR
 
   subgraph "クラスター構成"
     WSH[WebSocketHub<br/>中央ハブ経由]
-    WSTr[WebSocketTransport<br/>(クライアント)]
+    WSTr["WebSocketTransport<br/>(クライアント)"]
     WSH <-->|ws| WSTr
   end
 
