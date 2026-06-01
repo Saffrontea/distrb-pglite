@@ -37,4 +37,47 @@ describe("CasSnapshotFilesystem", () => {
 
     await expect(target.restore(manifest)).rejects.toThrow("blob not found");
   });
+
+  it("keeps the existing filesystem when restore fails", async () => {
+    const hash = (content: Uint8Array) => createHash("sha256").update(content).digest("hex");
+    const sourceBlobs = new MemoryBlobStore(hash);
+    const targetBlobs = new MemoryBlobStore(hash);
+    const source = new CasSnapshotFilesystem(sourceBlobs, 4);
+    const target = new CasSnapshotFilesystem(targetBlobs, 4);
+
+    await source.writeFile("base/new", new TextEncoder().encode("new-data"));
+    await target.writeFile("base/existing", new TextEncoder().encode("keep-me"));
+    const manifest = await source.snapshot();
+
+    await expect(target.restore(manifest)).rejects.toThrow("blob not found");
+    await expect(target.readFile("base/existing"))
+      .resolves.toEqual(new TextEncoder().encode("keep-me"));
+  });
+
+  it("rejects invalid chunk sizes before snapshotting", () => {
+    const blobs = new MemoryBlobStore((content) =>
+      createHash("sha256").update(content).digest("hex"),
+    );
+
+    expect(() => new CasSnapshotFilesystem(blobs, 0))
+      .toThrow("chunkSize must be a positive integer");
+    expect(() => new CasSnapshotFilesystem(blobs, -1))
+      .toThrow("chunkSize must be a positive integer");
+    expect(() => new CasSnapshotFilesystem(blobs, 1.5))
+      .toThrow("chunkSize must be a positive integer");
+  });
+
+  it("rejects restore manifests with invalid chunk sizes", async () => {
+    const blobs = new MemoryBlobStore((content) =>
+      createHash("sha256").update(content).digest("hex"),
+    );
+    const fs = new CasSnapshotFilesystem(blobs, 4);
+
+    await expect(fs.restore({
+      version: 1,
+      chunkSize: 0,
+      directories: [],
+      files: [],
+    })).rejects.toThrow("manifest chunkSize must be a positive integer");
+  });
 });

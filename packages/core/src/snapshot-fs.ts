@@ -28,7 +28,9 @@ export class CasSnapshotFilesystem implements SnapshotFilesystem {
   constructor(
     private readonly blobs: BlobStore,
     private readonly chunkSize = 64 * 1024,
-  ) {}
+  ) {
+    assertPositiveInteger(chunkSize, "chunkSize");
+  }
 
   async writeFile(path: string, content: Uint8Array): Promise<void> {
     this.files.set(path, new Uint8Array(content));
@@ -66,7 +68,8 @@ export class CasSnapshotFilesystem implements SnapshotFilesystem {
   }
 
   async restore(manifest: SnapshotFilesystemManifest): Promise<void> {
-    this.files.clear();
+    assertPositiveInteger(manifest.chunkSize, "manifest chunkSize");
+    const restoredFiles = new Map<string, Uint8Array>();
     for (const file of manifest.files) {
       const chunks: Uint8Array[] = [];
       for (const block of file.blocks) {
@@ -80,8 +83,18 @@ export class CasSnapshotFilesystem implements SnapshotFilesystem {
       if (restored.length !== file.size) {
         throw new Error(`file size mismatch: ${file.path}`);
       }
-      this.files.set(file.path, restored);
+      restoredFiles.set(file.path, restored);
     }
+    this.files.clear();
+    for (const [path, content] of restoredFiles) {
+      this.files.set(path, content);
+    }
+  }
+}
+
+function assertPositiveInteger(value: number, name: string): void {
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new Error(`${name} must be a positive integer`);
   }
 }
 
