@@ -1,5 +1,6 @@
 import { InMemoryPartitionStore, SyncNode } from "@distrb-pglite/core";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import WebSocket from "ws";
 import { P2PWebSocketTransport } from "../src/index.js";
 import {
   describeTransportContract,
@@ -43,6 +44,261 @@ describeTransportContract("P2PWebSocketTransport", async () => {
 // ─── P2P 固有テスト ───────────────────────────────────────────────────────────
 
 describe("P2PWebSocketTransport (P2P 固有)", () => {
+  it("rejects empty node ids before opening a server", async () => {
+    const port = await getFreePort();
+
+    await expect(new P2PWebSocketTransport({
+      publicUrl: `ws://127.0.0.1:${port}`,
+      port,
+    }).connect("", { onEvent: () => {} }))
+      .rejects.toThrow("nodeId must be a non-empty string");
+  });
+
+  it("closes raw peers that send an empty hello node id", async () => {
+    const port = await getFreePort();
+    const connection = await new P2PWebSocketTransport({
+      publicUrl: `ws://127.0.0.1:${port}`,
+      port,
+    }).connect("node-a", { onEvent: () => {} });
+    const socket = await rawPeer(`ws://127.0.0.1:${port}`);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      socket.send(JSON.stringify({
+        type: "hello",
+        nodeId: "",
+        publicUrl: "ws://127.0.0.1:1",
+        subscriptions: [],
+      }));
+
+      await expect(waitForSocketClose(socket)).resolves.toBeUndefined();
+      expect(errorSpy).toHaveBeenCalledWith(
+        "[p2p] message decode error",
+        expect.any(Error),
+      );
+    } finally {
+      errorSpy.mockRestore();
+      socket.terminate();
+      await connection.close();
+    }
+  });
+
+  it("closes raw peers that send an empty subscription partition", async () => {
+    const port = await getFreePort();
+    const publicUrl = `ws://127.0.0.1:${port}`;
+    const connection = await new P2PWebSocketTransport({
+      publicUrl,
+      port,
+    }).connect("node-a", { onEvent: () => {} });
+    const socket = await rawPeer(publicUrl);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      socket.send(JSON.stringify({
+        type: "hello",
+        nodeId: "raw-peer",
+        publicUrl: "ws://127.0.0.1:1",
+        subscriptions: [],
+      }));
+      socket.send(JSON.stringify({ type: "subscribe", partitionId: "" }));
+
+      await expect(waitForSocketClose(socket)).resolves.toBeUndefined();
+      expect(errorSpy).toHaveBeenCalledWith(
+        "[p2p] message handling error",
+        expect.any(Error),
+      );
+    } finally {
+      errorSpy.mockRestore();
+      socket.terminate();
+      await connection.close();
+    }
+  });
+
+  it("closes raw peers that send invalid replay cursors", async () => {
+    const port = await getFreePort();
+    const publicUrl = `ws://127.0.0.1:${port}`;
+    const connection = await new P2PWebSocketTransport({
+      publicUrl,
+      port,
+    }).connect("node-a", { onEvent: () => {} });
+    const socket = await rawPeer(publicUrl);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      socket.send(JSON.stringify({
+        type: "hello",
+        nodeId: "raw-peer",
+        publicUrl: "ws://127.0.0.1:1",
+        subscriptions: [],
+      }));
+      socket.send(JSON.stringify({
+        type: "replay-request",
+        requestId: "bad-cursor",
+        requesterNodeId: "raw-peer",
+        targetNodeId: "node-a",
+        partitionId: "tenant:jp",
+        cursors: [["raw-peer", "not-a-uuid"]],
+      }));
+
+      await expect(waitForSocketClose(socket)).resolves.toBeUndefined();
+      expect(errorSpy).toHaveBeenCalledWith(
+        "[p2p] message handling error",
+        expect.any(Error),
+      );
+    } finally {
+      errorSpy.mockRestore();
+      socket.terminate();
+      await connection.close();
+    }
+  });
+
+  it("closes raw peers that send replay requests targeted at another node", async () => {
+    const port = await getFreePort();
+    const publicUrl = `ws://127.0.0.1:${port}`;
+    const connection = await new P2PWebSocketTransport({
+      publicUrl,
+      port,
+    }).connect("node-a", { onEvent: () => {} });
+    const socket = await rawPeer(publicUrl);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      socket.send(JSON.stringify({
+        type: "hello",
+        nodeId: "raw-peer",
+        publicUrl: "ws://127.0.0.1:1",
+        subscriptions: [],
+      }));
+      socket.send(JSON.stringify({
+        type: "replay-request",
+        requestId: "wrong-target",
+        requesterNodeId: "raw-peer",
+        targetNodeId: "node-b",
+        partitionId: "tenant:jp",
+        cursors: [],
+      }));
+
+      await expect(waitForSocketClose(socket)).resolves.toBeUndefined();
+      expect(errorSpy).toHaveBeenCalledWith(
+        "[p2p] message handling error",
+        expect.any(Error),
+      );
+    } finally {
+      errorSpy.mockRestore();
+      socket.terminate();
+      await connection.close();
+    }
+  });
+
+  it("closes raw peers that send an empty replay request id", async () => {
+    const port = await getFreePort();
+    const publicUrl = `ws://127.0.0.1:${port}`;
+    const connection = await new P2PWebSocketTransport({
+      publicUrl,
+      port,
+    }).connect("node-a", { onEvent: () => {} });
+    const socket = await rawPeer(publicUrl);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      socket.send(JSON.stringify({
+        type: "hello",
+        nodeId: "raw-peer",
+        publicUrl: "ws://127.0.0.1:1",
+        subscriptions: [],
+      }));
+      socket.send(JSON.stringify({
+        type: "replay-request",
+        requestId: "",
+        requesterNodeId: "raw-peer",
+        targetNodeId: "node-a",
+        partitionId: "tenant:jp",
+        cursors: [],
+      }));
+
+      await expect(waitForSocketClose(socket)).resolves.toBeUndefined();
+      expect(errorSpy).toHaveBeenCalledWith(
+        "[p2p] message handling error",
+        expect.any(Error),
+      );
+    } finally {
+      errorSpy.mockRestore();
+      socket.terminate();
+      await connection.close();
+    }
+  });
+
+  it("closes raw peers that spoof event source node ids", async () => {
+    const port = await getFreePort();
+    const publicUrl = `ws://127.0.0.1:${port}`;
+    const connection = await new P2PWebSocketTransport({
+      publicUrl,
+      port,
+    }).connect("node-a", { onEvent: () => {} });
+    const socket = await rawPeer(publicUrl);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      socket.send(JSON.stringify({
+        type: "hello",
+        nodeId: "raw-peer",
+        publicUrl: "ws://127.0.0.1:1",
+        subscriptions: [],
+      }));
+      socket.send(JSON.stringify({
+        type: "event",
+        event: {
+          eventId: "018bcfe5-6800-7001-8000-000000000001",
+          sourceNodeId: "other-peer",
+          partitionId: "tenant:jp",
+          schemaVersion: 1,
+          payload: {},
+        },
+      }));
+
+      await expect(waitForSocketClose(socket)).resolves.toBeUndefined();
+      expect(errorSpy).toHaveBeenCalledWith(
+        "[p2p] message handling error",
+        expect.any(Error),
+      );
+    } finally {
+      errorSpy.mockRestore();
+      socket.terminate();
+      await connection.close();
+    }
+  });
+
+  it("closes raw peers that spoof replay requester node ids", async () => {
+    const port = await getFreePort();
+    const publicUrl = `ws://127.0.0.1:${port}`;
+    const connection = await new P2PWebSocketTransport({
+      publicUrl,
+      port,
+    }).connect("node-a", { onEvent: () => {} });
+    const socket = await rawPeer(publicUrl);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      socket.send(JSON.stringify({
+        type: "hello",
+        nodeId: "raw-peer",
+        publicUrl: "ws://127.0.0.1:1",
+        subscriptions: [],
+      }));
+      socket.send(JSON.stringify({
+        type: "replay-request",
+        requestId: "spoofed-requester",
+        requesterNodeId: "other-peer",
+        targetNodeId: "node-a",
+        partitionId: "tenant:jp",
+        cursors: [],
+      }));
+
+      await expect(waitForSocketClose(socket)).resolves.toBeUndefined();
+      expect(errorSpy).toHaveBeenCalledWith(
+        "[p2p] message handling error",
+        expect.any(Error),
+      );
+    } finally {
+      errorSpy.mockRestore();
+      socket.terminate();
+      await connection.close();
+    }
+  });
+
   it("gossip で seed を知らないノードもメッシュに参加できる", async () => {
     // A を起動 → B が A を seed にして参加 → C は A だけを seed にするが gossip で B も発見
     const portA = await getFreePort();
@@ -184,6 +440,40 @@ describe("P2PWebSocketTransport (P2P 固有)", () => {
     await target.close();
   });
 
+  it("rejects replay responses that do not match the pending p2p request", async () => {
+    const port = await getFreePort();
+    const publicUrl = `ws://127.0.0.1:${port}`;
+    const connection = await new P2PWebSocketTransport({
+      publicUrl,
+      port,
+    }).connect("node-a", { onEvent: () => {} });
+    const socket = await rawPeer(publicUrl);
+    try {
+      socket.send(JSON.stringify({
+        type: "hello",
+        nodeId: "raw-peer",
+        publicUrl: "ws://127.0.0.1:1",
+        subscriptions: [],
+      }));
+      await new Promise((resolve) => setTimeout(resolve, meshSettleMs));
+
+      const response = connection.requestReplay("raw-peer", "tenant:jp", new Map());
+      const request = await nextRawPeerMessage(socket, "replay-request");
+      socket.send(JSON.stringify({
+        type: "replay-response",
+        requestId: request.requestId,
+        requesterNodeId: "node-a",
+        partitionId: "tenant:us",
+        events: [],
+      }));
+
+      await expect(response).rejects.toThrow("replay response mismatch");
+    } finally {
+      socket.terminate();
+      await connection.close();
+    }
+  });
+
   it("publish は connection close 後に失敗する", async () => {
     const port = await getFreePort();
     const connection = await new P2PWebSocketTransport({
@@ -199,6 +489,76 @@ describe("P2PWebSocketTransport (P2P 固有)", () => {
       schemaVersion: 1,
       payload: {},
     })).rejects.toThrow("p2p connection is closed");
+  });
+
+  it("rejects invalid events before publishing", async () => {
+    const port = await getFreePort();
+    const connection = await new P2PWebSocketTransport({
+      publicUrl: `ws://127.0.0.1:${port}`,
+      port,
+    }).connect("node-a", { onEvent: () => {} });
+
+    await expect(connection.publish({
+      sourceNodeId: "node-a",
+      eventId: "not-a-uuid",
+      partitionId: "tenant:jp",
+      schemaVersion: 1,
+      payload: {},
+    })).rejects.toThrow("eventId must be a UUIDv7");
+
+    await connection.close();
+  });
+
+  it("rejects events whose source does not match the p2p connection", async () => {
+    const port = await getFreePort();
+    const connection = await new P2PWebSocketTransport({
+      publicUrl: `ws://127.0.0.1:${port}`,
+      port,
+    }).connect("node-a", { onEvent: () => {} });
+
+    await expect(connection.publish({
+      sourceNodeId: "node-b",
+      eventId: "018bcfe5-6800-7001-8000-000000000001",
+      partitionId: "tenant:jp",
+      schemaVersion: 1,
+      payload: {},
+    })).rejects.toThrow("event source mismatch");
+
+    await connection.close();
+  });
+
+  it("subscribe は connection close 後に失敗する", async () => {
+    const port = await getFreePort();
+    const connection = await new P2PWebSocketTransport({
+      publicUrl: `ws://127.0.0.1:${port}`,
+      port,
+    }).connect("node-a", { onEvent: () => {} });
+    await connection.close();
+
+    await expect(connection.subscribe("tenant:jp"))
+      .rejects.toThrow("p2p connection is closed");
+  });
+
+  it("rejects empty partition ids before sending subscribe or replay requests", async () => {
+    const port = await getFreePort();
+    const connection = await new P2PWebSocketTransport({
+      publicUrl: `ws://127.0.0.1:${port}`,
+      port,
+    }).connect("node-a", { onEvent: () => {} });
+
+    await expect(connection.subscribe(""))
+      .rejects.toThrow("partitionId must be a non-empty string");
+    await expect(connection.requestReplay("node-b", "", new Map()))
+      .rejects.toThrow("partitionId must be a non-empty string");
+    await expect(connection.requestReplay("", "tenant:jp", new Map()))
+      .rejects.toThrow("nodeId must be a non-empty string");
+    await expect(connection.requestReplay(
+      "node-b",
+      "tenant:jp",
+      new Map([["node-a", "not-a-uuid"]]),
+    )).rejects.toThrow("cursor eventId must be a UUIDv7");
+
+    await connection.close();
   });
 
   it("requestReplay は connection close 後に失敗する", async () => {
@@ -286,3 +646,41 @@ describe("P2PWebSocketTransport (P2P 固有)", () => {
     await nodeB.stop();
   });
 });
+
+async function rawPeer(url: string): Promise<WebSocket> {
+  const socket = new WebSocket(url);
+  await new Promise<void>((resolve, reject) => {
+    socket.once("open", resolve);
+    socket.once("error", reject);
+  });
+  return socket;
+}
+
+async function nextRawPeerMessage(socket: WebSocket, type: string, timeoutMs = 1000): Promise<Record<string, unknown>> {
+  return await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new Error(`timed out waiting for ${type}`));
+    }, timeoutMs);
+    const onMessage = (data: WebSocket.RawData) => {
+      const message = JSON.parse(data.toString()) as Record<string, unknown>;
+      if (message.type !== type) {
+        return;
+      }
+      cleanup();
+      resolve(message);
+    };
+    const cleanup = () => {
+      clearTimeout(timer);
+      socket.off("message", onMessage);
+    };
+    socket.on("message", onMessage);
+  });
+}
+
+async function waitForSocketClose(socket: WebSocket): Promise<void> {
+  if (socket.readyState === WebSocket.CLOSED) {
+    return;
+  }
+  await new Promise<void>((resolve) => socket.once("close", resolve));
+}

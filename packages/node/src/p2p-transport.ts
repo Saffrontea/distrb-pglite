@@ -1,5 +1,9 @@
 import {
+  assertValidEventEnvelope,
+  assertValidNodeId,
+  assertValidPartitionId,
   uuidV7,
+  validateEventCursorEntries,
   type EventEnvelope,
   type EventId,
   type NodeId,
@@ -108,6 +112,10 @@ class PeerSocket {
         try {
           const msg = this.decode(data as Buffer);
           if (msg.type === "hello") {
+            assertValidNodeId(msg.nodeId);
+            for (const partitionId of msg.subscriptions) {
+              assertValidPartitionId(partitionId);
+            }
             this.record.nodeId = msg.nodeId;
             this.record.publicUrl ??= msg.publicUrl;
             for (const p of msg.subscriptions) this.record.subscriptions.add(p);
@@ -124,6 +132,7 @@ class PeerSocket {
           }
         } catch (err) {
           console.error("[p2p] message decode error", err);
+          this.close();
         }
       })();
     });
@@ -207,6 +216,7 @@ class P2PWebSocketConnection implements TransportConnection {
   private readonly localSubscriptions = new Set<PartitionId>();
   private readonly pendingReplay = new Map<string, {
     targetNodeId: NodeId;
+    partitionId: PartitionId;
     resolve: (response: ReplayResponse) => void;
     reject: (error: Error) => void;
     timer: ReturnType<typeof setTimeout>;
@@ -254,6 +264,10 @@ class P2PWebSocketConnection implements TransportConnection {
   }
 
   async subscribe(partitionId: PartitionId): Promise<void> {
+    if (this.closed) {
+      throw new Error("p2p connection is closed");
+    }
+    assertValidPartitionId(partitionId);
     this.localSubscriptions.add(partitionId);
     for (const peer of this.peers.values()) {
       peer.send({ type: "subscribe", partitionId });
@@ -264,6 +278,8 @@ class P2PWebSocketConnection implements TransportConnection {
     if (this.closed) {
       throw new Error("p2p connection is closed");
     }
+    assertValidEventEnvelope(event);
+    assertNodeMatches("event source", this.nodeId, event.sourceNodeId);
     for (const peer of this.peers.values()) {
       if (peer.record.subscriptions.has(event.partitionId)) {
         peer.send({ type: "event", event });
@@ -279,6 +295,9 @@ class P2PWebSocketConnection implements TransportConnection {
     if (this.closed) {
       throw new Error("p2p connection is closed");
     }
+    assertValidNodeId(targetNodeId);
+    assertValidPartitionId(partitionId);
+    validateEventCursorEntries([...cursors]);
 
     const peer = this.peers.get(targetNodeId);
     if (!peer) return { partitionId, events: [] };
@@ -291,7 +310,7 @@ class P2PWebSocketConnection implements TransportConnection {
           reject(new Error(`replay request timed out after ${timeoutMs}ms`));
         }
       }, timeoutMs);
-      this.pendingReplay.set(requestId, { targetNodeId, resolve, reject, timer });
+      this.pendingReplay.set(requestId, { targetNodeId, partitionId, resolve, reject, timer });
     });
     const sent = peer.send({
       type: "replay-request",
@@ -411,12 +430,26 @@ class P2PWebSocketConnection implements TransportConnection {
       try {
         switch (msg.type) {
           case "subscribe":
+            assertValidPartitionId(msg.partitionId);
             peer.record.subscriptions.add(msg.partitionId);
             break;
           case "event":
+            assertValidEventEnvelope(msg.event);
+            assertNodeMatches("event source", peer.record.nodeId!, msg.event.sourceNodeId);
             await this.handlers.onEvent(msg.event);
             break;
           case "replay-request": {
+            assertValidRequestId(msg.requestId);
+            assertValidNodeId(msg.requesterNodeId);
+            assertValidNodeId(msg.targetNodeId);
+            assertValidPartitionId(msg.partitionId);
+            assertNodeMatches("replay requester", peer.record.nodeId!, msg.requesterNodeId);
+            if (msg.targetNodeId !== this.nodeId) {
+              throw new Error(
+                `replay request target mismatch: local=${this.nodeId} target=${msg.targetNodeId}`,
+              );
+            }
+            const cursors = validateEventCursorEntries(msg.cursors);
             if (!this.handlers.onReplayRequest) {
               peer.send({
                 type: "replay-response",
@@ -430,7 +463,7 @@ class P2PWebSocketConnection implements TransportConnection {
             const response = await this.handlers.onReplayRequest({
               requesterNodeId: msg.requesterNodeId,
               partitionId: msg.partitionId,
-              cursors: new Map(msg.cursors),
+              cursors: new Map(cursors),
             });
             peer.send({
               type: "replay-response",
@@ -441,8 +474,32 @@ class P2PWebSocketConnection implements TransportConnection {
             break;
           }
           case "replay-response": {
+            assertValidRequestId(msg.requestId);
+            assertValidNodeId(msg.requesterNodeId);
+            assertValidPartitionId(msg.partitionId);
+            for (const event of msg.events) {
+              assertValidEventEnvelope(event);
+            }
             const pending = this.pendingReplay.get(msg.requestId);
             if (pending) {
+              if (peer.record.nodeId !== pending.targetNodeId) {
+                throw new Error(`replay response source mismatch: ${msg.requestId}`);
+              }
+              if (msg.requesterNodeId !== this.nodeId || msg.partitionId !== pending.partitionId) {
+                this.rejectPendingReplay(
+                  msg.requestId,
+                  `replay response mismatch: ${msg.requestId}`,
+                );
+                break;
+              }
+              const mismatchedEvent = msg.events.find((event) => event.partitionId !== msg.partitionId);
+              if (mismatchedEvent) {
+                this.rejectPendingReplay(
+                  msg.requestId,
+                  `replay event partition mismatch: response=${msg.partitionId} event=${mismatchedEvent.partitionId}`,
+                );
+                break;
+              }
               this.pendingReplay.delete(msg.requestId);
               clearTimeout(pending.timer);
               pending.resolve({ partitionId: msg.partitionId, events: msg.events });
@@ -452,6 +509,7 @@ class P2PWebSocketConnection implements TransportConnection {
         }
       } catch (err) {
         console.error("[p2p] message handling error", err);
+        peer.close();
       }
     })();
   }
@@ -485,6 +543,16 @@ class P2PWebSocketConnection implements TransportConnection {
       clearTimeout(pending.timer);
       pending.reject(new Error(reason));
     }
+  }
+
+  private rejectPendingReplay(requestId: string, reason: string): void {
+    const pending = this.pendingReplay.get(requestId);
+    if (!pending) {
+      return;
+    }
+    this.pendingReplay.delete(requestId);
+    clearTimeout(pending.timer);
+    pending.reject(new Error(reason));
   }
 
   // ─── reconnection ────────────────────────────────────────────────────────
@@ -525,6 +593,18 @@ function clampTimeout(ms: number): number {
   return Math.max(REPLAY_REQUEST_MIN_TIMEOUT_MS, Math.min(REPLAY_REQUEST_MAX_TIMEOUT_MS, ms));
 }
 
+function assertValidRequestId(requestId: unknown): asserts requestId is string {
+  if (typeof requestId !== "string" || requestId.length === 0) {
+    throw new Error("requestId must be a non-empty string");
+  }
+}
+
+function assertNodeMatches(name: string, expected: NodeId, actual: NodeId): void {
+  if (actual !== expected) {
+    throw new Error(`${name} mismatch: expected=${expected} actual=${actual}`);
+  }
+}
+
 // ─── P2PWebSocketTransport ────────────────────────────────────────────────────
 
 export class P2PWebSocketTransport implements Transport {
@@ -542,6 +622,7 @@ export class P2PWebSocketTransport implements Transport {
   }
 
   async connect(nodeId: NodeId, handlers: TransportHandlers): Promise<TransportConnection> {
+    assertValidNodeId(nodeId);
     const conn = new P2PWebSocketConnection(nodeId, handlers, this.opts);
     await conn.start();
     return conn;
