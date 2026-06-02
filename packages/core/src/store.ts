@@ -84,10 +84,10 @@ export class InMemoryPartitionStore implements PartitionStore {
   }
 
   async applyRemote(event: EventEnvelope): Promise<boolean> {
+    assertValidEventEnvelope(event);
     if (!(await this.hasPartition(event.partitionId))) {
       return false;
     }
-    assertValidEventEnvelope(event);
 
     return this.record(event);
   }

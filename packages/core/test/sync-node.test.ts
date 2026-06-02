@@ -259,6 +259,26 @@ describe("SyncNode", () => {
     await expect(store.listEventsAfterCursors("tenant:jp", new Map())).resolves.toHaveLength(0);
   });
 
+  it("rejects malformed remote events before checking partition registration", async () => {
+    const store = new InMemoryPartitionStore("node-b");
+
+    await expect(store.applyRemote({
+      eventId: "not-a-uuid",
+      sourceNodeId: "node-a",
+      partitionId: "tenant:missing",
+      schemaVersion: 1,
+      payload: { ok: true },
+    })).rejects.toThrow("eventId must be a UUIDv7");
+    await expect(store.applyRemote({
+      eventId: "018bcfe5-6800-7001-8000-000000000001",
+      sourceNodeId: "node-a",
+      partitionId: "tenant:missing",
+      schemaVersion: 0,
+      payload: { ok: true },
+    })).rejects.toThrow("schemaVersion must be a positive integer");
+    await expect(store.listEventsAfterCursors("tenant:missing", new Map())).resolves.toHaveLength(0);
+  });
+
   it("treats the same event id from different source nodes as distinct events", async () => {
     const store = new InMemoryPartitionStore("node-c");
     await store.registerPartition("tenant:jp");
