@@ -5,6 +5,7 @@ import {
   assertValidLocalEventInput,
   assertValidNodeId,
   assertValidPartitionId,
+  compareEventIds,
   UuidV7Factory,
   type EventCursor,
   type EventEnvelope,
@@ -128,10 +129,10 @@ export class PGlitePartitionStore implements PartitionStore {
     event: EventEnvelope<TPayload>,
     project?: EventProjection<TPayload>,
   ): Promise<boolean> {
+    assertValidEventEnvelope(event);
     if (!(await this.hasPartition(event.partitionId))) {
       return false;
     }
-    assertValidEventEnvelope(event);
 
     return this.withTransaction(async () => {
       const applied = await this.db.query<{ event_id: string }>(
@@ -170,7 +171,7 @@ export class PGlitePartitionStore implements PartitionStore {
         (event) =>
           !cursor ||
           event.sourceNodeId !== cursor.sourceNodeId ||
-          event.eventId > cursor.eventId,
+          compareEventIds(event.eventId, cursor.eventId) > 0,
       );
   }
 
@@ -185,25 +186,20 @@ export class PGlitePartitionStore implements PartitionStore {
       .map(rowToEvent)
       .filter((event) => {
         const cursor = cursors.get(event.sourceNodeId);
-        return !cursor || event.eventId > cursor;
+        return !cursor || compareEventIds(event.eventId, cursor) > 0;
       });
   }
 
   async getHighWatermark(partitionId: PartitionId): Promise<HighWatermark> {
     assertValidPartitionId(partitionId);
-    const result = await this.db.query<{ source_node_id: string; event_id: string }>(
-      `
-        SELECT DISTINCT ON (source_node_id)
-          source_node_id,
-          event_id::text AS event_id
-        FROM distrb_events
-        WHERE partition_id = $1
-        ORDER BY source_node_id, event_id DESC
-      `,
-      [partitionId],
-    );
-
-    return new Map(result.rows.map((row) => [row.source_node_id, row.event_id]));
+    const highWatermark = new Map<NodeId, EventId>();
+    for (const event of (await this.loadPartitionEvents(partitionId)).map(rowToEvent)) {
+      const current = highWatermark.get(event.sourceNodeId);
+      if (!current || compareEventIds(event.eventId, current) > 0) {
+        highWatermark.set(event.sourceNodeId, event.eventId);
+      }
+    }
+    return highWatermark;
   }
 
   async createSnapshotMetadata(partitionId: PartitionId): Promise<SnapshotMetadata> {
@@ -319,13 +315,15 @@ export class PGlitePartitionStore implements PartitionStore {
 }
 
 function rowToEvent(row: EventRow): EventEnvelope {
-  return {
+  const event = {
     sourceNodeId: row.source_node_id,
     eventId: row.event_id,
     partitionId: row.partition_id,
     schemaVersion: row.schema_version,
     payload: row.payload,
   };
+  assertValidEventEnvelope(event);
+  return event;
 }
 
 function canonicalJson(value: unknown): string {

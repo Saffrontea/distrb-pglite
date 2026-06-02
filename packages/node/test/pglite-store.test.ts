@@ -233,6 +233,95 @@ describe("PGlitePartitionStore", () => {
     await expect(store.listEventsAfterCursors("tenant:jp", new Map())).resolves.toHaveLength(0);
   });
 
+  it("rejects malformed remote events before checking partition registration", async () => {
+    const db = new PGlite();
+    const store = new PGlitePartitionStore("node-a", db);
+    await store.migrate();
+
+    await expect(store.applyRemote({
+      eventId: "not-a-uuid",
+      sourceNodeId: "node-b",
+      partitionId: "tenant:missing",
+      schemaVersion: 1,
+      payload: { ok: true },
+    })).rejects.toThrow("eventId must be a UUIDv7");
+    await expect(store.applyRemote({
+      eventId: "018bcfe5-6800-7001-8000-000000000001",
+      sourceNodeId: "node-b",
+      partitionId: "tenant:missing",
+      schemaVersion: 0,
+      payload: { ok: true },
+    })).rejects.toThrow("schemaVersion must be a positive integer");
+    await expect(store.listEventsAfterCursors("tenant:missing", new Map())).resolves.toHaveLength(0);
+  });
+
+  it("rejects corrupted persisted events before replaying or snapshotting cursors", async () => {
+    const db = new PGlite();
+    const store = new PGlitePartitionStore("node-a", db);
+    await store.migrate();
+    await store.registerPartition("tenant:jp");
+    await db.query(
+      `
+        INSERT INTO distrb_events (
+          source_node_id,
+          event_id,
+          partition_id,
+          schema_version,
+          payload
+        )
+        VALUES ($1, $2::uuid, $3, $4, $5::jsonb)
+      `,
+      [
+        "node-b",
+        "550e8400-e29b-41d4-a716-446655440000",
+        "tenant:jp",
+        1,
+        JSON.stringify({ value: "corrupt" }),
+      ],
+    );
+
+    await expect(store.listEventsAfterCursors("tenant:jp", new Map()))
+      .rejects.toThrow("eventId must be a UUIDv7");
+    await expect(store.getHighWatermark("tenant:jp"))
+      .rejects.toThrow("eventId must be a UUIDv7");
+    await expect(store.createSnapshotMetadata("tenant:jp"))
+      .rejects.toThrow("eventId must be a UUIDv7");
+  });
+
+  it("rejects corrupted older persisted events before snapshotting cursors", async () => {
+    const db = new PGlite();
+    const store = new PGlitePartitionStore("node-a", db);
+    await store.migrate();
+    await store.registerPartition("tenant:jp");
+    await db.query(
+      `
+        INSERT INTO distrb_events (
+          source_node_id,
+          event_id,
+          partition_id,
+          schema_version,
+          payload
+        )
+        VALUES
+          ($1, $2::uuid, $4, 1, $5::jsonb),
+          ($1, $3::uuid, $4, 1, $6::jsonb)
+      `,
+      [
+        "node-b",
+        "00000000-0000-4000-8000-000000000000",
+        "018bcfe5-6800-7001-8000-000000000001",
+        "tenant:jp",
+        JSON.stringify({ value: "corrupt-older" }),
+        JSON.stringify({ value: "valid-newer" }),
+      ],
+    );
+
+    await expect(store.getHighWatermark("tenant:jp"))
+      .rejects.toThrow("eventId must be a UUIDv7");
+    await expect(store.createSnapshotMetadata("tenant:jp"))
+      .rejects.toThrow("eventId must be a UUIDv7");
+  });
+
   it("replays events after each source node cursor independently", async () => {
     const db = new PGlite();
     const store = new PGlitePartitionStore("node-a", db);
