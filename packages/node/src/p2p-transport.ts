@@ -112,6 +112,9 @@ class PeerSocket {
         try {
           const msg = this.decode(data as Buffer);
           if (msg.type === "hello") {
+            if (this.record.nodeId) {
+              throw new Error(`hello already received for peer: ${this.record.nodeId}`);
+            }
             assertValidNodeId(msg.nodeId);
             for (const partitionId of msg.subscriptions) {
               assertValidPartitionId(partitionId);
@@ -173,10 +176,11 @@ class PeerSocket {
   }
 
   private decode(data: Buffer): P2PWireMessage {
-    if (this.zstd) {
-      return JSON.parse(Buffer.from(this.zstd.decompress(new Uint8Array(data))).toString()) as P2PWireMessage;
-    }
-    return JSON.parse(data.toString()) as P2PWireMessage;
+    const message = this.zstd
+      ? JSON.parse(Buffer.from(this.zstd.decompress(new Uint8Array(data))).toString())
+      : JSON.parse(data.toString());
+    assertKnownP2PWireMessage(message);
+    return message;
   }
 
   private startPing(): void {
@@ -596,6 +600,25 @@ function clampTimeout(ms: number): number {
 function assertValidRequestId(requestId: unknown): asserts requestId is string {
   if (typeof requestId !== "string" || requestId.length === 0) {
     throw new Error("requestId must be a non-empty string");
+  }
+}
+
+function assertKnownP2PWireMessage(message: unknown): asserts message is P2PWireMessage {
+  if (typeof message !== "object" || message === null || !("type" in message)) {
+    throw new Error("p2p wire message must be an object with a type");
+  }
+  switch ((message as { type: unknown }).type) {
+    case "hello":
+    case "peers":
+    case "subscribe":
+    case "ping":
+    case "pong":
+    case "event":
+    case "replay-request":
+    case "replay-response":
+      return;
+    default:
+      throw new Error(`unknown p2p wire message type: ${String((message as { type: unknown }).type)}`);
   }
 }
 

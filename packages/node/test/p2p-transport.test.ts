@@ -82,6 +82,64 @@ describe("P2PWebSocketTransport (P2P 固有)", () => {
     }
   });
 
+  it("closes raw peers that send unknown message types", async () => {
+    const port = await getFreePort();
+    const connection = await new P2PWebSocketTransport({
+      publicUrl: `ws://127.0.0.1:${port}`,
+      port,
+    }).connect("node-a", { onEvent: () => {} });
+    const socket = await rawPeer(`ws://127.0.0.1:${port}`);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      socket.send(JSON.stringify({ type: "mystery", value: 1 }));
+
+      await expect(waitForSocketClose(socket)).resolves.toBeUndefined();
+      expect(errorSpy).toHaveBeenCalledWith(
+        "[p2p] message decode error",
+        expect.any(Error),
+      );
+    } finally {
+      errorSpy.mockRestore();
+      socket.terminate();
+      await connection.close();
+    }
+  });
+
+  it("closes raw peers that try to replace their hello identity on the same socket", async () => {
+    const port = await getFreePort();
+    const publicUrl = `ws://127.0.0.1:${port}`;
+    const connection = await new P2PWebSocketTransport({
+      publicUrl,
+      port,
+    }).connect("node-a", { onEvent: () => {} });
+    const socket = await rawPeer(publicUrl);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      socket.send(JSON.stringify({
+        type: "hello",
+        nodeId: "raw-peer",
+        publicUrl: "ws://127.0.0.1:1",
+        subscriptions: [],
+      }));
+      socket.send(JSON.stringify({
+        type: "hello",
+        nodeId: "other-peer",
+        publicUrl: "ws://127.0.0.1:2",
+        subscriptions: [],
+      }));
+
+      await expect(waitForSocketClose(socket)).resolves.toBeUndefined();
+      expect(errorSpy).toHaveBeenCalledWith(
+        "[p2p] message decode error",
+        expect.any(Error),
+      );
+    } finally {
+      errorSpy.mockRestore();
+      socket.terminate();
+      await connection.close();
+    }
+  });
+
   it("closes raw peers that send an empty subscription partition", async () => {
     const port = await getFreePort();
     const publicUrl = `ws://127.0.0.1:${port}`;
