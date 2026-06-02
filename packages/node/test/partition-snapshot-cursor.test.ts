@@ -122,6 +122,19 @@ describe("partition snapshot cursors", () => {
       "duplicate high-watermark source node: node-a",
     );
   });
+
+  it("rejects high-watermark cursors that are not UUIDv7 event ids", () => {
+    const snapshot: PartitionSnapshotCursor = {
+      partitionId: "tenant:jp",
+      highWatermark: [
+        ["node-a", "not-a-uuid"],
+      ],
+    };
+
+    expect(() => highWatermarkMap(snapshot)).toThrow(
+      "invalid high-watermark event id at index 0",
+    );
+  });
 });
 
 describe("storage binding snapshot filters", () => {

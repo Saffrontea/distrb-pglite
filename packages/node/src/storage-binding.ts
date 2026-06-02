@@ -18,7 +18,7 @@ import type {
 } from "@distrb-pglite/core";
 import { validateHighWatermarkEntries, type PartitionCasSnapshot, type PartitionFilesystemSnapshot } from "./partition-snapshot.js";
 import type { PGliteClient } from "./pglite-store.js";
-import { gcCasBlocks, type CasGcResult, type CasManifest } from "./cas.js";
+import { gcCasBlocks, validateCasManifest, type CasGcResult, type CasManifest } from "./cas.js";
 
 type RelationIdentityRow = {
   database_oid: number;
@@ -1188,6 +1188,7 @@ export async function saveStorageBindingGroup(
   group: StorageBindingGroup,
 ): Promise<void> {
   await migrateStorageBindingCatalog(db);
+  validateStorageBindingGroup(group);
   await db.query(
     `
       INSERT INTO distrb_storage_binding_groups (
@@ -1339,7 +1340,7 @@ export async function loadStorageBindingGroup(
   const relationRows = await listStorageBindingRelationRows(db, groupId);
   const childRows = await listStorageBindingChildRows(db, groupId);
 
-  return {
+  const group: StorageBindingGroup = {
     groupId: row.group_id,
     rootRelationOid: row.root_relation_oid,
     ddlGeneration: row.ddl_generation,
@@ -1362,6 +1363,8 @@ export async function loadStorageBindingGroup(
       };
     }),
   };
+  validateStorageBindingGroup(group);
+  return group;
 }
 
 export async function loadStoragePartitionBinding(options: {
@@ -1378,6 +1381,7 @@ export async function saveStorageSnapshotCatalogEntry<TManifest>(
   entry: StorageSnapshotCatalogEntry<TManifest>,
 ): Promise<void> {
   await migrateStorageBindingCatalog(db);
+  const validated = validateStorageSnapshotCatalogEntry(entry);
   const highWatermark = validateHighWatermarkEntries(entry.highWatermark);
   await db.query(
     `
@@ -1402,15 +1406,15 @@ export async function saveStorageSnapshotCatalogEntry<TManifest>(
         manifest = EXCLUDED.manifest
     `,
     [
-      entry.groupId,
-      entry.partitionId,
-      entry.snapshotId,
-      JSON.stringify(entry.components),
+      validated.groupId,
+      validated.partitionId,
+      validated.snapshotId,
+      JSON.stringify(validated.components),
       JSON.stringify(highWatermark),
-      entry.ddlGeneration,
-      entry.storageGeneration ?? entry.ddlGeneration,
-      entry.manifestKind,
-      JSON.stringify(entry.manifest),
+      validated.ddlGeneration,
+      validated.storageGeneration ?? validated.ddlGeneration,
+      validated.manifestKind,
+      JSON.stringify(validated.manifest),
     ],
   );
 }
@@ -1692,7 +1696,8 @@ export async function loadStorageCatalogManifest(options: {
     [options.groupId],
   );
 
-  return result.rows[0]?.manifest as StorageCatalogManifest | undefined;
+  const manifest = result.rows[0]?.manifest as StorageCatalogManifest | undefined;
+  return manifest ? validateStorageCatalogManifest(manifest) : undefined;
 }
 
 export async function applyStorageCatalogManifest(options: {
@@ -1700,25 +1705,26 @@ export async function applyStorageCatalogManifest(options: {
   manifest: StorageCatalogManifest;
 }): Promise<StorageBindingGroup> {
   await migrateStorageBindingCatalog(options.db);
+  const manifest = validateStorageCatalogManifest(options.manifest);
   await options.db.query(
     `
       DELETE FROM distrb_storage_bindings
       WHERE group_id = $1
     `,
-    [options.manifest.groupId],
+    [manifest.groupId],
   );
   await saveStorageBindingGroup(options.db, {
-    groupId: options.manifest.groupId,
-    rootRelationOid: options.manifest.rootRelationOid,
-    ddlGeneration: options.manifest.ddlGeneration,
-    storageGeneration: options.manifest.storageGeneration ?? options.manifest.ddlGeneration,
-    vacuumPolicy: options.manifest.vacuumPolicy,
-    bindings: options.manifest.bindings,
+    groupId: manifest.groupId,
+    rootRelationOid: manifest.rootRelationOid,
+    ddlGeneration: manifest.ddlGeneration,
+    storageGeneration: manifest.storageGeneration ?? manifest.ddlGeneration,
+    vacuumPolicy: manifest.vacuumPolicy,
+    bindings: manifest.bindings,
   });
 
-  const group = await loadStorageBindingGroup(options.db, options.manifest.groupId);
+  const group = await loadStorageBindingGroup(options.db, manifest.groupId);
   if (!group) {
-    throw new Error(`storage binding group not found after applying catalog manifest: ${options.manifest.groupId}`);
+    throw new Error(`storage binding group not found after applying catalog manifest: ${manifest.groupId}`);
   }
   return group;
 }
@@ -2123,15 +2129,194 @@ function snapshotCatalogEntryFromRow<TManifest>(
   row: SnapshotCatalogRow,
 ): StorageSnapshotCatalogEntry<TManifest> {
   const highWatermark = validateHighWatermarkEntries(row.high_watermark as unknown[]);
-  return {
+  return validateStorageSnapshotCatalogEntry({
     groupId: row.group_id,
     partitionId: row.partition_id,
     snapshotId: row.snapshot_id,
-    components: row.components as StorageSnapshotComponent[],
+    components: row.components as unknown as StorageSnapshotComponent[],
     highWatermark,
     ddlGeneration: row.ddl_generation,
     storageGeneration: row.storage_generation ?? row.ddl_generation,
     manifestKind: row.manifest_kind as StorageSnapshotCatalogEntry<TManifest>["manifestKind"],
     manifest: row.manifest as TManifest,
-  };
+  });
+}
+
+function validateStorageSnapshotCatalogEntry<TManifest>(
+  entry: StorageSnapshotCatalogEntry<TManifest>,
+): StorageSnapshotCatalogEntry<TManifest> {
+  assertNonEmptyString(entry.groupId, "snapshot catalog groupId");
+  assertNonEmptyString(entry.partitionId, "snapshot catalog partitionId");
+  assertNonEmptyString(entry.snapshotId, "snapshot catalog snapshotId");
+  assertSnapshotComponents(entry.components);
+  assertNonNegativeInteger(entry.ddlGeneration, "snapshot catalog ddlGeneration");
+  if (entry.storageGeneration !== undefined) {
+    assertNonNegativeInteger(entry.storageGeneration, "snapshot catalog storageGeneration");
+  }
+  if (entry.manifestKind !== "cas" && entry.manifestKind !== "filesystem") {
+    throw new Error(`invalid snapshot catalog manifest kind: ${entry.manifestKind}`);
+  }
+  if (entry.manifestKind === "cas") {
+    validateCasManifest(entry.manifest, entry.snapshotId);
+  }
+  return entry;
+}
+
+function validateStorageBindingGroup(group: StorageBindingGroup): void {
+  assertNonEmptyString(group.groupId, "storage binding groupId");
+  assertPositiveInteger(group.rootRelationOid, "storage binding rootRelationOid");
+  assertNonNegativeInteger(group.ddlGeneration, "storage binding ddlGeneration");
+  if (group.storageGeneration !== undefined) {
+    assertNonNegativeInteger(group.storageGeneration, "storage binding storageGeneration");
+  }
+
+  if (!Array.isArray(group.bindings)) {
+    throw new Error("storage binding group bindings must be an array");
+  }
+
+  const partitions = new Set<PartitionId>();
+  for (const binding of group.bindings) {
+    validateStoragePartitionBinding(binding);
+    if (partitions.has(binding.partitionId)) {
+      throw new Error(`duplicate storage binding partitionId: ${binding.partitionId}`);
+    }
+    partitions.add(binding.partitionId);
+  }
+}
+
+function validateStorageCatalogManifest(manifest: StorageCatalogManifest): StorageCatalogManifest {
+  if (manifest.version !== 1) {
+    throw new Error(`invalid storage catalog manifest version: ${manifest.version}`);
+  }
+  assertNonEmptyString(manifest.groupId, "storage catalog manifest groupId");
+  assertPositiveInteger(manifest.rootRelationOid, "storage catalog manifest rootRelationOid");
+  assertNonNegativeInteger(manifest.ddlGeneration, "storage catalog manifest ddlGeneration");
+  if (manifest.storageGeneration !== undefined) {
+    assertNonNegativeInteger(manifest.storageGeneration, "storage catalog manifest storageGeneration");
+  }
+
+  validateStorageBindingGroup({
+    groupId: manifest.groupId,
+    rootRelationOid: manifest.rootRelationOid,
+    ddlGeneration: manifest.ddlGeneration,
+    storageGeneration: manifest.storageGeneration,
+    vacuumPolicy: manifest.vacuumPolicy,
+    bindings: manifest.bindings,
+  });
+
+  if (!Array.isArray(manifest.snapshots)) {
+    throw new Error("storage catalog manifest snapshots must be an array");
+  }
+
+  const bindingPartitions = new Set(manifest.bindings.map((binding) => binding.partitionId));
+  for (const snapshot of manifest.snapshots) {
+    assertNonEmptyString(snapshot.partitionId, "storage catalog snapshot partitionId");
+    if (!bindingPartitions.has(snapshot.partitionId)) {
+      throw new Error(`storage catalog snapshot references unknown partition: ${snapshot.partitionId}`);
+    }
+    assertNonEmptyString(snapshot.snapshotId, "storage catalog snapshotId");
+    assertSnapshotComponents(snapshot.components);
+    assertNonNegativeInteger(snapshot.ddlGeneration, "storage catalog snapshot ddlGeneration");
+    if (snapshot.storageGeneration !== undefined) {
+      assertNonNegativeInteger(snapshot.storageGeneration, "storage catalog snapshot storageGeneration");
+    }
+    if (snapshot.manifestKind !== "cas" && snapshot.manifestKind !== "filesystem") {
+      throw new Error(`invalid storage catalog snapshot manifest kind: ${snapshot.manifestKind}`);
+    }
+  }
+
+  return manifest;
+}
+
+function validateStoragePartitionBinding(binding: StoragePartitionBinding): void {
+  assertNonEmptyString(binding.partitionId, "storage binding partitionId");
+  assertPositiveInteger(binding.rootRelationOid, "storage binding rootRelationOid");
+  if (binding.snapshotScope !== "data-only" && binding.snapshotScope !== "catalog-and-data") {
+    throw new Error(`invalid storage binding snapshot scope: ${binding.snapshotScope}`);
+  }
+  if (binding.snapshotComponents !== undefined) {
+    assertSnapshotComponents(binding.snapshotComponents);
+  }
+  if (binding.pullRequires !== undefined) {
+    assertSnapshotComponents(binding.pullRequires);
+  }
+  if (binding.ddlGeneration !== undefined) {
+    assertNonNegativeInteger(binding.ddlGeneration, "storage binding ddlGeneration");
+  }
+  if (binding.storageGeneration !== undefined) {
+    assertNonNegativeInteger(binding.storageGeneration, "storage binding storageGeneration");
+  }
+  if (!Array.isArray(binding.relations) || binding.relations.length === 0) {
+    throw new Error("storage binding relations must be a non-empty array");
+  }
+
+  for (const [index, relation] of binding.relations.entries()) {
+    validateStorageRelationLocator(relation, index);
+  }
+  for (const [index, relationOid] of (binding.boundChildRelationOids ?? []).entries()) {
+    assertPositiveInteger(relationOid, `storage binding boundChildRelationOids[${index}]`);
+  }
+}
+
+function validateStorageRelationLocator(
+  relation: StorageRelationLocator,
+  index: number,
+): void {
+  assertPositiveInteger(relation.databaseOid, `storage binding relations[${index}].databaseOid`);
+  assertPositiveInteger(relation.tablespaceOid, `storage binding relations[${index}].tablespaceOid`);
+  assertPositiveInteger(relation.relationOid, `storage binding relations[${index}].relationOid`);
+  if (relation.relfilenode != null) {
+    assertPositiveInteger(relation.relfilenode, `storage binding relations[${index}].relfilenode`);
+  }
+  if (relation.storagePath != null) {
+    assertNonEmptyString(relation.storagePath, `storage binding relations[${index}].storagePath`);
+  }
+  if (
+    relation.role != null
+    && relation.role !== "root"
+    && relation.role !== "child"
+    && relation.role !== "index"
+    && relation.role !== "toast"
+    && relation.role !== "data-catalog"
+  ) {
+    throw new Error(`invalid storage binding relation role at index ${index}: ${relation.role}`);
+  }
+  if (relation.parentRelationOid != null) {
+    assertNonNegativeInteger(relation.parentRelationOid, `storage binding relations[${index}].parentRelationOid`);
+  }
+}
+
+function assertSnapshotComponents(components: unknown): asserts components is StorageSnapshotComponent[] {
+  if (!Array.isArray(components) || components.length === 0) {
+    throw new Error("snapshot catalog components must be a non-empty array");
+  }
+
+  const seen = new Set<StorageSnapshotComponent>();
+  for (const component of components) {
+    if (component !== "catalog" && component !== "data") {
+      throw new Error(`invalid snapshot catalog component: ${component}`);
+    }
+    if (seen.has(component)) {
+      throw new Error(`duplicate snapshot catalog component: ${component}`);
+    }
+    seen.add(component);
+  }
+}
+
+function assertNonEmptyString(value: unknown, name: string): asserts value is string {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error(`${name} must be a non-empty string`);
+  }
+}
+
+function assertNonNegativeInteger(value: unknown, name: string): asserts value is number {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+    throw new Error(`${name} must be a non-negative integer`);
+  }
+}
+
+function assertPositiveInteger(value: unknown, name: string): asserts value is number {
+  if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
+    throw new Error(`${name} must be a positive integer`);
+  }
 }

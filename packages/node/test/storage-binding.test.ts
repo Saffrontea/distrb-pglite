@@ -1119,6 +1119,152 @@ describe("discoverStoragePartitionBinding", () => {
     });
   }, 120_000);
 
+  it("rejects pulled storage catalog manifests with invalid snapshot summaries", async () => {
+    const root = await makeTempDir("storage-catalog-invalid-snapshot-summary");
+    const db = new PGlite(join(root, "data"));
+    const binding = {
+      partitionId: "tenant:jp",
+      rootRelationOid: 1,
+      relations: [storageRelation(1, "jp.bin")],
+      snapshotScope: "data-only" as const,
+    };
+    const manifest = {
+      version: 1 as const,
+      groupId: "sensor_readings",
+      rootRelationOid: 1,
+      ddlGeneration: 1,
+      bindings: [binding],
+      snapshots: [{
+        partitionId: "tenant:jp",
+        snapshotId: "snapshot-1",
+        components: ["data" as const],
+        ddlGeneration: 1,
+        manifestKind: "cas" as const,
+      }],
+    };
+
+    await expect(applyStorageCatalogManifest({
+      db,
+      manifest: {
+        ...manifest,
+        snapshots: [{
+          ...manifest.snapshots[0]!,
+          components: ["indexes" as never],
+        }],
+      },
+    })).rejects.toThrow("invalid snapshot catalog component: indexes");
+    await expect(applyStorageCatalogManifest({
+      db,
+      manifest: {
+        ...manifest,
+        snapshots: [{
+          ...manifest.snapshots[0]!,
+          partitionId: "tenant:missing",
+        }],
+      },
+    })).rejects.toThrow("storage catalog snapshot references unknown partition: tenant:missing");
+    await expect(applyStorageCatalogManifest({
+      db,
+      manifest: {
+        ...manifest,
+        snapshots: [{
+          ...manifest.snapshots[0]!,
+          manifestKind: "tarball" as never,
+        }],
+      },
+    })).rejects.toThrow("invalid storage catalog snapshot manifest kind: tarball");
+    await expect(applyStorageCatalogManifest({
+      db,
+      manifest: {
+        ...manifest,
+        snapshots: [{
+          ...manifest.snapshots[0]!,
+          ddlGeneration: -1,
+        }],
+      },
+    })).rejects.toThrow("storage catalog snapshot ddlGeneration must be a non-negative integer");
+
+    await db.close();
+  });
+
+  it("rejects invalid storage binding groups before saving", async () => {
+    const root = await makeTempDir("storage-binding-invalid-save");
+    const db = new PGlite(join(root, "data"));
+    const validBinding = {
+      partitionId: "tenant:jp",
+      rootRelationOid: 1,
+      relations: [storageRelation(1, "jp.bin")],
+      snapshotScope: "data-only" as const,
+    };
+
+    await expect(saveStorageBindingGroup(db, {
+      groupId: "sensor_readings",
+      rootRelationOid: 1,
+      ddlGeneration: 1,
+      bindings: [
+        validBinding,
+        { ...validBinding },
+      ],
+    })).rejects.toThrow("duplicate storage binding partitionId: tenant:jp");
+    await expect(saveStorageBindingGroup(db, {
+      groupId: "sensor_readings",
+      rootRelationOid: 1,
+      ddlGeneration: 1,
+      bindings: [{
+        ...validBinding,
+        snapshotScope: "delta" as never,
+      }],
+    })).rejects.toThrow("invalid storage binding snapshot scope: delta");
+    await expect(saveStorageBindingGroup(db, {
+      groupId: "sensor_readings",
+      rootRelationOid: 1,
+      ddlGeneration: 1,
+      bindings: [{
+        ...validBinding,
+        relations: [],
+      }],
+    })).rejects.toThrow("storage binding relations must be a non-empty array");
+    await expect(saveStorageBindingGroup(db, {
+      groupId: "sensor_readings",
+      rootRelationOid: 1,
+      ddlGeneration: -1,
+      bindings: [validBinding],
+    })).rejects.toThrow("storage binding ddlGeneration must be a non-negative integer");
+
+    await db.close();
+  });
+
+  it("rejects invalid storage bindings when loading from the catalog", async () => {
+    const root = await makeTempDir("storage-binding-invalid-load");
+    const db = new PGlite(join(root, "data"));
+
+    await saveStorageBindingGroup(db, {
+      groupId: "sensor_readings",
+      rootRelationOid: 1,
+      ddlGeneration: 1,
+      bindings: [{
+        partitionId: "tenant:jp",
+        rootRelationOid: 1,
+        relations: [storageRelation(1, "jp.bin")],
+        snapshotScope: "data-only",
+      }],
+    });
+    await db.query(
+      `
+        UPDATE distrb_storage_bindings
+        SET binding = jsonb_set(binding, '{snapshotScope}', '"delta"'::jsonb)
+        WHERE group_id = $1
+          AND partition_id = $2
+      `,
+      ["sensor_readings", "tenant:jp"],
+    );
+
+    await expect(loadStorageBindingGroup(db, "sensor_readings"))
+      .rejects.toThrow("invalid storage binding snapshot scope: delta");
+
+    await db.close();
+  });
+
   it("preserves local snapshot catalog entries when applying a pulled storage catalog manifest", async () => {
     const root = await makeTempDir("storage-catalog-preserve-snapshots");
     const db = new PGlite(join(root, "data"));
@@ -1193,6 +1339,144 @@ describe("discoverStoragePartitionBinding", () => {
       manifestKind: "cas",
       manifest: casManifest("bad-snapshot", "a".repeat(64), 1),
     })).rejects.toThrow("duplicate high-watermark source node: node-a");
+
+    await db.close();
+  });
+
+  it("rejects snapshot catalog entries with non-UUIDv7 high-watermark event ids", async () => {
+    const root = await makeTempDir("storage-catalog-invalid-hwm-event-id");
+    const db = new PGlite(join(root, "data"));
+
+    await expect(saveStorageSnapshotCatalogEntry(db, {
+      groupId: "sensor_readings",
+      partitionId: "tenant:jp",
+      snapshotId: "bad-snapshot",
+      components: ["data"],
+      highWatermark: [
+        ["node-a", "not-a-uuid"],
+      ],
+      ddlGeneration: 1,
+      manifestKind: "cas",
+      manifest: casManifest("bad-snapshot", "a".repeat(64), 1),
+    })).rejects.toThrow("invalid high-watermark event id at index 0");
+
+    await db.close();
+  });
+
+  it("rejects snapshot catalog entries with invalid control fields", async () => {
+    const root = await makeTempDir("storage-catalog-invalid-control-fields");
+    const db = new PGlite(join(root, "data"));
+
+    const baseEntry = {
+      groupId: "sensor_readings",
+      partitionId: "tenant:jp",
+      snapshotId: "bad-snapshot",
+      components: ["data"] as const,
+      highWatermark: [],
+      ddlGeneration: 1,
+      manifestKind: "cas" as const,
+      manifest: casManifest("bad-snapshot", "a".repeat(64), 1),
+    };
+
+    await expect(saveStorageSnapshotCatalogEntry(db, {
+      ...baseEntry,
+      components: [] as never,
+    })).rejects.toThrow("snapshot catalog components must be a non-empty array");
+    await expect(saveStorageSnapshotCatalogEntry(db, {
+      ...baseEntry,
+      components: ["data", "data"],
+    })).rejects.toThrow("duplicate snapshot catalog component: data");
+    await expect(saveStorageSnapshotCatalogEntry(db, {
+      ...baseEntry,
+      components: ["indexes"] as never,
+    })).rejects.toThrow("invalid snapshot catalog component: indexes");
+    await expect(saveStorageSnapshotCatalogEntry(db, {
+      ...baseEntry,
+      manifestKind: "tarball" as never,
+    })).rejects.toThrow("invalid snapshot catalog manifest kind: tarball");
+    await expect(saveStorageSnapshotCatalogEntry(db, {
+      ...baseEntry,
+      ddlGeneration: -1,
+    })).rejects.toThrow("snapshot catalog ddlGeneration must be a non-negative integer");
+
+    await db.close();
+  });
+
+  it("rejects snapshot catalog entries with invalid CAS manifests", async () => {
+    const root = await makeTempDir("storage-catalog-invalid-cas-manifest");
+    const db = new PGlite(join(root, "data"));
+
+    const baseEntry = {
+      groupId: "sensor_readings",
+      partitionId: "tenant:jp",
+      snapshotId: "bad-snapshot",
+      components: ["data"] as const,
+      highWatermark: [],
+      ddlGeneration: 1,
+      manifestKind: "cas" as const,
+      manifest: casManifest("bad-snapshot", "a".repeat(64), 1),
+    };
+
+    await expect(saveStorageSnapshotCatalogEntry(db, {
+      ...baseEntry,
+      manifest: casManifest("other-snapshot", "a".repeat(64), 1),
+    })).rejects.toThrow("CAS manifest snapshotId mismatch: other-snapshot !== bad-snapshot");
+    await expect(saveStorageSnapshotCatalogEntry(db, {
+      ...baseEntry,
+      manifest: {
+        ...baseEntry.manifest,
+        files: [{
+          ...baseEntry.manifest.files[0],
+          blocks: [{ hash: "not-a-hash", size: 1 }],
+        }],
+      },
+    })).rejects.toThrow("CAS manifest files[0].blocks[0].hash must be a 64-character lowercase sha256 hash");
+
+    await db.close();
+  });
+
+  it("rejects invalid CAS manifests when loading snapshot catalog entries", async () => {
+    const root = await makeTempDir("storage-catalog-invalid-cas-manifest-load");
+    const db = new PGlite(join(root, "data"));
+
+    await saveStorageBindingGroup(db, {
+      groupId: "sensor_readings",
+      rootRelationOid: 1,
+      ddlGeneration: 1,
+      bindings: [{
+        partitionId: "tenant:jp",
+        rootRelationOid: 1,
+        relations: [storageRelation(1, "jp.bin")],
+        snapshotScope: "data-only",
+      }],
+    });
+    await saveStorageSnapshotCatalogEntry(db, {
+      groupId: "sensor_readings",
+      partitionId: "tenant:jp",
+      snapshotId: "bad-snapshot",
+      components: ["data"],
+      highWatermark: [],
+      ddlGeneration: 1,
+      manifestKind: "cas",
+      manifest: casManifest("bad-snapshot", "a".repeat(64), 1),
+    });
+    await db.query(
+      `
+        UPDATE distrb_storage_snapshots
+        SET manifest = jsonb_set(manifest, '{snapshotId}', '"other-snapshot"'::jsonb)
+        WHERE group_id = $1
+          AND partition_id = $2
+          AND snapshot_id = $3
+      `,
+      ["sensor_readings", "tenant:jp", "bad-snapshot"],
+    );
+
+    await expect(loadStorageSnapshotCatalogEntry({
+      db,
+      groupId: "sensor_readings",
+      partitionId: "tenant:jp",
+      snapshotId: "bad-snapshot",
+    })).rejects.toThrow("CAS manifest snapshotId mismatch: other-snapshot !== bad-snapshot");
 
     await db.close();
   });

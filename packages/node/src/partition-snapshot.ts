@@ -10,7 +10,7 @@ import type {
   StoragePartitionBinding,
   StorageRelationLocator,
 } from "@distrb-pglite/core";
-import { UuidV7Factory } from "@distrb-pglite/core";
+import { isUuidV7, UuidV7Factory } from "@distrb-pglite/core";
 import {
   restoreFromCas,
   snapshotToCas,
@@ -125,7 +125,7 @@ export function validateHighWatermarkEntries(
     if (typeof nodeId !== "string" || nodeId.length === 0) {
       throw new Error(`invalid high-watermark source node at index ${index}`);
     }
-    if (typeof eventId !== "string" || eventId.length === 0) {
+    if (typeof eventId !== "string" || !isUuidV7(eventId)) {
       throw new Error(`invalid high-watermark event id at index ${index}`);
     }
     if (seen.has(nodeId)) {
