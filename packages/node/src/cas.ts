@@ -193,7 +193,7 @@ export async function gcCasBlockStore(options: {
 }): Promise<CasGcResult> {
   const referenced = new Set<string>();
   for (const manifest of options.retainedManifests) {
-    for (const file of manifest.files) {
+    for (const file of validateCasManifest(manifest).files) {
       for (const block of file.blocks) {
         referenced.add(block.hash);
       }
@@ -222,6 +222,50 @@ export async function gcCasBlockStore(options: {
   };
 }
 
+export function validateCasManifest(manifest: unknown, expectedSnapshotId?: string): CasManifest {
+  if (!isRecord(manifest)) {
+    throw new Error("CAS manifest must be an object");
+  }
+  if (manifest.version !== 1) {
+    throw new Error(`invalid CAS manifest version: ${String(manifest.version)}`);
+  }
+  assertNonEmptyString(manifest.snapshotId, "CAS manifest snapshotId");
+  if (expectedSnapshotId !== undefined && manifest.snapshotId !== expectedSnapshotId) {
+    throw new Error(`CAS manifest snapshotId mismatch: ${manifest.snapshotId} !== ${expectedSnapshotId}`);
+  }
+  assertPositiveInteger(manifest.chunkSize, "CAS manifest chunkSize");
+
+  if (!Array.isArray(manifest.parentSnapshotIds)) {
+    throw new Error("CAS manifest parentSnapshotIds must be an array");
+  }
+  for (const [index, parentSnapshotId] of manifest.parentSnapshotIds.entries()) {
+    assertNonEmptyString(parentSnapshotId, `CAS manifest parentSnapshotIds[${index}]`);
+  }
+
+  if (!Array.isArray(manifest.directories)) {
+    throw new Error("CAS manifest directories must be an array");
+  }
+  for (const [index, directory] of manifest.directories.entries()) {
+    assertNonEmptyString(directory, `CAS manifest directories[${index}]`);
+  }
+
+  if (!Array.isArray(manifest.files)) {
+    throw new Error("CAS manifest files must be an array");
+  }
+  for (const [index, file] of manifest.files.entries()) {
+    validateCasFileManifest(file, index);
+  }
+
+  if (manifest.compression !== undefined && manifest.compression !== "zstd") {
+    throw new Error(`invalid CAS manifest compression: ${String(manifest.compression)}`);
+  }
+  if (manifest.chunking !== undefined) {
+    validateCasChunking(manifest.chunking);
+  }
+
+  return manifest as CasManifest;
+}
+
 export async function restoreFromCas(options: {
   manifest: CasManifest;
   casDir: string;
@@ -239,17 +283,17 @@ export async function restoreFilesystemFromCas(options: {
   fs: SnapshotDataFilesystem;
 } & CasBlockStoreOption): Promise<void> {
   const casStore = resolveCasBlockStore(options);
-  assertPositiveInteger(options.manifest.chunkSize, "manifest chunkSize");
+  const manifest = validateCasManifest(options.manifest);
   await options.fs.mkdir("");
 
-  const zstd = options.manifest.compression === "zstd" ? await loadZstd() : undefined;
+  const zstd = manifest.compression === "zstd" ? await loadZstd() : undefined;
   const decompress = zstd ? zstd.decompress.bind(zstd) : undefined;
 
-  for (const directory of options.manifest.directories) {
+  for (const directory of manifest.directories) {
     await options.fs.mkdir(directory);
   }
 
-  for (const file of options.manifest.files) {
+  for (const file of manifest.files) {
     const chunks: Uint8Array[] = [];
     for (const block of file.blocks) {
       const stored = await casStore.readBlock(block.hash);
@@ -272,8 +316,9 @@ export function diffMissingBlocks(
   manifest: CasManifest,
   availableBlockHashes: ReadonlySet<string>,
 ): CasBlock[] {
+  const validated = validateCasManifest(manifest);
   const missing = new Map<string, CasBlock>();
-  for (const file of manifest.files) {
+  for (const file of validated.files) {
     for (const block of file.blocks) {
       if (!availableBlockHashes.has(block.hash)) {
         missing.set(block.hash, block);
@@ -308,8 +353,9 @@ export async function transferMissingBlocksBetweenStores(options: {
   targetCasStore: CasBlockStore;
   availableBlockHashes?: ReadonlySet<string>;
 }): Promise<CasBlock[]> {
+  const manifest = validateCasManifest(options.manifest);
   const available = options.availableBlockHashes ?? await options.targetCasStore.listBlockHashes();
-  const missing = diffMissingBlocks(options.manifest, available);
+  const missing = diffMissingBlocks(manifest, available);
 
   for (const block of missing) {
     const content = await options.sourceCasStore.readBlock(block.hash);
@@ -388,10 +434,91 @@ function manifestChunkSize(chunking: CasChunking): number {
   return Math.max(chunking.pageSize, Math.floor(chunking.maxChunkSize / chunking.pageSize) * chunking.pageSize);
 }
 
-function assertPositiveInteger(value: number, name: string): void {
-  if (!Number.isInteger(value) || value <= 0) {
+function validateCasFileManifest(file: unknown, index: number): void {
+  if (!isRecord(file)) {
+    throw new Error(`CAS manifest files[${index}] must be an object`);
+  }
+  assertNonEmptyString(file.path, `CAS manifest files[${index}].path`);
+  assertNonNegativeInteger(file.size, `CAS manifest files[${index}].size`);
+  assertCasBlockHash(file.sha256, `CAS manifest files[${index}].sha256`);
+  if (!Array.isArray(file.blocks)) {
+    throw new Error(`CAS manifest files[${index}].blocks must be an array`);
+  }
+  for (const [blockIndex, block] of file.blocks.entries()) {
+    validateCasBlock(block, `CAS manifest files[${index}].blocks[${blockIndex}]`);
+  }
+  if (file.components !== undefined) {
+    if (!Array.isArray(file.components) || file.components.length === 0) {
+      throw new Error(`CAS manifest files[${index}].components must be a non-empty array`);
+    }
+    const seen = new Set<StorageSnapshotComponent>();
+    for (const component of file.components) {
+      if (component !== "catalog" && component !== "data") {
+        throw new Error(`invalid CAS manifest file component: ${String(component)}`);
+      }
+      if (seen.has(component)) {
+        throw new Error(`duplicate CAS manifest file component: ${component}`);
+      }
+      seen.add(component);
+    }
+  }
+}
+
+function validateCasBlock(block: unknown, name: string): void {
+  if (!isRecord(block)) {
+    throw new Error(`${name} must be an object`);
+  }
+  assertCasBlockHash(block.hash, `${name}.hash`);
+  assertNonNegativeInteger(block.size, `${name}.size`);
+}
+
+function validateCasChunking(chunking: unknown): void {
+  if (!isRecord(chunking)) {
+    throw new Error("CAS manifest chunking must be an object");
+  }
+  if (chunking.strategy === "fixed") {
+    assertPositiveInteger(chunking.chunkSize, "CAS manifest chunking.chunkSize");
+    return;
+  }
+  if (chunking.strategy === "page-aligned") {
+    assertPositiveInteger(chunking.pageSize, "CAS manifest chunking.pageSize");
+    assertPositiveInteger(chunking.maxChunkSize, "CAS manifest chunking.maxChunkSize");
+    if (chunking.maxChunkSize < chunking.pageSize) {
+      throw new Error(
+        `CAS manifest chunking maxChunkSize must be greater than or equal to pageSize: ${chunking.maxChunkSize} < ${chunking.pageSize}`,
+      );
+    }
+    return;
+  }
+  throw new Error(`invalid CAS manifest chunking strategy: ${String(chunking.strategy)}`);
+}
+
+function assertCasBlockHash(value: unknown, name: string): asserts value is string {
+  if (typeof value !== "string" || !/^[0-9a-f]{64}$/.test(value)) {
+    throw new Error(`${name} must be a 64-character lowercase sha256 hash`);
+  }
+}
+
+function assertNonEmptyString(value: unknown, name: string): asserts value is string {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error(`${name} must be a non-empty string`);
+  }
+}
+
+function assertNonNegativeInteger(value: unknown, name: string): asserts value is number {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+    throw new Error(`${name} must be a non-negative integer`);
+  }
+}
+
+function assertPositiveInteger(value: unknown, name: string): asserts value is number {
+  if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
     throw new Error(`${name} must be a positive integer`);
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function sha256(content: Uint8Array): string {

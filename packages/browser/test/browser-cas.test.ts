@@ -4,10 +4,13 @@ import {
   BrowserPGliteCasFilesystem,
   BrowserSha256BlobStore,
   diffMissingBrowserCasBlocks,
+  gcBrowserCasBlocks,
   restoreBrowserFilesystemFromCas,
   snapshotBrowserFilesystemToCas,
   transferMissingBrowserCasBlocks,
+  validateBrowserCasManifest,
   type BrowserCasBlockStore,
+  type BrowserCasManifest,
   type BrowserSnapshotDataFilesystem,
 } from "../src/index.js";
 
@@ -164,7 +167,7 @@ describe("browser CAS helpers", () => {
       },
       casStore: new MemoryCasBlockStore(),
       fs: restoredFs,
-    })).rejects.toThrow("invalid CAS block hash: ../escape");
+    })).rejects.toThrow("browser CAS manifest files[0].blocks[0].hash must be a 64-character lowercase sha256 hash");
   });
 
   it("rejects restore manifests with invalid browser chunk sizes", async () => {
@@ -179,7 +182,36 @@ describe("browser CAS helpers", () => {
       },
       casStore: new MemoryCasBlockStore(),
       fs: new MemoryDataFilesystem(),
-    })).rejects.toThrow("manifest chunkSize must be a positive integer");
+    })).rejects.toThrow("browser CAS manifest chunkSize must be a positive integer");
+  });
+
+  it("rejects invalid browser CAS manifests before diff, transfer, and GC", async () => {
+    const valid = browserCasManifest("snapshot-1", "a".repeat(64), 1);
+    const invalidHash = {
+      ...valid,
+      files: [{
+        ...valid.files[0]!,
+        blocks: [{ hash: "not-a-hash", size: 1 }],
+      }],
+    };
+    const invalidSnapshotId = {
+      ...valid,
+      snapshotId: "snapshot-2",
+    };
+
+    expect(() => validateBrowserCasManifest(invalidSnapshotId, "snapshot-1"))
+      .toThrow("browser CAS manifest snapshotId mismatch: snapshot-2 !== snapshot-1");
+    expect(() => diffMissingBrowserCasBlocks(invalidHash, new Set()))
+      .toThrow("browser CAS manifest files[0].blocks[0].hash must be a 64-character lowercase sha256 hash");
+    await expect(transferMissingBrowserCasBlocks({
+      manifest: invalidHash,
+      sourceCasStore: new MemoryCasBlockStore(),
+      targetCasStore: new MemoryCasBlockStore(),
+    })).rejects.toThrow("browser CAS manifest files[0].blocks[0].hash must be a 64-character lowercase sha256 hash");
+    await expect(gcBrowserCasBlocks({
+      casStore: new MemoryCasBlockStore(),
+      retainedManifests: [invalidHash],
+    })).rejects.toThrow("browser CAS manifest files[0].blocks[0].hash must be a 64-character lowercase sha256 hash");
   });
 });
 
@@ -373,4 +405,21 @@ async function digest(content: Uint8Array): Promise<string> {
   return [...new Uint8Array(hash)]
     .map((byte) => byte.toString(16).padStart(2, "0"))
     .join("");
+}
+
+function browserCasManifest(snapshotId: string, hash: string, size: number): BrowserCasManifest {
+  return {
+    version: 1,
+    snapshotId,
+    parentSnapshotIds: [],
+    chunkSize: 64 * 1024,
+    directories: [],
+    files: [{
+      path: `${snapshotId}.bin`,
+      size,
+      sha256: hash,
+      components: ["data"],
+      blocks: [{ hash, size }],
+    }],
+  };
 }

@@ -7,6 +7,7 @@ export {
   restoreBrowserFilesystemFromCas,
   snapshotBrowserFilesystemToCas,
   transferMissingBrowserCasBlocks,
+  validateBrowserCasManifest,
 } from "./cas.js";
 export type {
   BrowserCasBlock,

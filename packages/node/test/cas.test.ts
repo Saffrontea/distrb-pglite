@@ -13,6 +13,8 @@ import {
   restoreFromCas,
   snapshotToCas,
   transferMissingBlocks,
+  validateCasManifest,
+  type CasManifest,
 } from "../src/index.js";
 import { makeTempDir } from "./temp-dir.js";
 
@@ -207,7 +209,7 @@ describe("CAS snapshots", () => {
       },
       casDir: join(root, "cas"),
       targetDir,
-    })).rejects.toThrow("invalid CAS block hash: ../escape");
+    })).rejects.toThrow("CAS manifest files[0].blocks[0].hash must be a 64-character lowercase sha256 hash");
   });
 
   it("rejects restore manifests with invalid chunk sizes", async () => {
@@ -224,7 +226,37 @@ describe("CAS snapshots", () => {
       },
       casDir: join(root, "cas"),
       targetDir: join(root, "restore"),
-    })).rejects.toThrow("manifest chunkSize must be a positive integer");
+    })).rejects.toThrow("CAS manifest chunkSize must be a positive integer");
+  });
+
+  it("rejects invalid CAS manifests before diff, transfer, and GC", async () => {
+    const root = await makeTempDir("cas-invalid-direct-api");
+    const valid = casManifest("snapshot-1", "a".repeat(64), 1);
+    const invalidHash = {
+      ...valid,
+      files: [{
+        ...valid.files[0]!,
+        blocks: [{ hash: "not-a-hash", size: 1 }],
+      }],
+    };
+    const invalidSnapshotId = {
+      ...valid,
+      snapshotId: "snapshot-2",
+    };
+
+    expect(() => validateCasManifest(invalidSnapshotId, "snapshot-1"))
+      .toThrow("CAS manifest snapshotId mismatch: snapshot-2 !== snapshot-1");
+    expect(() => diffMissingBlocks(invalidHash, new Set()))
+      .toThrow("CAS manifest files[0].blocks[0].hash must be a 64-character lowercase sha256 hash");
+    await expect(transferMissingBlocks({
+      manifest: invalidHash,
+      sourceCasDir: join(root, "source-cas"),
+      targetCasDir: join(root, "target-cas"),
+    })).rejects.toThrow("CAS manifest files[0].blocks[0].hash must be a 64-character lowercase sha256 hash");
+    await expect(gcCasBlocks({
+      casDir: join(root, "cas"),
+      retainedManifests: [invalidHash],
+    })).rejects.toThrow("CAS manifest files[0].blocks[0].hash must be a 64-character lowercase sha256 hash");
   });
 
   it("transfers only missing blocks between parented snapshots and restores a readable PGlite data directory", async () => {
@@ -337,4 +369,21 @@ describe("CAS snapshots", () => {
 
 function sha256(content: Uint8Array): string {
   return createHash("sha256").update(content).digest("hex");
+}
+
+function casManifest(snapshotId: string, hash: string, size: number): CasManifest {
+  return {
+    version: 1,
+    snapshotId,
+    parentSnapshotIds: [],
+    chunkSize: 64 * 1024,
+    directories: [],
+    files: [{
+      path: `${snapshotId}.bin`,
+      size,
+      sha256: hash,
+      components: ["data"],
+      blocks: [{ hash, size }],
+    }],
+  };
 }

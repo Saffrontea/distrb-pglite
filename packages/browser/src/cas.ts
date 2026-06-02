@@ -143,14 +143,14 @@ export async function restoreBrowserFilesystemFromCas(options: {
   casStore: BrowserCasBlockStore;
   fs: BrowserSnapshotDataFilesystem;
 }): Promise<void> {
-  assertPositiveInteger(options.manifest.chunkSize, "manifest chunkSize");
+  const manifest = validateBrowserCasManifest(options.manifest);
   await options.fs.mkdir("");
-  for (const directory of options.manifest.directories) {
+  for (const directory of manifest.directories) {
     validateBrowserLogicalPath(directory);
     await options.fs.mkdir(directory);
   }
 
-  for (const file of options.manifest.files) {
+  for (const file of manifest.files) {
     validateBrowserLogicalPath(file.path);
     if (options.fs.writeFileChunks) {
       const chunks: Uint8Array[] = [];
@@ -182,8 +182,9 @@ export function diffMissingBrowserCasBlocks(
   manifest: BrowserCasManifest,
   availableBlockHashes: ReadonlySet<string>,
 ): BrowserCasBlock[] {
+  const validated = validateBrowserCasManifest(manifest);
   const missing = new Map<string, BrowserCasBlock>();
-  for (const file of manifest.files) {
+  for (const file of validated.files) {
     for (const block of file.blocks) {
       if (!availableBlockHashes.has(block.hash)) {
         missing.set(block.hash, block);
@@ -199,8 +200,9 @@ export async function transferMissingBrowserCasBlocks(options: {
   targetCasStore: BrowserCasBlockStore;
   availableBlockHashes?: ReadonlySet<string>;
 }): Promise<BrowserCasBlock[]> {
+  const manifest = validateBrowserCasManifest(options.manifest);
   const available = options.availableBlockHashes ?? await options.targetCasStore.listBlockHashes();
-  const missing = diffMissingBrowserCasBlocks(options.manifest, available);
+  const missing = diffMissingBrowserCasBlocks(manifest, available);
 
   for (const block of missing) {
     const content = await options.sourceCasStore.readBlock(block.hash);
@@ -220,7 +222,7 @@ export async function gcBrowserCasBlocks(options: {
 }): Promise<BrowserCasGcResult> {
   const referenced = new Set<string>();
   for (const manifest of options.retainedManifests) {
-    for (const file of manifest.files) {
+    for (const file of validateBrowserCasManifest(manifest).files) {
       for (const block of file.blocks) {
         referenced.add(block.hash);
       }
@@ -247,6 +249,47 @@ export async function gcBrowserCasBlocks(options: {
     deleted,
     retained,
   };
+}
+
+export function validateBrowserCasManifest(manifest: unknown, expectedSnapshotId?: string): BrowserCasManifest {
+  if (!isRecord(manifest)) {
+    throw new Error("browser CAS manifest must be an object");
+  }
+  if (manifest.version !== 1) {
+    throw new Error(`invalid browser CAS manifest version: ${String(manifest.version)}`);
+  }
+  assertNonEmptyString(manifest.snapshotId, "browser CAS manifest snapshotId");
+  if (expectedSnapshotId !== undefined && manifest.snapshotId !== expectedSnapshotId) {
+    throw new Error(`browser CAS manifest snapshotId mismatch: ${manifest.snapshotId} !== ${expectedSnapshotId}`);
+  }
+  assertPositiveInteger(manifest.chunkSize, "browser CAS manifest chunkSize");
+
+  if (!Array.isArray(manifest.parentSnapshotIds)) {
+    throw new Error("browser CAS manifest parentSnapshotIds must be an array");
+  }
+  for (const [index, parentSnapshotId] of manifest.parentSnapshotIds.entries()) {
+    assertNonEmptyString(parentSnapshotId, `browser CAS manifest parentSnapshotIds[${index}]`);
+  }
+
+  if (!Array.isArray(manifest.directories)) {
+    throw new Error("browser CAS manifest directories must be an array");
+  }
+  for (const [index, directory] of manifest.directories.entries()) {
+    assertNonEmptyString(directory, `browser CAS manifest directories[${index}]`);
+  }
+
+  if (!Array.isArray(manifest.files)) {
+    throw new Error("browser CAS manifest files must be an array");
+  }
+  for (const [index, file] of manifest.files.entries()) {
+    validateBrowserCasFileManifest(file, index);
+  }
+
+  if (manifest.chunking !== undefined) {
+    validateBrowserCasChunking(manifest.chunking);
+  }
+
+  return manifest as BrowserCasManifest;
 }
 
 export function browserManifestFilesEqualInventory(
@@ -312,16 +355,91 @@ function manifestChunkSize(chunking: BrowserCasChunking): number {
   return Math.max(chunking.pageSize, Math.floor(chunking.maxChunkSize / chunking.pageSize) * chunking.pageSize);
 }
 
-function assertPositiveInteger(value: number, name: string): void {
-  if (!Number.isInteger(value) || value <= 0) {
+function validateBrowserCasFileManifest(file: unknown, index: number): void {
+  if (!isRecord(file)) {
+    throw new Error(`browser CAS manifest files[${index}] must be an object`);
+  }
+  assertNonEmptyString(file.path, `browser CAS manifest files[${index}].path`);
+  assertNonNegativeInteger(file.size, `browser CAS manifest files[${index}].size`);
+  assertCasBlockHash(file.sha256, `browser CAS manifest files[${index}].sha256`);
+  if (!Array.isArray(file.blocks)) {
+    throw new Error(`browser CAS manifest files[${index}].blocks must be an array`);
+  }
+  for (const [blockIndex, block] of file.blocks.entries()) {
+    validateBrowserCasBlock(block, `browser CAS manifest files[${index}].blocks[${blockIndex}]`);
+  }
+  if (file.components !== undefined) {
+    if (!Array.isArray(file.components) || file.components.length === 0) {
+      throw new Error(`browser CAS manifest files[${index}].components must be a non-empty array`);
+    }
+    const seen = new Set<StorageSnapshotComponent>();
+    for (const component of file.components) {
+      if (component !== "catalog" && component !== "data") {
+        throw new Error(`invalid browser CAS manifest file component: ${String(component)}`);
+      }
+      if (seen.has(component)) {
+        throw new Error(`duplicate browser CAS manifest file component: ${component}`);
+      }
+      seen.add(component);
+    }
+  }
+}
+
+function validateBrowserCasBlock(block: unknown, name: string): void {
+  if (!isRecord(block)) {
+    throw new Error(`${name} must be an object`);
+  }
+  assertCasBlockHash(block.hash, `${name}.hash`);
+  assertNonNegativeInteger(block.size, `${name}.size`);
+}
+
+function validateBrowserCasChunking(chunking: unknown): void {
+  if (!isRecord(chunking)) {
+    throw new Error("browser CAS manifest chunking must be an object");
+  }
+  if (chunking.strategy === "fixed") {
+    assertPositiveInteger(chunking.chunkSize, "browser CAS manifest chunking.chunkSize");
+    return;
+  }
+  if (chunking.strategy === "page-aligned") {
+    assertPositiveInteger(chunking.pageSize, "browser CAS manifest chunking.pageSize");
+    assertPositiveInteger(chunking.maxChunkSize, "browser CAS manifest chunking.maxChunkSize");
+    if (chunking.maxChunkSize < chunking.pageSize) {
+      throw new Error(
+        `browser CAS manifest chunking maxChunkSize must be greater than or equal to pageSize: ${chunking.maxChunkSize} < ${chunking.pageSize}`,
+      );
+    }
+    return;
+  }
+  throw new Error(`invalid browser CAS manifest chunking strategy: ${String(chunking.strategy)}`);
+}
+
+function assertPositiveInteger(value: unknown, name: string): asserts value is number {
+  if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
     throw new Error(`${name} must be a positive integer`);
   }
 }
 
-function assertCasBlockHash(hash: string): void {
-  if (!/^[0-9a-f]{64}$/.test(hash)) {
-    throw new Error(`invalid CAS block hash: ${hash}`);
+function assertNonNegativeInteger(value: unknown, name: string): asserts value is number {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+    throw new Error(`${name} must be a non-negative integer`);
   }
+}
+
+function assertNonEmptyString(value: unknown, name: string): asserts value is string {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error(`${name} must be a non-empty string`);
+  }
+}
+
+function assertCasBlockHash(hash: unknown, name = "CAS block hash"): asserts hash is string {
+  if (typeof hash !== "string" || !/^[0-9a-f]{64}$/.test(hash)) {
+    throw new Error(`${name} must be a 64-character lowercase sha256 hash`);
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function selectedDirectories(

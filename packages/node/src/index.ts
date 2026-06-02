@@ -31,6 +31,7 @@ export {
   snapshotToCas,
   transferMissingBlocks,
   transferMissingBlocksBetweenStores,
+  validateCasManifest,
 } from "./cas.js";
 export type {
   CasBlock,
