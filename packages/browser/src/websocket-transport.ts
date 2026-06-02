@@ -401,7 +401,9 @@ function waitForOpen(socket: WebSocket): Promise<void> {
 
 function decodeMessage(data: MessageEvent["data"]): WireMessage {
   if (typeof data === "string") {
-    return JSON.parse(data) as WireMessage;
+    const message = JSON.parse(data);
+    assertKnownWireMessage(message);
+    return message;
   }
   throw new Error("binary browser websocket messages are not supported");
 }
@@ -417,6 +419,24 @@ function clampTimeout(ms: number): number {
 function assertValidRequestId(requestId: unknown): asserts requestId is string {
   if (typeof requestId !== "string" || requestId.length === 0) {
     throw new Error("requestId must be a non-empty string");
+  }
+}
+
+function assertKnownWireMessage(message: unknown): asserts message is WireMessage {
+  if (typeof message !== "object" || message === null || !("type" in message)) {
+    throw new Error("wire message must be an object with a type");
+  }
+  switch ((message as { type: unknown }).type) {
+    case "hello":
+    case "subscribe":
+    case "ping":
+    case "pong":
+    case "event":
+    case "replay-request":
+    case "replay-response":
+      return;
+    default:
+      throw new Error(`unknown wire message type: ${String((message as { type: unknown }).type)}`);
   }
 }
 

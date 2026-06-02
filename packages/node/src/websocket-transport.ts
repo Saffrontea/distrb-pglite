@@ -98,6 +98,9 @@ export class WebSocketHub {
         try {
           const message = await this.decode(data as Buffer);
           if (message.type === "hello") {
+            if (record) {
+              throw new Error(`hello already received for socket: ${record.nodeId}`);
+            }
             assertValidNodeId(message.nodeId);
             record = {
               nodeId: message.nodeId,
@@ -265,11 +268,19 @@ export class WebSocketHub {
   }
 
   private async decode(data: Buffer): Promise<WireMessage> {
+    const message = this.compress
+      ? await this.decodeCompressed(data)
+      : JSON.parse(data.toString());
+    assertKnownWireMessage(message);
+    return message;
+  }
+
+  private async decodeCompressed(data: Buffer): Promise<unknown> {
     if (this.compress) {
       const zstd = await loadZstd();
-      return JSON.parse(Buffer.from(zstd.decompress(new Uint8Array(data))).toString()) as WireMessage;
+      return JSON.parse(Buffer.from(zstd.decompress(new Uint8Array(data))).toString());
     }
-    return JSON.parse(data.toString()) as WireMessage;
+    return JSON.parse(data.toString());
   }
 }
 export type WebSocketTransportReconnectOptions = {
@@ -480,10 +491,11 @@ class WebSocketTransportConnection implements TransportConnection {
   }
 
   private decode(data: Buffer): WireMessage {
-    if (this.zstd) {
-      return JSON.parse(Buffer.from(this.zstd.decompress(new Uint8Array(data))).toString()) as WireMessage;
-    }
-    return JSON.parse(data.toString()) as WireMessage;
+    const message = this.zstd
+      ? JSON.parse(Buffer.from(this.zstd.decompress(new Uint8Array(data))).toString())
+      : JSON.parse(data.toString());
+    assertKnownWireMessage(message);
+    return message;
   }
 
   private async handleMessage(message: WireMessage): Promise<void> {
@@ -638,6 +650,24 @@ function clampTimeout(ms: number): number {
 function assertValidRequestId(requestId: unknown): asserts requestId is string {
   if (typeof requestId !== "string" || requestId.length === 0) {
     throw new Error("requestId must be a non-empty string");
+  }
+}
+
+function assertKnownWireMessage(message: unknown): asserts message is WireMessage {
+  if (typeof message !== "object" || message === null || !("type" in message)) {
+    throw new Error("wire message must be an object with a type");
+  }
+  switch ((message as { type: unknown }).type) {
+    case "hello":
+    case "subscribe":
+    case "ping":
+    case "pong":
+    case "event":
+    case "replay-request":
+    case "replay-response":
+      return;
+    default:
+      throw new Error(`unknown wire message type: ${String((message as { type: unknown }).type)}`);
   }
 }
 

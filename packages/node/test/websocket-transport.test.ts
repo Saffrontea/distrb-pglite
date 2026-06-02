@@ -472,6 +472,28 @@ describe("WebSocketTransport (Hub 固有)", () => {
     }
   });
 
+  it("closes raw clients that try to replace their hello identity on the same socket", async () => {
+    const port = await getFreePort();
+    if (port === undefined) return;
+
+    const hub = new WebSocketHub({ port });
+    hubs.push(hub);
+    const socket = await rawClient(`ws://127.0.0.1:${port}`, "node-a");
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      socket.send(JSON.stringify({ type: "hello", nodeId: "node-b" }));
+
+      await expect(waitForSocketCloseCode(socket)).resolves.toBe(1003);
+      expect(errorSpy).toHaveBeenCalledWith(
+        "[websocket-hub] message decode error",
+        expect.any(Error),
+      );
+    } finally {
+      errorSpy.mockRestore();
+      socket.terminate();
+    }
+  });
+
   it("closes raw clients that send an empty hello node id", async () => {
     const port = await getFreePort();
     if (port === undefined) return;
@@ -666,6 +688,28 @@ describe("WebSocketTransport (Hub 固有)", () => {
     }
   });
 
+  it("closes raw clients that send unknown message types after hello", async () => {
+    const port = await getFreePort();
+    if (port === undefined) return;
+
+    const hub = new WebSocketHub({ port });
+    hubs.push(hub);
+    const socket = await rawClient(`ws://127.0.0.1:${port}`, "node-a");
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      socket.send(JSON.stringify({ type: "mystery", value: 1 }));
+
+      await expect(waitForSocketCloseCode(socket)).resolves.toBe(1003);
+      expect(errorSpy).toHaveBeenCalledWith(
+        "[websocket-hub] message decode error",
+        expect.any(Error),
+      );
+    } finally {
+      errorSpy.mockRestore();
+      socket.terminate();
+    }
+  });
+
   it("captures malformed server messages without throwing from the client listener", async () => {
     const port = await getFreePort();
     if (port === undefined) return;
@@ -682,6 +726,39 @@ describe("WebSocketTransport (Hub 固有)", () => {
       const serverSocket = await accepted;
 
       serverSocket.send("{");
+
+      await waitFor(async () => {
+        expect(errorSpy).toHaveBeenCalledWith(
+          "[websocket] message handling error",
+          expect.any(Error),
+        );
+      });
+
+      await connection.close();
+    } finally {
+      errorSpy.mockRestore();
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => error ? reject(error) : resolve());
+      });
+    }
+  });
+
+  it("captures unknown server message types without ignoring them", async () => {
+    const port = await getFreePort();
+    if (port === undefined) return;
+
+    const server = new WebSocketServer({ port });
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const accepted = new Promise<WebSocket>((resolve) => {
+        server.once("connection", resolve);
+      });
+      const connection = await new WebSocketTransport(`ws://127.0.0.1:${port}`).connect("node-a", {
+        onEvent: () => {},
+      });
+      const serverSocket = await accepted;
+
+      serverSocket.send(JSON.stringify({ type: "mystery", value: 1 }));
 
       await waitFor(async () => {
         expect(errorSpy).toHaveBeenCalledWith(

@@ -242,6 +242,27 @@ describe("BrowserWebSocketTransport", () => {
     }
   });
 
+  it("captures unknown server message types without ignoring them", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const transport = new BrowserWebSocketTransport("ws://relay.test");
+      const connected = transport.connect("browser-a", { onEvent: vi.fn() });
+      const socket = FakeWebSocket.instances[0]!;
+      socket.open();
+      await connected;
+
+      socket.receive({ type: "mystery", value: 1 });
+      await Promise.resolve();
+
+      expect(errorSpy).toHaveBeenCalledWith(
+        "[browser-websocket] message handling error",
+        expect.any(Error),
+      );
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   it("resubscribes and reports reconnect after a browser socket reconnect", async () => {
     const onReconnect = vi.fn();
     const transport = new BrowserWebSocketTransport({
