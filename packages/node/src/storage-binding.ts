@@ -1767,14 +1767,15 @@ export async function runStorageCasGcFromCatalog(options: {
   activeStorageGenerations?: StorageGcPlanOptions["activeStorageGenerations"];
   dryRun?: boolean;
 }): Promise<StorageCasGcExecution | undefined> {
-  const group = await loadStorageBindingGroup(options.db, options.groupId);
-  if (!group) {
-    return undefined;
-  }
-  const plan = planStorageGc(group, {
+  const plan = await planStorageGcFromCatalog({
+    db: options.db,
+    groupId: options.groupId,
     activePullGenerations: options.activePullGenerations,
     activeStorageGenerations: options.activeStorageGenerations,
   });
+  if (!plan) {
+    return undefined;
+  }
 
   const entries = await listStorageSnapshotCatalogEntries<CasManifest>({
     db: options.db,
@@ -2184,7 +2185,7 @@ function validateStorageBindingGroup(group: StorageBindingGroup): void {
   }
 }
 
-function validateStorageCatalogManifest(manifest: StorageCatalogManifest): StorageCatalogManifest {
+export function validateStorageCatalogManifest(manifest: StorageCatalogManifest): StorageCatalogManifest {
   if (manifest.version !== 1) {
     throw new Error(`invalid storage catalog manifest version: ${manifest.version}`);
   }

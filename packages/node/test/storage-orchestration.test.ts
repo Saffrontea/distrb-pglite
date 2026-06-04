@@ -7,6 +7,7 @@ import {
   bindStoragePartition,
   createManagedPartitionCasSnapshot,
   createStorageBindingGroup,
+  loadStorageBindingGroup,
   listStorageSnapshotCatalogEntries,
   PGlitePartitionStore,
   pullPartitionCasSnapshot,
@@ -102,7 +103,10 @@ describe("storage orchestration", () => {
     await mkdir(sourceCasDir, { recursive: true });
     const content = Buffer.from("snapshot payload");
     const hash = sha256(content);
+    const catalogContent = Buffer.from("catalog payload");
+    const catalogHash = sha256(catalogContent);
     await writeFile(join(sourceCasDir, hash), content);
+    await writeFile(join(sourceCasDir, catalogHash), catalogContent);
 
     const targetDb = new PGlite(join(root, "catalog"));
     const catalogManifest = {
@@ -136,20 +140,7 @@ describe("storage orchestration", () => {
         manifestKind: "cas" as const,
       }],
     };
-    const manifest: CasManifest = {
-      version: 1,
-      snapshotId: "newer",
-      parentSnapshotIds: [],
-      chunkSize: 64 * 1024,
-      directories: [],
-      files: [{
-        path: "payload.txt",
-        size: content.length,
-        sha256: hash,
-        components: ["data"],
-        blocks: [{ hash, size: content.length }],
-      }],
-    };
+    const manifest = manifestForCatalogAndDataPayload("newer", content, hash, catalogContent, catalogHash);
 
     const pulled = await pullPartitionCasSnapshot({
       db: targetDb,
@@ -175,10 +166,116 @@ describe("storage orchestration", () => {
     await targetDb.close();
 
     expect(pulled).toMatchObject({
-      transferredBlocks: 1,
+      transferredBlocks: 2,
       entry: { snapshotId: "newer" },
     });
     expect(restored).toBe("snapshot payload");
+  }, 120_000);
+
+  it("does not pull snapshot entries that are not advertised by the applied catalog manifest", async () => {
+    const root = await makeTempDir("managed-pull-unadvertised-snapshot");
+    const sourceCasDir = join(root, "source-cas");
+    const targetCasDir = join(root, "target-cas");
+    const targetDir = join(root, "target");
+    await mkdir(sourceCasDir, { recursive: true });
+    const advertisedContent = Buffer.from("advertised snapshot");
+    const advertisedHash = sha256(advertisedContent);
+    const advertisedCatalogContent = Buffer.from("advertised catalog");
+    const advertisedCatalogHash = sha256(advertisedCatalogContent);
+    const unadvertisedContent = Buffer.from("unadvertised snapshot");
+    const unadvertisedHash = sha256(unadvertisedContent);
+    const unadvertisedCatalogContent = Buffer.from("unadvertised catalog");
+    const unadvertisedCatalogHash = sha256(unadvertisedCatalogContent);
+    await writeFile(join(sourceCasDir, advertisedHash), advertisedContent);
+    await writeFile(join(sourceCasDir, advertisedCatalogHash), advertisedCatalogContent);
+    await writeFile(join(sourceCasDir, unadvertisedHash), unadvertisedContent);
+    await writeFile(join(sourceCasDir, unadvertisedCatalogHash), unadvertisedCatalogContent);
+
+    const targetDb = new PGlite(join(root, "catalog"));
+    const catalogManifest = {
+      version: 1 as const,
+      groupId: "files",
+      rootRelationOid: 1,
+      ddlGeneration: 2,
+      bindings: [{
+        partitionId: "tenant:jp",
+        rootRelationOid: 1,
+        boundChildRelationOids: [1],
+        relations: [{
+          databaseOid: 1,
+          tablespaceOid: 1,
+          relationOid: 1,
+          relfilenode: 1,
+          storagePath: "payload.txt",
+          role: "child" as const,
+          parentRelationOid: 1,
+        }],
+        snapshotScope: "catalog-and-data" as const,
+        snapshotComponents: ["catalog" as const, "data" as const],
+        pullRequires: ["catalog" as const, "data" as const],
+        ddlGeneration: 2,
+      }],
+      snapshots: [{
+        partitionId: "tenant:jp",
+        snapshotId: "advertised",
+        components: ["catalog" as const, "data" as const],
+        ddlGeneration: 2,
+        manifestKind: "cas" as const,
+      }],
+    };
+
+    const pulled = await pullPartitionCasSnapshot({
+      db: targetDb,
+      catalogManifest,
+      snapshotEntries: [
+        {
+          groupId: "files",
+          partitionId: "tenant:jp",
+          snapshotId: "zz-unadvertised",
+          components: ["catalog", "data"],
+          highWatermark: [],
+          ddlGeneration: 2,
+          manifestKind: "cas",
+          manifest: manifestForCatalogAndDataPayload(
+            "zz-unadvertised",
+            unadvertisedContent,
+            unadvertisedHash,
+            unadvertisedCatalogContent,
+            unadvertisedCatalogHash,
+          ),
+        },
+        {
+          groupId: "files",
+          partitionId: "tenant:jp",
+          snapshotId: "advertised",
+          components: ["catalog", "data"],
+          highWatermark: [],
+          ddlGeneration: 2,
+          manifestKind: "cas",
+          manifest: manifestForCatalogAndDataPayload(
+            "advertised",
+            advertisedContent,
+            advertisedHash,
+            advertisedCatalogContent,
+            advertisedCatalogHash,
+          ),
+        },
+      ],
+      groupId: "files",
+      partitionId: "tenant:jp",
+      requirement: "bootstrap",
+      sourceCasDir,
+      targetCasDir,
+      targetDir,
+    });
+    const restored = await readFile(join(targetDir, "payload.txt"), "utf8");
+    await targetDb.close();
+
+    expect(pulled).toMatchObject({
+      transferredBlocks: 2,
+      entry: { snapshotId: "advertised" },
+    });
+    expect(restored).toBe("advertised snapshot");
   }, 120_000);
 
   it("rejects data-only pulls when the target storage binding is on a different DDL generation", async () => {
@@ -235,6 +332,235 @@ describe("storage orchestration", () => {
     })).rejects.toThrow("storage binding DDL generation mismatch");
   });
 
+  it("rejects pull snapshot entries whose CAS manifest belongs to another snapshot", async () => {
+    const root = await makeTempDir("managed-pull-manifest-id-mismatch");
+    const targetCasDir = join(root, "target-cas");
+    const targetDir = join(root, "target");
+    const content = Buffer.from("snapshot payload");
+    const hash = sha256(content);
+
+    await expect(pullPartitionCasSnapshot({
+      snapshotEntries: [{
+        groupId: "files",
+        partitionId: "tenant:jp",
+        snapshotId: "advertised",
+        components: ["data"],
+        highWatermark: [],
+        ddlGeneration: 2,
+        manifestKind: "cas",
+        manifest: manifestForPayload("different", content, hash),
+      }],
+      groupId: "files",
+      partitionId: "tenant:jp",
+      requirement: "data-refresh",
+      targetCasDir,
+      targetDir,
+      storageBinding: {
+        partitionId: "tenant:jp",
+        rootRelationOid: 1,
+        relations: [{
+          databaseOid: 1,
+          tablespaceOid: 1,
+          relationOid: 1,
+          relfilenode: 1,
+          storagePath: "payload.txt",
+          role: "child",
+        }],
+        snapshotScope: "data-only",
+        ddlGeneration: 2,
+      },
+    })).rejects.toThrow("CAS manifest snapshotId mismatch");
+  });
+
+  it("does not apply a pulled catalog manifest when snapshot entry validation fails", async () => {
+    const root = await makeTempDir("managed-pull-invalid-entry-no-catalog-side-effect");
+    const targetDb = new PGlite(join(root, "catalog"));
+    const targetCasDir = join(root, "target-cas");
+    const targetDir = join(root, "target");
+    const content = Buffer.from("snapshot payload");
+    const hash = sha256(content);
+    const catalogManifest = {
+      version: 1 as const,
+      groupId: "files",
+      rootRelationOid: 1,
+      ddlGeneration: 2,
+      bindings: [{
+        partitionId: "tenant:jp",
+        rootRelationOid: 1,
+        boundChildRelationOids: [1],
+        relations: [{
+          databaseOid: 1,
+          tablespaceOid: 1,
+          relationOid: 1,
+          relfilenode: 1,
+          storagePath: "payload.txt",
+          role: "child" as const,
+          parentRelationOid: 1,
+        }],
+        snapshotScope: "data-only" as const,
+        ddlGeneration: 2,
+      }],
+      snapshots: [{
+        partitionId: "tenant:jp",
+        snapshotId: "advertised",
+        components: ["data" as const],
+        ddlGeneration: 2,
+        manifestKind: "cas" as const,
+      }],
+    };
+
+    await expect(pullPartitionCasSnapshot({
+      db: targetDb,
+      catalogManifest,
+      snapshotEntries: [{
+        groupId: "files",
+        partitionId: "tenant:jp",
+        snapshotId: "advertised",
+        components: ["data"],
+        highWatermark: [],
+        ddlGeneration: 2,
+        manifestKind: "cas",
+        manifest: manifestForPayload("different", content, hash),
+      }],
+      groupId: "files",
+      partitionId: "tenant:jp",
+      requirement: "data-refresh",
+      targetCasDir,
+      targetDir,
+    })).rejects.toThrow("CAS manifest snapshotId mismatch");
+
+    await expect(loadStorageBindingGroup(targetDb, "files")).resolves.toBeUndefined();
+    await targetDb.close();
+  });
+
+  it("rejects pull snapshot entries whose components are not present in the CAS manifest", async () => {
+    const root = await makeTempDir("managed-pull-manifest-component-mismatch");
+    const targetCasDir = join(root, "target-cas");
+    const targetDir = join(root, "target");
+    const content = Buffer.from("snapshot payload");
+    const hash = sha256(content);
+
+    await expect(pullPartitionCasSnapshot({
+      snapshotEntries: [{
+        groupId: "files",
+        partitionId: "tenant:jp",
+        snapshotId: "bootstrap",
+        components: ["catalog", "data"],
+        highWatermark: [],
+        ddlGeneration: 2,
+        manifestKind: "cas",
+        manifest: manifestForPayload("bootstrap", content, hash),
+      }],
+      groupId: "files",
+      partitionId: "tenant:jp",
+      requirement: "bootstrap",
+      targetCasDir,
+      targetDir,
+      storageBinding: {
+        partitionId: "tenant:jp",
+        rootRelationOid: 1,
+        relations: [{
+          databaseOid: 1,
+          tablespaceOid: 1,
+          relationOid: 1,
+          relfilenode: 1,
+          storagePath: "payload.txt",
+          role: "child",
+        }],
+        snapshotScope: "catalog-and-data",
+        ddlGeneration: 2,
+      },
+    })).rejects.toThrow("snapshot entry component is not present in CAS manifest");
+  });
+
+  it("rejects pull snapshot entries whose CAS manifest contains components not advertised by the entry", async () => {
+    const root = await makeTempDir("managed-pull-manifest-extra-component");
+    const targetCasDir = join(root, "target-cas");
+    const targetDir = join(root, "target");
+    const content = Buffer.from("snapshot payload");
+    const hash = sha256(content);
+    const catalogContent = Buffer.from("catalog payload");
+    const catalogHash = sha256(catalogContent);
+
+    await expect(pullPartitionCasSnapshot({
+      snapshotEntries: [{
+        groupId: "files",
+        partitionId: "tenant:jp",
+        snapshotId: "data-only-advertised",
+        components: ["data"],
+        highWatermark: [],
+        ddlGeneration: 2,
+        manifestKind: "cas",
+        manifest: manifestForCatalogAndDataPayload(
+          "data-only-advertised",
+          content,
+          hash,
+          catalogContent,
+          catalogHash,
+        ),
+      }],
+      groupId: "files",
+      partitionId: "tenant:jp",
+      requirement: "data-refresh",
+      targetCasDir,
+      targetDir,
+      storageBinding: {
+        partitionId: "tenant:jp",
+        rootRelationOid: 1,
+        relations: [{
+          databaseOid: 1,
+          tablespaceOid: 1,
+          relationOid: 1,
+          relfilenode: 1,
+          storagePath: "payload.txt",
+          role: "child",
+        }],
+        snapshotScope: "data-only",
+        ddlGeneration: 2,
+      },
+    })).rejects.toThrow("CAS manifest component is not advertised by snapshot entry");
+  });
+
+  it("rejects pull snapshot entries with invalid high-watermarks before restore", async () => {
+    const root = await makeTempDir("managed-pull-invalid-high-watermark");
+    const targetCasDir = join(root, "target-cas");
+    const targetDir = join(root, "target");
+    const content = Buffer.from("snapshot payload");
+    const hash = sha256(content);
+
+    await expect(pullPartitionCasSnapshot({
+      snapshotEntries: [{
+        groupId: "files",
+        partitionId: "tenant:jp",
+        snapshotId: "invalid-hwm",
+        components: ["data"],
+        highWatermark: [["node-a", "not-a-uuid"]],
+        ddlGeneration: 2,
+        manifestKind: "cas",
+        manifest: manifestForPayload("invalid-hwm", content, hash),
+      }],
+      groupId: "files",
+      partitionId: "tenant:jp",
+      requirement: "data-refresh",
+      targetCasDir,
+      targetDir,
+      storageBinding: {
+        partitionId: "tenant:jp",
+        rootRelationOid: 1,
+        relations: [{
+          databaseOid: 1,
+          tablespaceOid: 1,
+          relationOid: 1,
+          relfilenode: 1,
+          storagePath: "payload.txt",
+          role: "child",
+        }],
+        snapshotScope: "data-only",
+        ddlGeneration: 2,
+      },
+    })).rejects.toThrow("invalid high-watermark event id");
+  });
+
   it("skips incompatible newer pull snapshots when an older compatible entry exists", async () => {
     const root = await makeTempDir("managed-pull-compatible-fallback");
     const sourceCasDir = join(root, "source-cas");
@@ -243,7 +569,10 @@ describe("storage orchestration", () => {
     await mkdir(sourceCasDir, { recursive: true });
     const compatibleContent = Buffer.from("compatible snapshot");
     const compatibleHash = sha256(compatibleContent);
+    const compatibleCatalogContent = Buffer.from("compatible catalog");
+    const compatibleCatalogHash = sha256(compatibleCatalogContent);
     await writeFile(join(sourceCasDir, compatibleHash), compatibleContent);
+    await writeFile(join(sourceCasDir, compatibleCatalogHash), compatibleCatalogContent);
     const incompatibleContent = Buffer.from("incompatible snapshot");
     const incompatibleHash = sha256(incompatibleContent);
 
@@ -267,7 +596,13 @@ describe("storage orchestration", () => {
           highWatermark: [],
           ddlGeneration: 2,
           manifestKind: "cas",
-          manifest: manifestForPayload("compatible-older", compatibleContent, compatibleHash),
+          manifest: manifestForCatalogAndDataPayload(
+            "compatible-older",
+            compatibleContent,
+            compatibleHash,
+            compatibleCatalogContent,
+            compatibleCatalogHash,
+          ),
         },
       ],
       groupId: "files",
@@ -294,7 +629,7 @@ describe("storage orchestration", () => {
     const restored = await readFile(join(targetDir, "payload.txt"), "utf8");
 
     expect(pulled).toMatchObject({
-      transferredBlocks: 1,
+      transferredBlocks: 2,
       entry: { snapshotId: "compatible-older" },
     });
     expect(restored).toBe("compatible snapshot");
@@ -372,5 +707,37 @@ function manifestForPayload(snapshotId: string, content: Uint8Array, hash: strin
       components: ["data"],
       blocks: [{ hash, size: content.length }],
     }],
+  };
+}
+
+function manifestForCatalogAndDataPayload(
+  snapshotId: string,
+  content: Uint8Array,
+  hash: string,
+  catalogContent: Uint8Array,
+  catalogHash: string,
+): CasManifest {
+  return {
+    version: 1,
+    snapshotId,
+    parentSnapshotIds: [],
+    chunkSize: 64 * 1024,
+    directories: [],
+    files: [
+      {
+        path: "catalog.meta",
+        size: catalogContent.length,
+        sha256: catalogHash,
+        components: ["catalog"],
+        blocks: [{ hash: catalogHash, size: catalogContent.length }],
+      },
+      {
+        path: "payload.txt",
+        size: content.length,
+        sha256: hash,
+        components: ["data"],
+        blocks: [{ hash, size: content.length }],
+      },
+    ],
   };
 }

@@ -12,6 +12,7 @@ import {
   createPartitionCasSnapshot,
   restorePartitionCasSnapshot,
   restorePartitionDataOnlyCasSnapshot,
+  validateHighWatermarkEntries,
   type PartitionCasSnapshot,
 } from "./partition-snapshot.js";
 import type { PGliteClient } from "./pglite-store.js";
@@ -22,10 +23,11 @@ import {
   prepareStorageSnapshotFence,
   refreshStorageBindingGeneration,
   saveStorageSnapshotCatalogEntry,
+  validateStorageCatalogManifest,
   type StorageBindingDrift,
   type StorageSnapshotFenceTarget,
 } from "./storage-binding.js";
-import { transferMissingBlocks, type CasChunking, type CasManifest } from "./cas.js";
+import { transferMissingBlocks, validateCasManifest, type CasChunking, type CasManifest } from "./cas.js";
 
 export type ManagedPartitionCasSnapshot = {
   drift: StorageBindingDrift[];
@@ -112,14 +114,20 @@ export async function pullPartitionCasSnapshot(options: {
   targetDir: string;
   storageBinding?: StoragePartitionBinding;
 }): Promise<PulledPartitionCasSnapshot> {
-  const appliedCatalog = options.db && options.catalogManifest
-    ? await applyStorageCatalogManifest({ db: options.db, manifest: options.catalogManifest })
+  const catalogManifest = options.catalogManifest
+    ? validateStorageCatalogManifest(options.catalogManifest)
     : undefined;
-  const storageBinding = options.storageBinding ?? appliedCatalog?.bindings.find((binding) =>
-    binding.partitionId === options.partitionId
-  );
+  const catalogBinding = catalogManifest?.groupId === options.groupId
+    ? catalogManifest.bindings.find((binding) => binding.partitionId === options.partitionId)
+    : undefined;
+  const storageBinding = options.storageBinding ?? catalogBinding;
+  const catalogSnapshots = catalogManifest?.groupId === options.groupId
+    ? catalogManifest.snapshots
+    : undefined;
   const candidateEntries = options.snapshotEntries.filter((candidate) =>
-      candidate.groupId === options.groupId && candidate.partitionId === options.partitionId
+    candidate.groupId === options.groupId
+    && candidate.partitionId === options.partitionId
+    && (!catalogSnapshots || isAdvertisedByCatalogManifest(candidate, catalogSnapshots))
   );
   const compatibleEntries = storageBinding
     ? candidateEntries.filter((candidate) => isPullStorageCompatible(candidate, storageBinding))
@@ -146,6 +154,8 @@ export async function pullPartitionCasSnapshot(options: {
     storageBinding,
   );
   validatePullStorageCompatibility(entry, snapshot.storageBinding);
+  validateCasManifest(entry.manifest, entry.snapshotId);
+  validateEntryComponentsMatchCasManifest(entry);
   const transferredBlocks = options.sourceCasDir
     ? (await transferMissingBlocks({
         manifest: entry.manifest,
@@ -153,18 +163,29 @@ export async function pullPartitionCasSnapshot(options: {
         targetCasDir: options.targetCasDir,
       })).length
     : 0;
-  if (snapshot.storageBinding.snapshotScope === "catalog-and-data") {
+  const appliedCatalog = options.db && catalogManifest
+    ? await applyStorageCatalogManifest({ db: options.db, manifest: catalogManifest })
+    : undefined;
+  const restoreBinding = appliedCatalog?.bindings.find((binding) =>
+    binding.partitionId === options.partitionId
+  ) ?? snapshot.storageBinding;
+  const restoreSnapshot = appliedCatalog
+    ? { ...snapshot, storageBinding: restoreBinding }
+    : snapshot;
+  validatePullStorageCompatibility(entry, restoreSnapshot.storageBinding);
+
+  if (restoreSnapshot.storageBinding.snapshotScope === "catalog-and-data") {
     await restorePartitionCasSnapshot({
-      snapshot,
+      snapshot: restoreSnapshot,
       casDir: options.targetCasDir,
       targetDir: options.targetDir,
     });
   } else {
     await restorePartitionDataOnlyCasSnapshot({
-      snapshot,
+      snapshot: restoreSnapshot,
       casDir: options.targetCasDir,
       targetDir: options.targetDir,
-      targetStorageBinding: snapshot.storageBinding,
+      targetStorageBinding: restoreSnapshot.storageBinding,
     });
   }
 
@@ -223,6 +244,57 @@ function isPullStorageCompatible(
   return !(storageBinding.snapshotScope === "data-only" && entry.components.includes("catalog"));
 }
 
+function isAdvertisedByCatalogManifest(
+  entry: StorageSnapshotCatalogEntry<CasManifest>,
+  snapshots: StorageCatalogManifest["snapshots"],
+): boolean {
+  return snapshots.some((snapshot) =>
+    snapshot.partitionId === entry.partitionId
+    && snapshot.snapshotId === entry.snapshotId
+    && snapshot.ddlGeneration === entry.ddlGeneration
+    && (snapshot.storageGeneration ?? snapshot.ddlGeneration) === (entry.storageGeneration ?? entry.ddlGeneration)
+    && snapshot.manifestKind === entry.manifestKind
+    && componentsEqual(snapshot.components, entry.components)
+  );
+}
+
+function componentsEqual(
+  left: readonly StorageSnapshotComponent[],
+  right: readonly StorageSnapshotComponent[],
+): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+  const rightComponents = new Set(right);
+  return left.every((component) => rightComponents.has(component));
+}
+
+function validateEntryComponentsMatchCasManifest(entry: StorageSnapshotCatalogEntry<CasManifest>): void {
+  const manifestComponents = new Set<StorageSnapshotComponent>();
+  for (const file of entry.manifest.files) {
+    for (const component of file.components ?? []) {
+      manifestComponents.add(component);
+    }
+  }
+
+  for (const component of entry.components) {
+    if (!manifestComponents.has(component)) {
+      throw new Error(
+        `snapshot entry component is not present in CAS manifest: ${entry.groupId}/${entry.partitionId}/${entry.snapshotId}/${component}`,
+      );
+    }
+  }
+
+  const entryComponents = new Set(entry.components);
+  for (const component of manifestComponents) {
+    if (!entryComponents.has(component)) {
+      throw new Error(
+        `CAS manifest component is not advertised by snapshot entry: ${entry.groupId}/${entry.partitionId}/${entry.snapshotId}/${component}`,
+      );
+    }
+  }
+}
+
 function catalogEntryToPartitionCasSnapshot(
   entry: StorageSnapshotCatalogEntry<CasManifest>,
   storageBinding?: StoragePartitionBinding,
@@ -236,7 +308,7 @@ function catalogEntryToPartitionCasSnapshot(
     snapshotId: entry.snapshotId,
     partitionId: entry.partitionId,
     storageBinding,
-    highWatermark: entry.highWatermark,
+    highWatermark: validateHighWatermarkEntries(entry.highWatermark),
     manifest: entry.manifest,
   };
 }

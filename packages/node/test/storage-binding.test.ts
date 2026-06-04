@@ -1488,8 +1488,10 @@ describe("discoverStoragePartitionBinding", () => {
     await mkdir(casDir, { recursive: true });
     const oldHash = "a".repeat(64);
     const newHash = "b".repeat(64);
+    const orphanHash = "9".repeat(64);
     await writeFile(join(casDir, oldHash), "old");
     await writeFile(join(casDir, newHash), "new");
+    await writeFile(join(casDir, orphanHash), "orphan");
 
     const db = new PGlite(dataDir);
     await db.exec(`
@@ -1546,11 +1548,11 @@ describe("discoverStoragePartitionBinding", () => {
     await db.close();
 
     expect(result).toMatchObject({
-      retainedSnapshotIds: ["new"],
-      gcEligibleSnapshotIds: ["old"],
+      retainedSnapshotIds: ["new", "old"],
+      gcEligibleSnapshotIds: [],
       gc: {
-        retained: [newHash],
-        deleted: [oldHash],
+        retained: [oldHash, newHash],
+        deleted: [orphanHash],
       },
     });
   }, 120_000);
@@ -1562,8 +1564,10 @@ describe("discoverStoragePartitionBinding", () => {
     await mkdir(casDir, { recursive: true });
     const oldHash = "e".repeat(64);
     const newHash = "f".repeat(64);
+    const orphanHash = "8".repeat(64);
     await writeFile(join(casDir, oldHash), "old");
     await writeFile(join(casDir, newHash), "new");
+    await writeFile(join(casDir, orphanHash), "orphan");
 
     const db = new PGlite(dataDir);
     await db.exec(`
@@ -1632,14 +1636,14 @@ describe("discoverStoragePartitionBinding", () => {
       plan: {
         ddlGeneration: 2,
         storageGeneration: 3,
-        protectedStorageGenerations: [3],
-        storageGcAllowedThroughGeneration: 2,
+        protectedStorageGenerations: [2, 3],
+        storageGcAllowedThroughGeneration: 1,
       },
-      retainedSnapshotIds: ["new-storage"],
-      gcEligibleSnapshotIds: ["old-storage"],
+      retainedSnapshotIds: ["new-storage", "old-storage"],
+      gcEligibleSnapshotIds: [],
       gc: {
-        retained: [newHash],
-        deleted: [oldHash],
+        retained: [oldHash, newHash],
+        deleted: [orphanHash],
       },
     });
   }, 120_000);
@@ -1651,8 +1655,10 @@ describe("discoverStoragePartitionBinding", () => {
     await mkdir(casDir, { recursive: true });
     const oldHash = "c".repeat(64);
     const newHash = "d".repeat(64);
+    const orphanHash = "7".repeat(64);
     await writeFile(join(casDir, oldHash), "old");
     await writeFile(join(casDir, newHash), "new");
+    await writeFile(join(casDir, orphanHash), "orphan");
 
     const db = new PGlite(dataDir);
     await db.exec(`
@@ -1718,11 +1724,11 @@ describe("discoverStoragePartitionBinding", () => {
 
     expect(result).toMatchObject({
       skipped: false,
-      retainedSnapshotIds: ["new"],
-      gcEligibleSnapshotIds: ["old"],
+      retainedSnapshotIds: ["new", "old"],
+      gcEligibleSnapshotIds: [],
       gc: {
-        retained: [newHash],
-        deleted: [oldHash],
+        retained: [oldHash, newHash],
+        deleted: [orphanHash],
       },
     });
   }, 120_000);
