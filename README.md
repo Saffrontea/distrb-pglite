@@ -6,7 +6,6 @@ snapshot pull のプロトタイプです。
 This is an early prototype of partition-scoped replication and snapshot pull for local
 PGlite/Postgres edge nodes.
 
-
 ## 何を作っているか
 
 このプロジェクトは「Postgres をローカルに保ったまま、必要な partition だけを node 間で

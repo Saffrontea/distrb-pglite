@@ -7,11 +7,13 @@
 ## 設計思想
 
 ### 捨てるもの
+
 - **グローバルトランザクション** — 存在しない。ローカルトランザクションのみ。
 - **強整合性** — 最初から諦める。Eventual Consistencyを受け入れる。
 - **中央集権的なコーディネーター** — ノード数に比例して状態管理が爆発するため排除。
 
 ### 得るもの
+
 - **Postgresの表現力** — JOIN、pgvector、PostGIS、時系列集計が一つのエッジノードで完結。
 - **本当のエッジ** — CloudflareのPoPの中ではなく、ユーザーのデバイスやオンプレサーバーまで含む。
 - **読み取りレイテンシの最小化** — 読み取りは完全にローカルで完結。
@@ -44,23 +46,27 @@
 ## 各レイヤーの詳細
 
 ### 1. Local storage layer
+
 - **PGLite（Postgres）** をローカルdiskとして使う。
 - 分散レイヤーはPostgresの中身を知らなくていい。NFSやCephがローカルFSを意識しないのと同じ。
 - ローカルトランザクションはACIDで保証される。
 - pgvector・PostGISのインデックスをローカルで保持。
 
 ### 2. Network / pubsub layer
+
 - **Event配信はat-least-once**。Exactly-onceは上位レイヤーが担保。
 - WebSocketベース。
 - ノード間でeventを非同期に配信する。グローバル順序保証は持たない。
 
 ### 3. CoW storage layer
+
 - **Content-addressable storage** — ページ/ブロック単位でhash管理。差分転送が効率的になる。
 - **Copy-on-Write** — スナップショットがO(1)で取れる。btrfsのextentツリーに相当。
 - 参照カウントでGCを行う。バキュームと自然に対応する。
 - PGLiteのファイル出力をブラックボックスとして外側からCoW管理する。
 
 ### 4. Partition management layer
+
 - **ZFSのzfsコマンド相当**。アプリがパーティションキーを決め、この層がライフサイクルを管理する。
 - Postgresのextensionとして実装可能な範囲。TimescaleDBのアーキテクチャが参考になる。
 - パーティション単位でSnapshot・Vacuum・配信が独立して動く。
@@ -76,6 +82,7 @@ CREATE PARTITION users_jp
 ```
 
 ### 5. Application layer
+
 - パーティションキーの定義はアプリの責任。
 - グローバル整合性が必要なユースケースは対象外と明示的に割り切る。
 
@@ -84,6 +91,7 @@ CREATE PARTITION users_jp
 ## Eventモデル
 
 ### 基本原則
+
 ```
 書き込み = ローカルトランザクション + event append
 配信     = pubsub、at-least-once
@@ -95,13 +103,16 @@ CREATE PARTITION users_jp
 - **グローバルトランザクションは存在しない** — カオスでいい。
 
 ### 冪等性
+
 ```
 source_node_id: node_1
 event_id: UUID v7  # source node内でソート可能
 ```
+
 受信側は`(source_node_id, event_id)`をキーに **INSERT OR IGNORE** 的な処理をする。PGLiteのローカルトランザクション内で完結。
 
 ### Cursor
+
 Replication cursorは`created_at`ではなく、source nodeごとの`(source_node_id, event_id)`で持つ。
 
 - 各ノードは自分のappend streamの順序だけを所有する。
@@ -113,6 +124,7 @@ Replication cursorは`created_at`ではなく、source nodeごとの`(source_nod
 ## Snapshot戦略
 
 ### Pull型（明示的）
+
 オフラインから復帰したノードが能動的にスナップショットをpullする。サーバー側は関知しない。
 
 ```
@@ -124,11 +136,13 @@ Replication cursorは`created_at`ではなく、source nodeごとの`(source_nod
 Gitの `clone + rebase` と同じ思想。pullした側が自分で追いつく責任を持つ。
 
 ### 暗黙的にやらない理由
+
 - サーバーが全ノードの状態を管理しないといけなくなる
 - ノード数が増えるほど状態管理が爆発する
 - 「カオスでいい」という設計判断と矛盾する
 
 ### Snapshot × Vacuumの合流
+
 UUID v7はsource node内で順序を持つため、SnapshotとVacuumはsource nodeごとのhigh-watermark vectorを境界として共有できる。
 
 ```
@@ -143,18 +157,21 @@ event log
 ## パーティション戦略
 
 ### 基本
+
 - **全データを全ノードに配信しない** — 関心のあるパーティションだけをpull/subscribe。
 - GitHubのリポジトリ単位のcloneと同じ思想。
 
 ### パーティションキーの例
-| ユースケース | パーティションキー | 特性 |
-|---|---|---|
-| ベクトル系センシング | デバイスID × 時系列 | 書き込み多、読み込みは局所的 |
-| マルチテナントSaaS | テナントID | テナント間でデータが交差しない |
-| AI RAG | コーパスID × ユーザーID | pgvectorのHNSWインデックスをパーティションごとに保持 |
-| GIS | 地理パーティション | PostGIS、位置情報は元々fuzzy |
+
+| ユースケース         | パーティションキー      | 特性                                                 |
+| -------------------- | ----------------------- | ---------------------------------------------------- |
+| ベクトル系センシング | デバイスID × 時系列     | 書き込み多、読み込みは局所的                         |
+| マルチテナントSaaS   | テナントID              | テナント間でデータが交差しない                       |
+| AI RAG               | コーパスID × ユーザーID | pgvectorのHNSWインデックスをパーティションごとに保持 |
+| GIS                  | 地理パーティション      | PostGIS、位置情報は元々fuzzy                         |
 
 ### CoWレイヤーとの対応
+
 ```
 パーティション = CoWツリーのサブボリューム単位
 スナップショット = パーティションごとに独立
@@ -195,15 +212,15 @@ PGliteの`relaxedDurability: false`はquery完了前のstorage flush待ちには
 
 ## 実装レイヤーの分離
 
-| 機能 | 実装場所 |
-|---|---|
-| パーティション管理 | Postgres extension（OID/relfilenode対応を含む） |
-| UUID v7冪等性 | Postgres extension（トリガー + uuid型） |
-| Snapshotカタログ管理 | Postgres extension |
-| ローカルトランザクション | PGLite |
-| CoWストレージ | PGLiteのファイルレイヤー外側 |
-| ノード間の差分配信 | extensionの外（ネットワーク層） |
-| pubsubのネットワーク層 | extensionの外 |
+| 機能                     | 実装場所                                        |
+| ------------------------ | ----------------------------------------------- |
+| パーティション管理       | Postgres extension（OID/relfilenode対応を含む） |
+| UUID v7冪等性            | Postgres extension（トリガー + uuid型）         |
+| Snapshotカタログ管理     | Postgres extension                              |
+| ローカルトランザクション | PGLite                                          |
+| CoWストレージ            | PGLiteのファイルレイヤー外側                    |
+| ノード間の差分配信       | extensionの外（ネットワーク層）                 |
+| pubsubのネットワーク層   | extensionの外                                   |
 
 Postgresソースに手を入れる場合、**smgr（Storage Manager）インターフェース**にCoWを差し込む。WAL自体がappend-onlyのevent logとして活用できる。
 
@@ -211,13 +228,13 @@ Postgresソースに手を入れる場合、**smgr（Storage Manager）インタ
 
 ## 先行実装の参考
 
-| プロジェクト | 参考にする点 |
-|---|---|
-| **litestream** | WALをそのまま流すシンプルさ。「カオスでいい」と通じる割り切り |
-| **electric-sql** | PGLite + 同期レイヤーの接合部 |
-| **Neon** | smgr差し替えの実装実績。page serverの分離思想 |
-| **orioledb** | Table AM完全実装。CoW実験の教科書 |
-| **TimescaleDB** | パーティション管理のextension実装 |
+| プロジェクト     | 参考にする点                                                  |
+| ---------------- | ------------------------------------------------------------- |
+| **litestream**   | WALをそのまま流すシンプルさ。「カオスでいい」と通じる割り切り |
+| **electric-sql** | PGLite + 同期レイヤーの接合部                                 |
+| **Neon**         | smgr差し替えの実装実績。page serverの分離思想                 |
+| **orioledb**     | Table AM完全実装。CoW実験の教科書                             |
+| **TimescaleDB**  | パーティション管理のextension実装                             |
 
 > このアーキテクチャは **electric と litestream の間** を狙う。  
 > litestreamのシンプルさは維持しつつ、パーティション単位の選択的配信・スナップショットのpull戦略・冪等性保証を加える。
@@ -226,14 +243,14 @@ Postgresソースに手を入れる場合、**smgr（Storage Manager）インタ
 
 ## 競合との比較
 
-| | D1 | Turso | Aurora | このアーキテクチャ |
-|---|---|---|---|---|
-| エッジ | CloudflareのPoP内 | エッジ | リージョン | 真のエッジ（デバイスまで） |
-| DB | SQLite | SQLite | MySQL/Postgres | Postgres |
-| ベクトル検索 | ✗ | △ | 別サービス | ✓（pgvector） |
-| GIS | ✗ | ✗ | 別サービス | ✓（PostGIS） |
-| グローバル整合性 | ✓ | ✓ | ✓ | ✗（意図的） |
-| ベンダー依存 | Cloudflare | Turso | AWS | なし |
+|                  | D1                | Turso  | Aurora         | このアーキテクチャ         |
+| ---------------- | ----------------- | ------ | -------------- | -------------------------- |
+| エッジ           | CloudflareのPoP内 | エッジ | リージョン     | 真のエッジ（デバイスまで） |
+| DB               | SQLite            | SQLite | MySQL/Postgres | Postgres                   |
+| ベクトル検索     | ✗                 | △      | 別サービス     | ✓（pgvector）              |
+| GIS              | ✗                 | ✗      | 別サービス     | ✓（PostGIS）               |
+| グローバル整合性 | ✓                 | ✓      | ✓              | ✗（意図的）                |
+| ベンダー依存     | Cloudflare        | Turso  | AWS            | なし                       |
 
 ---
 

@@ -52,10 +52,13 @@ describe("PBT: sensor-demo EdgeNodeServer", () => {
         const fixture = await startFixture();
         try {
           const online = [true, true];
-          const expectedById = new Map<string, {
-            sourceNode: string;
-            payload: SensorPayload;
-          }>();
+          const expectedById = new Map<
+            string,
+            {
+              sourceNode: string;
+              payload: SensorPayload;
+            }
+          >();
 
           for (const op of ops) {
             switch (op.kind) {
@@ -106,14 +109,24 @@ describe("PBT: sensor-demo EdgeNodeServer", () => {
             }
           }
 
-          await post(`${fixture.servers[0].baseUrl}/catchup`, { peerNodeId: fixture.servers[1].nodeId });
-          await post(`${fixture.servers[1].baseUrl}/catchup`, { peerNodeId: fixture.servers[0].nodeId });
-          await post(`${fixture.servers[0].baseUrl}/catchup`, { peerNodeId: fixture.servers[1].nodeId });
-          await post(`${fixture.servers[1].baseUrl}/catchup`, { peerNodeId: fixture.servers[0].nodeId });
+          await post(`${fixture.servers[0].baseUrl}/catchup`, {
+            peerNodeId: fixture.servers[1].nodeId,
+          });
+          await post(`${fixture.servers[1].baseUrl}/catchup`, {
+            peerNodeId: fixture.servers[0].nodeId,
+          });
+          await post(`${fixture.servers[0].baseUrl}/catchup`, {
+            peerNodeId: fixture.servers[1].nodeId,
+          });
+          await post(`${fixture.servers[1].baseUrl}/catchup`, {
+            peerNodeId: fixture.servers[0].nodeId,
+          });
 
           for (const server of fixture.servers) {
             const events = await get<{ events: EventRow[] }>(`${server.baseUrl}/events?limit=1000`);
-            const readings = await get<{ rows: ReadingRow[] }>(`${server.baseUrl}/readings?limit=1000`);
+            const readings = await get<{ rows: ReadingRow[] }>(
+              `${server.baseUrl}/readings?limit=1000`,
+            );
             const stats = await get<{ stats: StatRow[] }>(`${server.baseUrl}/stats`);
 
             expect(eventKey(events.events)).toEqual([...expectedById.keys()].sort());
@@ -136,7 +149,10 @@ describe("PBT: sensor-demo EdgeNodeServer", () => {
       await post(`${source.baseUrl}/readings`, { sensorId: "snap-a", reading: 10 });
       await post(`${source.baseUrl}/readings`, { sensorId: "snap-b", reading: 20, unit: "F" });
 
-      const snapshot = await post<{ snapshotId: string; blocks: number }>(`${source.baseUrl}/create-snapshot`, {});
+      const snapshot = await post<{ snapshotId: string; blocks: number }>(
+        `${source.baseUrl}/create-snapshot`,
+        {},
+      );
       expect(snapshot.snapshotId).toContain("tenant:jp");
       expect(snapshot.blocks).toBeGreaterThan(0);
 
@@ -147,22 +163,31 @@ describe("PBT: sensor-demo EdgeNodeServer", () => {
       const { entries } = await get<{ entries: unknown[] }>(`${source.baseUrl}/snapshot-entries`);
       expect(entries).toHaveLength(1);
 
-      const pull = await post<{ ok: boolean; snapshotId: string }>(`${target.baseUrl}/pull-snapshot`, {
-        catalogManifest,
-        snapshotEntries: entries,
-        sourceCasDir: fixture.sourceCasDir,
-        requirement: "bootstrap",
-      });
+      const pull = await post<{ ok: boolean; snapshotId: string }>(
+        `${target.baseUrl}/pull-snapshot`,
+        {
+          catalogManifest,
+          snapshotEntries: entries,
+          sourceCasDir: fixture.sourceCasDir,
+          requirement: "bootstrap",
+        },
+      );
       expect(pull).toMatchObject({ ok: true, snapshotId: snapshot.snapshotId });
 
       await post(`${target.baseUrl}/catchup`, { peerNodeId: source.nodeId });
 
-      const sourceReadings = await get<{ rows: ReadingRow[] }>(`${source.baseUrl}/readings?limit=1000`);
-      const targetReadings = await get<{ rows: ReadingRow[] }>(`${target.baseUrl}/readings?limit=1000`);
+      const sourceReadings = await get<{ rows: ReadingRow[] }>(
+        `${source.baseUrl}/readings?limit=1000`,
+      );
+      const targetReadings = await get<{ rows: ReadingRow[] }>(
+        `${target.baseUrl}/readings?limit=1000`,
+      );
       const sourceStats = await get<{ stats: StatRow[] }>(`${source.baseUrl}/stats`);
       const targetStats = await get<{ stats: StatRow[] }>(`${target.baseUrl}/stats`);
 
-      expect(projectRowsByEvent(targetReadings.rows)).toEqual(projectRowsByEvent(sourceReadings.rows));
+      expect(projectRowsByEvent(targetReadings.rows)).toEqual(
+        projectRowsByEvent(sourceReadings.rows),
+      );
       expect(statsBySensor(targetStats.stats)).toEqual(statsBySensor(sourceStats.stats));
     } finally {
       await fixture.cleanup();
@@ -181,7 +206,9 @@ describe("PBT: sensor-demo EdgeNodeServer", () => {
         partitionId: "tenant:us",
       });
 
-      const jpReadings = await get<{ rows: ReadingRow[] }>(`${fixture.jp.baseUrl}/readings?limit=1000`);
+      const jpReadings = await get<{ rows: ReadingRow[] }>(
+        `${fixture.jp.baseUrl}/readings?limit=1000`,
+      );
       expect(jpReadings.rows.map((row) => row.sensor_id).sort()).toEqual(["jp-only"]);
     } finally {
       await fixture.cleanup();
@@ -267,7 +294,9 @@ describe("PBT: sensor-demo EdgeNodeServer", () => {
 
       const failedStatus = await get<{ eventCount: number }>(`${target.baseUrl}/status`);
       const failedEvents = await get<{ events: EventRow[] }>(`${target.baseUrl}/events?limit=1000`);
-      const failedReadings = await get<{ rows: ReadingRow[] }>(`${target.baseUrl}/readings?limit=1000`);
+      const failedReadings = await get<{ rows: ReadingRow[] }>(
+        `${target.baseUrl}/readings?limit=1000`,
+      );
       expect(failedStatus.eventCount).toBe(0);
       expect(failedEvents.events).toEqual([]);
       expect(failedReadings.rows).toEqual([]);
@@ -275,12 +304,18 @@ describe("PBT: sensor-demo EdgeNodeServer", () => {
       await post(`${target.baseUrl}/sql`, {
         sql: "ALTER TABLE sensor_readings DROP CONSTRAINT reject_remote_projection",
       });
-      await expect(post<{ applied: number }>(`${target.baseUrl}/catchup`, {
-        peerNodeId: source.nodeId,
-      })).resolves.toEqual({ applied: 1 });
+      await expect(
+        post<{ applied: number }>(`${target.baseUrl}/catchup`, {
+          peerNodeId: source.nodeId,
+        }),
+      ).resolves.toEqual({ applied: 1 });
 
-      const retriedEvents = await get<{ events: EventRow[] }>(`${target.baseUrl}/events?limit=1000`);
-      const retriedReadings = await get<{ rows: ReadingRow[] }>(`${target.baseUrl}/readings?limit=1000`);
+      const retriedEvents = await get<{ events: EventRow[] }>(
+        `${target.baseUrl}/events?limit=1000`,
+      );
+      const retriedReadings = await get<{ rows: ReadingRow[] }>(
+        `${target.baseUrl}/readings?limit=1000`,
+      );
       expect(retriedEvents.events.map((event) => event.eventId)).toEqual([sourceEvent.eventId]);
       expect(readingKey(retriedReadings.rows)).toEqual([sourceEvent.eventId]);
     } finally {
@@ -295,27 +330,37 @@ describe("PBT: sensor-demo EdgeNodeServer", () => {
       await post(`${server.baseUrl}/readings`, { sensorId: "valid", reading: 1 });
 
       const beforeStatus = await get<{ eventCount: number }>(`${server.baseUrl}/status`);
-      const beforeReadings = await get<{ rows: ReadingRow[] }>(`${server.baseUrl}/readings?limit=1000`);
+      const beforeReadings = await get<{ rows: ReadingRow[] }>(
+        `${server.baseUrl}/readings?limit=1000`,
+      );
 
       for (const body of [{}, { partitionId: "" }, { partitionId: 123 }]) {
         const response = await postRaw(`${server.baseUrl}/subscribe`, body);
         expect(response.status).toBe(500);
       }
 
-      for (const body of [{}, { peerNodeId: "" }, { peerNodeId: 123 }, { peerNodeId: "edge-1", partitionId: "" }]) {
+      for (const body of [
+        {},
+        { peerNodeId: "" },
+        { peerNodeId: 123 },
+        { peerNodeId: "edge-1", partitionId: "" },
+      ]) {
         const response = await postRaw(`${server.baseUrl}/catchup`, body);
         expect(response.status).toBe(500);
       }
 
       const afterStatus = await get<{ eventCount: number }>(`${server.baseUrl}/status`);
-      const afterReadings = await get<{ rows: ReadingRow[] }>(`${server.baseUrl}/readings?limit=1000`);
+      const afterReadings = await get<{ rows: ReadingRow[] }>(
+        `${server.baseUrl}/readings?limit=1000`,
+      );
       expect(afterStatus).toEqual(beforeStatus);
-      expect(projectRowsByEvent(afterReadings.rows)).toEqual(projectRowsByEvent(beforeReadings.rows));
+      expect(projectRowsByEvent(afterReadings.rows)).toEqual(
+        projectRowsByEvent(beforeReadings.rows),
+      );
     } finally {
       await fixture.cleanup();
     }
   }, 20_000);
-
 
   async function startFixture(): Promise<{
     servers: [EdgeNodeServer, EdgeNodeServer];
@@ -398,8 +443,11 @@ describe("PBT: sensor-demo EdgeNodeServer", () => {
         return target;
       },
       cleanup: async () => {
-        await Promise.all([target, source].filter((server): server is EdgeNodeServer => !!server)
-          .map((server) => server.close().catch(() => {})));
+        await Promise.all(
+          [target, source]
+            .filter((server): server is EdgeNodeServer => !!server)
+            .map((server) => server.close().catch(() => {})),
+        );
         await hub.close().catch(() => {});
         await rm(root, { recursive: true, force: true });
       },
@@ -582,7 +630,7 @@ async function get<T>(url: string): Promise<T> {
 }
 
 async function parseJsonResponse<T>(response: Response): Promise<T> {
-  const json = await response.json() as T | { error: string };
+  const json = (await response.json()) as T | { error: string };
   if (!response.ok) {
     throw new Error(`HTTP ${response.status}: ${JSON.stringify(json)}`);
   }
@@ -603,7 +651,7 @@ async function getFreePort(): Promise<number> {
     });
   });
   await new Promise<void>((resolve, reject) => {
-    server.close((error) => error ? reject(error) : resolve());
+    server.close((error) => (error ? reject(error) : resolve()));
   });
   return port;
 }

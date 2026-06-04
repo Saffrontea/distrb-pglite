@@ -12,9 +12,7 @@ describe("partition snapshot cursors", () => {
   it("uses snapshot high-watermarks as partition-scoped replay cursors", async () => {
     const snapshot: PartitionSnapshotCursor = {
       partitionId: "tenant:jp",
-      highWatermark: [
-        ["node-a", "018bcfe5-6800-7001-8000-000000000001"],
-      ],
+      highWatermark: [["node-a", "018bcfe5-6800-7001-8000-000000000001"]],
     };
     const store = new InMemoryPartitionStore("peer");
     await store.registerPartition("tenant:jp");
@@ -57,9 +55,7 @@ describe("partition snapshot cursors", () => {
   it("replays post-snapshot events idempotently into an empty target partition", async () => {
     const snapshot: PartitionSnapshotCursor = {
       partitionId: "tenant:jp",
-      highWatermark: [
-        ["node-a", "018bcfe5-6800-7001-8000-000000000001"],
-      ],
+      highWatermark: [["node-a", "018bcfe5-6800-7001-8000-000000000001"]],
     };
     const sourceStore = new InMemoryPartitionStore("source");
     const targetStore = new InMemoryPartitionStore("target");
@@ -79,19 +75,23 @@ describe("partition snapshot cursors", () => {
       payload: { value: "delta" },
     });
 
-    await expect(replayEventsAfterPartitionSnapshot({
-      sourceStore,
-      targetStore,
-      snapshot,
-    })).resolves.toBe(1);
-    await expect(replayEventsAfterPartitionSnapshot({
-      sourceStore,
-      targetStore,
-      snapshot,
-    })).resolves.toBe(0);
-    await expect(targetStore.listEventsAfterCursors("tenant:jp", new Map())).resolves.toMatchObject([
-      { sourceNodeId: "node-a", payload: { value: "delta" } },
-    ]);
+    await expect(
+      replayEventsAfterPartitionSnapshot({
+        sourceStore,
+        targetStore,
+        snapshot,
+      }),
+    ).resolves.toBe(1);
+    await expect(
+      replayEventsAfterPartitionSnapshot({
+        sourceStore,
+        targetStore,
+        snapshot,
+      }),
+    ).resolves.toBe(0);
+    await expect(targetStore.listEventsAfterCursors("tenant:jp", new Map())).resolves.toMatchObject(
+      [{ sourceNodeId: "node-a", payload: { value: "delta" } }],
+    );
   });
 
   it("exposes snapshot high-watermarks as a source-node cursor map", () => {
@@ -103,10 +103,12 @@ describe("partition snapshot cursors", () => {
       ],
     };
 
-    expect(highWatermarkMap(snapshot)).toEqual(new Map([
-      ["node-b", "018bcfe5-6800-7001-8000-000000000003"],
-      ["node-a", "018bcfe5-6800-7002-8000-000000000002"],
-    ]));
+    expect(highWatermarkMap(snapshot)).toEqual(
+      new Map([
+        ["node-b", "018bcfe5-6800-7001-8000-000000000003"],
+        ["node-a", "018bcfe5-6800-7002-8000-000000000002"],
+      ]),
+    );
   });
 
   it("rejects duplicate high-watermark cursors for the same source node", () => {
@@ -126,14 +128,10 @@ describe("partition snapshot cursors", () => {
   it("rejects high-watermark cursors that are not UUIDv7 event ids", () => {
     const snapshot: PartitionSnapshotCursor = {
       partitionId: "tenant:jp",
-      highWatermark: [
-        ["node-a", "not-a-uuid"],
-      ],
+      highWatermark: [["node-a", "not-a-uuid"]],
     };
 
-    expect(() => highWatermarkMap(snapshot)).toThrow(
-      "invalid high-watermark event id at index 0",
-    );
+    expect(() => highWatermarkMap(snapshot)).toThrow("invalid high-watermark event id at index 0");
   });
 });
 

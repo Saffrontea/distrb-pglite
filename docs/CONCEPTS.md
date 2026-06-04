@@ -8,13 +8,13 @@ distrb-pglite が解こうとしている問題と、その中心となる概念
 
 edge で SQL を使いたいとき、既存の選択肢にはトレードオフがあります。
 
-| アプローチ | 問題点 |
-|-----------|--------|
-| クラウド DB に接続 | オフライン時に読み書きできない |
-| SQLite ローカル DB | 複数ノード間の同期が難しい |
-| distributed SQL | coordinator・global lock が重く、本当の edge まで届かない |
-| ElectricSQL 系 | リレーショナルな表現力を犠牲にすることがある |
-| Litestream | DB 全体を S3 にレプリカするだけ。partition 単位の制御ができない |
+| アプローチ         | 問題点                                                          |
+| ------------------ | --------------------------------------------------------------- |
+| クラウド DB に接続 | オフライン時に読み書きできない                                  |
+| SQLite ローカル DB | 複数ノード間の同期が難しい                                      |
+| distributed SQL    | coordinator・global lock が重く、本当の edge まで届かない       |
+| ElectricSQL 系     | リレーショナルな表現力を犠牲にすることがある                    |
+| Litestream         | DB 全体を S3 にレプリカするだけ。partition 単位の制御ができない |
 
 distrb-pglite は次の割り切りをとります。
 
@@ -48,12 +48,12 @@ node は任意の partition を subscribe でき、その partition の event �
 
 ```typescript
 type EventEnvelope = {
-  eventId: EventId;        // UUIDv7 (時刻ソート可能)
-  sourceNodeId: NodeId;    // 書いた node
+  eventId: EventId; // UUIDv7 (時刻ソート可能)
+  sourceNodeId: NodeId; // 書いた node
   partitionId: PartitionId;
   schemaVersion: number;
-  payload: unknown;        // アプリケーション定義の任意 payload
-}
+  payload: unknown; // アプリケーション定義の任意 payload
+};
 ```
 
 Event は append-only です。削除・更新は新しい event として表現します。
@@ -115,10 +115,10 @@ target node はすでに持っているブロックをリストアップし、**
 
 ### 6. Snapshot Scope
 
-| Scope | 内容 | 用途 |
-|-------|------|------|
-| `catalog-and-data` | PGlite catalog (pg_class 等) + relation data | 新規ノードの bootstrap |
-| `data-only` | relation data のみ | catalog-compatible な既存ノードへの data refresh |
+| Scope              | 内容                                         | 用途                                             |
+| ------------------ | -------------------------------------------- | ------------------------------------------------ |
+| `catalog-and-data` | PGlite catalog (pg_class 等) + relation data | 新規ノードの bootstrap                           |
+| `data-only`        | relation data のみ                           | catalog-compatible な既存ノードへの data refresh |
 
 `catalog-and-data` は新規 node が何も持っていない状態から立ち上がるための経路です。
 既存 node を上書きするためのものではありません。
@@ -131,17 +131,17 @@ target node はすでに持っているブロックをリストアップし、**
 
 ```typescript
 type Transport = {
-  connect(nodeId: NodeId, handlers: TransportHandlers): Promise<TransportConnection>
-}
+  connect(nodeId: NodeId, handlers: TransportHandlers): Promise<TransportConnection>;
+};
 ```
 
 実装は差し替え可能です。
 
-| 実装 | 用途 |
-|------|------|
-| `MemoryTransport` | テスト・インプロセス同期 |
-| `WebSocketTransport` + `WebSocketHub` | ハブ経由のクラスター構成 |
-| `P2PTransport` | seed peer 発見・直接 P2P 接続 |
+| 実装                                  | 用途                          |
+| ------------------------------------- | ----------------------------- |
+| `MemoryTransport`                     | テスト・インプロセス同期      |
+| `WebSocketTransport` + `WebSocketHub` | ハブ経由のクラスター構成      |
+| `P2PTransport`                        | seed peer 発見・直接 P2P 接続 |
 
 Transport が抽象化されているため、MQTT・BLE・NATS などへの差し替えも core の変更なしに行えます。
 
@@ -259,13 +259,13 @@ playground の `Pull snapshot → new replica` がこの経路を体験できま
 
 ## 制約と割り切り
 
-| 項目 | 方針 |
-|------|------|
-| 読み取り整合性 | ローカルのみ。他ノードの最新書き込みは非同期で届く |
-| 書き込み競合 | アプリケーション側で partition key を設計して回避する |
-| GC | snapshot の世代管理は今後の課題。現状は手動 |
-| smgr (Postgres storage manager) | 触らない。file-level CAS で十分か検証中 |
-| 既存 data directory への上書き | `catalog-and-data` snapshot は新規 node 向け。既存 node への全体上書きは行わない |
+| 項目                            | 方針                                                                             |
+| ------------------------------- | -------------------------------------------------------------------------------- |
+| 読み取り整合性                  | ローカルのみ。他ノードの最新書き込みは非同期で届く                               |
+| 書き込み競合                    | アプリケーション側で partition key を設計して回避する                            |
+| GC                              | snapshot の世代管理は今後の課題。現状は手動                                      |
+| smgr (Postgres storage manager) | 触らない。file-level CAS で十分か検証中                                          |
+| 既存 data directory への上書き  | `catalog-and-data` snapshot は新規 node 向け。既存 node への全体上書きは行わない |
 
 ---
 

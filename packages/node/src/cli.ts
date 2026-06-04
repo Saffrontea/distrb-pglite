@@ -122,10 +122,16 @@ if (command === "hub") {
   }
 
   const dataDir = values.dataDir ?? `./.data/${nodeId}`;
-  console.log(JSON.stringify(await copyDataDirSnapshot({
-    sourceDir: dataDir,
-    targetDir: values.targetDir,
-  }), null, 2));
+  console.log(
+    JSON.stringify(
+      await copyDataDirSnapshot({
+        sourceDir: dataDir,
+        targetDir: values.targetDir,
+      }),
+      null,
+      2,
+    ),
+  );
 } else if (command === "cas-snapshot") {
   const nodeId = values.node;
   if (!nodeId || !values.casDir) {
@@ -149,7 +155,10 @@ if (command === "hub") {
     : await discoverStoragePartitionBinding({
         db,
         partitionId: partition,
-        rootRelation: requireString(values.rootRelation, "--rootRelation is required without --storageBinding"),
+        rootRelation: requireString(
+          values.rootRelation,
+          "--rootRelation is required without --storageBinding",
+        ),
         relations: relationValues(values.relation),
         snapshotScope: snapshotScopeValue(values.snapshotScope),
       });

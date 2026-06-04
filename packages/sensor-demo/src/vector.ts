@@ -9,7 +9,12 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { StorageSnapshotScope } from "@distrb-pglite/core";
-import { MemoryTransport, SyncNode, type EventEnvelope, type PartitionStore } from "@distrb-pglite/core";
+import {
+  MemoryTransport,
+  SyncNode,
+  type EventEnvelope,
+  type PartitionStore,
+} from "@distrb-pglite/core";
 import {
   bindStoragePartition,
   createManagedPartitionCasSnapshot,
@@ -27,7 +32,7 @@ import { vector } from "@electric-sql/pglite/vector";
 const SCHEMA_VERSION = 1;
 const VECTOR_GROUP_ID = "sensor-vectors";
 const TENANTS = ["jp", "eu"] as const;
-type TenantId = typeof TENANTS[number];
+type TenantId = (typeof TENANTS)[number];
 
 const SCHEMA = `
   CREATE EXTENSION IF NOT EXISTS vector;
@@ -74,10 +79,17 @@ type ExplainRow = {
 };
 
 class VectorPartitionStore implements PartitionStore {
-  constructor(readonly inner: PGlitePartitionStore, private readonly db: PGlite) {}
+  constructor(
+    readonly inner: PGlitePartitionStore,
+    private readonly db: PGlite,
+  ) {}
 
-  registerPartition(id: string) { return this.inner.registerPartition(id); }
-  hasPartition(id: string) { return this.inner.hasPartition(id); }
+  registerPartition(id: string) {
+    return this.inner.registerPartition(id);
+  }
+  hasPartition(id: string) {
+    return this.inner.hasPartition(id);
+  }
   appendLocal<T>(input: Parameters<PGlitePartitionStore["appendLocal"]>[0]) {
     return this.inner.appendLocal<T>(input as never);
   }
@@ -87,8 +99,12 @@ class VectorPartitionStore implements PartitionStore {
   listEventsAfterCursors(...args: Parameters<PGlitePartitionStore["listEventsAfterCursors"]>) {
     return this.inner.listEventsAfterCursors(...args);
   }
-  getHighWatermark(id: string) { return this.inner.getHighWatermark(id); }
-  createSnapshotMetadata(id: string) { return this.inner.createSnapshotMetadata(id); }
+  getHighWatermark(id: string) {
+    return this.inner.getHighWatermark(id);
+  }
+  createSnapshotMetadata(id: string) {
+    return this.inner.createSnapshotMetadata(id);
+  }
 
   async applyRemote(event: EventEnvelope): Promise<boolean> {
     const applied = await this.inner.applyRemote(event);
@@ -504,11 +520,18 @@ async function verifyDataOnlySnapshotDistribution(
 
       const restoredDb = await openVectorDb(targetDir);
       try {
-        await assertSensorExists(restoredDb, "jp", "data-only-delta-temperature", "data-only snapshot restore");
+        await assertSensorExists(
+          restoredDb,
+          "jp",
+          "data-only-delta-temperature",
+          "data-only snapshot restore",
+        );
         const nearest = await queryNearest(restoredDb, "jp", [0.87, 0.2, 0.1], 3);
         const explain = await explainNearestIvfForDb(restoredDb, "jp", [0.87, 0.2, 0.1], 2);
         if (!explain.join("\n").includes(ivfIndexName("jp"))) {
-          throw new Error(`data-only snapshot did not preserve IVFFlat EXPLAIN path:\n${explain.join("\n")}`);
+          throw new Error(
+            `data-only snapshot did not preserve IVFFlat EXPLAIN path:\n${explain.join("\n")}`,
+          );
         }
         return {
           transferredBlocks: pull.transferredBlocks,
@@ -596,7 +619,9 @@ async function verifyCatalogAndDataSnapshotDistribution(
       );
       const explain = await explainNearestIvfForDb(restoredDb, "jp", [0.9, 0.1, 0.1], 2);
       if (!explain.join("\n").includes(ivfIndexName("jp"))) {
-        throw new Error(`catalog-and-data snapshot did not preserve IVFFlat EXPLAIN path:\n${explain.join("\n")}`);
+        throw new Error(
+          `catalog-and-data snapshot did not preserve IVFFlat EXPLAIN path:\n${explain.join("\n")}`,
+        );
       }
       return {
         transferredBlocks: pull.transferredBlocks,
@@ -616,7 +641,12 @@ async function main(): Promise<void> {
   const transport = new MemoryTransport();
   const nodeA = await VectorNode.create("vector-node-a", join(baseDir, "a"), transport, TENANTS);
   const nodeB = await VectorNode.create("vector-node-b", join(baseDir, "b"), transport, TENANTS);
-  const jpOnlyNode = await VectorNode.create("vector-node-jp-only", join(baseDir, "jp-only"), transport, ["jp"]);
+  const jpOnlyNode = await VectorNode.create(
+    "vector-node-jp-only",
+    join(baseDir, "jp-only"),
+    transport,
+    ["jp"],
+  );
 
   try {
     await nodeA.writeProfile({
@@ -663,7 +693,9 @@ async function main(): Promise<void> {
 
     const jpOnlyEuRows = await jpOnlyNode.nearest("eu", [0.9, 0.1, 0.1]);
     if (jpOnlyEuRows.length !== 0) {
-      throw new Error(`jp-only node should not receive eu tenant rows: ${JSON.stringify(jpOnlyEuRows)}`);
+      throw new Error(
+        `jp-only node should not receive eu tenant rows: ${JSON.stringify(jpOnlyEuRows)}`,
+      );
     }
 
     await nodeB.syncNode.stop();
@@ -691,12 +723,16 @@ async function main(): Promise<void> {
 
     const afterJpCatchup = await nodeB.nearest("jp", [0.87, 0.2, 0.1], 2);
     if (afterJpCatchup[0]?.sensor_id !== "yokohama-temperature") {
-      throw new Error(`unexpected jp nearest result after catchup: ${JSON.stringify(afterJpCatchup[0])}`);
+      throw new Error(
+        `unexpected jp nearest result after catchup: ${JSON.stringify(afterJpCatchup[0])}`,
+      );
     }
 
     const afterEuCatchup = await nodeB.nearest("eu", [0.87, 0.2, 0.1], 2);
     if (afterEuCatchup[0]?.sensor_id !== "madrid-temperature") {
-      throw new Error(`unexpected eu nearest result after catchup: ${JSON.stringify(afterEuCatchup[0])}`);
+      throw new Error(
+        `unexpected eu nearest result after catchup: ${JSON.stringify(afterEuCatchup[0])}`,
+      );
     }
 
     const skippedEu = await jpOnlyNode.catchUpTenantFrom("eu", nodeA.nodeId);
@@ -712,7 +748,9 @@ async function main(): Promise<void> {
     if (!combinedPlan.includes(ivfIndexName("jp")) || !combinedPlan.includes(ivfIndexName("eu"))) {
       throw new Error(`expected IVFFlat index in EXPLAIN plan:\n${combinedPlan}`);
     }
-    let dataOnlySnapshot: Awaited<ReturnType<typeof verifyDataOnlySnapshotDistribution>> | undefined;
+    let dataOnlySnapshot:
+      | Awaited<ReturnType<typeof verifyDataOnlySnapshotDistribution>>
+      | undefined;
     let dataOnlySnapshotError: string | undefined;
     try {
       dataOnlySnapshot = await verifyDataOnlySnapshotDistribution(baseDir);
@@ -724,25 +762,29 @@ async function main(): Promise<void> {
     console.log("pgvector multi-tenant demo passed");
     console.log(`catchup applied: jp=${appliedJp}, eu=${appliedEu}, jp-only-eu=${skippedEu}`);
     console.log(
-      `snapshot pull: data-only blocks=${dataOnlySnapshot?.transferredBlocks ?? "failed"}, `
-      + `catalog-and-data blocks=${catalogSnapshot.transferredBlocks}`,
+      `snapshot pull: data-only blocks=${dataOnlySnapshot?.transferredBlocks ?? "failed"}, ` +
+        `catalog-and-data blocks=${catalogSnapshot.transferredBlocks}`,
     );
     console.log("jp nearest:");
-    console.table(afterJpCatchup.map((row) => ({
-      tenant_id: row.tenant_id,
-      sensor_id: row.sensor_id,
-      label: row.label,
-      distance: Number(row.distance).toFixed(4),
-      source_node: row.source_node,
-    })));
+    console.table(
+      afterJpCatchup.map((row) => ({
+        tenant_id: row.tenant_id,
+        sensor_id: row.sensor_id,
+        label: row.label,
+        distance: Number(row.distance).toFixed(4),
+        source_node: row.source_node,
+      })),
+    );
     console.log("eu nearest:");
-    console.table(afterEuCatchup.map((row) => ({
-      tenant_id: row.tenant_id,
-      sensor_id: row.sensor_id,
-      label: row.label,
-      distance: Number(row.distance).toFixed(4),
-      source_node: row.source_node,
-    })));
+    console.table(
+      afterEuCatchup.map((row) => ({
+        tenant_id: row.tenant_id,
+        sensor_id: row.sensor_id,
+        label: row.label,
+        distance: Number(row.distance).toFixed(4),
+        source_node: row.source_node,
+      })),
+    );
     console.log("jp EXPLAIN with enable_seqscan=off:");
     console.log(jpExplain.map((line) => `  ${line}`).join("\n"));
     console.log("eu EXPLAIN with enable_seqscan=off:");
@@ -753,25 +795,29 @@ async function main(): Promise<void> {
       console.log("data-only snapshot EXPLAIN after catalog-compatible refresh:");
       console.log(dataOnlySnapshot.explain.map((line) => `  ${line}`).join("\n"));
       console.log("data-only snapshot nearest:");
-      console.table(dataOnlySnapshot.nearest.map((row) => ({
-        tenant_id: row.tenant_id,
-        sensor_id: row.sensor_id,
-        label: row.label,
-        distance: Number(row.distance).toFixed(4),
-        source_node: row.source_node,
-      })));
+      console.table(
+        dataOnlySnapshot.nearest.map((row) => ({
+          tenant_id: row.tenant_id,
+          sensor_id: row.sensor_id,
+          label: row.label,
+          distance: Number(row.distance).toFixed(4),
+          source_node: row.source_node,
+        })),
+      );
     } else {
       console.log("data-only snapshot refresh did not produce a readable pgvector plan:");
       console.log(`  ${dataOnlySnapshotError}`);
     }
     console.log("catalog-and-data snapshot nearest:");
-    console.table(catalogSnapshot.nearest.map((row) => ({
-      tenant_id: row.tenant_id,
-      sensor_id: row.sensor_id,
-      label: row.label,
-      distance: Number(row.distance).toFixed(4),
-      source_node: row.source_node,
-    })));
+    console.table(
+      catalogSnapshot.nearest.map((row) => ({
+        tenant_id: row.tenant_id,
+        sensor_id: row.sensor_id,
+        label: row.label,
+        distance: Number(row.distance).toFixed(4),
+        source_node: row.source_node,
+      })),
+    );
   } finally {
     await Promise.allSettled([nodeA.close(), nodeB.close(), jpOnlyNode.close()]);
     await rm(baseDir, { recursive: true, force: true });

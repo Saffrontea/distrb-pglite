@@ -1,11 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { mkdir } from "node:fs/promises";
 import { PGlite } from "@electric-sql/pglite";
-import {
-  SyncNode,
-  type EventEnvelope,
-  type PartitionStore,
-} from "@distrb-pglite/core";
+import { SyncNode, type EventEnvelope, type PartitionStore } from "@distrb-pglite/core";
 import type {
   StorageCatalogManifest,
   StoragePullRequirement,
@@ -58,11 +54,18 @@ class SensorPartitionStore implements PartitionStore {
     private readonly projectedPartitionId: string,
   ) {}
 
-  registerPartition(id: string) { return this.inner.registerPartition(id); }
-  hasPartition(id: string) { return this.inner.hasPartition(id); }
+  registerPartition(id: string) {
+    return this.inner.registerPartition(id);
+  }
+  hasPartition(id: string) {
+    return this.inner.hasPartition(id);
+  }
   appendLocal<T>(input: Parameters<PGlitePartitionStore["appendLocal"]>[0]) {
     const sensorInput = input as Parameters<PGlitePartitionStore["appendLocal"]>[0];
-    if (sensorInput.partitionId === this.projectedPartitionId && !isSensorPayload(sensorInput.payload)) {
+    if (
+      sensorInput.partitionId === this.projectedPartitionId &&
+      !isSensorPayload(sensorInput.payload)
+    ) {
       throw new Error("invalid sensor payload");
     }
     return this.inner.appendLocalEventTransaction<T>(sensorInput as never, async (event) => {
@@ -77,8 +80,12 @@ class SensorPartitionStore implements PartitionStore {
   listEventsAfterCursors(...a: Parameters<PGlitePartitionStore["listEventsAfterCursors"]>) {
     return this.inner.listEventsAfterCursors(...a);
   }
-  getHighWatermark(id: string) { return this.inner.getHighWatermark(id); }
-  createSnapshotMetadata(id: string) { return this.inner.createSnapshotMetadata(id); }
+  getHighWatermark(id: string) {
+    return this.inner.getHighWatermark(id);
+  }
+  createSnapshotMetadata(id: string) {
+    return this.inner.createSnapshotMetadata(id);
+  }
 
   async applyRemote(event: EventEnvelope): Promise<boolean> {
     if (event.partitionId === this.projectedPartitionId && !isSensorPayload(event.payload)) {
@@ -122,12 +129,20 @@ export type EdgeServerConfig = {
 };
 
 type ReadingRow = {
-  event_id: string; sensor_id: string; reading: string;
-  unit: string; recorded_at: string; source_node: string;
+  event_id: string;
+  sensor_id: string;
+  reading: string;
+  unit: string;
+  recorded_at: string;
+  source_node: string;
 };
 type StatsRow = {
-  sensor_id: string; avg_reading: string; min_reading: string;
-  max_reading: string; count: string; last_seen: string;
+  sensor_id: string;
+  avg_reading: string;
+  min_reading: string;
+  max_reading: string;
+  count: string;
+  last_seen: string;
 };
 type SqlResponse = {
   mode: "query" | "exec";
@@ -158,8 +173,12 @@ export class EdgeNodeServer {
     return s;
   }
 
-  get baseUrl() { return `http://127.0.0.1:${this.config.port}`; }
-  get nodeId() { return this.config.nodeId; }
+  get baseUrl() {
+    return `http://127.0.0.1:${this.config.port}`;
+  }
+  get nodeId() {
+    return this.config.nodeId;
+  }
 
   listen(): Promise<void> {
     return new Promise((resolve) => this.http.listen(this.config.port, "127.0.0.1", resolve));
@@ -195,11 +214,15 @@ export class EdgeNodeServer {
       if (!this.config.p2pPublicUrl || !this.config.p2pPort) {
         throw new Error("p2p transport requires p2pPublicUrl and p2pPort");
       }
-      return new SyncNode(this.config.nodeId, this.store, new P2PWebSocketTransport({
-        publicUrl: this.config.p2pPublicUrl,
-        port: this.config.p2pPort,
-        seeds: this.config.p2pSeeds ?? [],
-      }));
+      return new SyncNode(
+        this.config.nodeId,
+        this.store,
+        new P2PWebSocketTransport({
+          publicUrl: this.config.p2pPublicUrl,
+          port: this.config.p2pPort,
+          seeds: this.config.p2pSeeds ?? [],
+        }),
+      );
     }
 
     if (!this.config.hubUrl) {
@@ -209,7 +232,11 @@ export class EdgeNodeServer {
   }
 
   private async setupBindings(): Promise<void> {
-    await createStorageBindingGroup({ db: this.db, groupId: GROUP_ID, rootRelation: "sensor_groups" });
+    await createStorageBindingGroup({
+      db: this.db,
+      groupId: GROUP_ID,
+      rootRelation: "sensor_groups",
+    });
     await bindStoragePartition({
       db: this.db,
       groupId: GROUP_ID,
@@ -222,27 +249,27 @@ export class EdgeNodeServer {
   // ─── HTTP dispatch ────────────────────────────────────────────
 
   private async dispatch(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    const url   = new URL(req.url ?? "/", "http://localhost");
-    const path  = url.pathname;
-    const meth  = req.method ?? "GET";
-    const body  = meth !== "GET" ? await readJson(req) : {};
+    const url = new URL(req.url ?? "/", "http://localhost");
+    const path = url.pathname;
+    const meth = req.method ?? "GET";
+    const body = meth !== "GET" ? await readJson(req) : {};
 
     const routes: Record<string, () => Promise<unknown>> = {
-      "GET /status":            () => this.getStatus(),
-      "POST /subscribe":        () => this.postSubscribe(body),
-      "POST /readings":         () => this.postReading(body),
+      "GET /status": () => this.getStatus(),
+      "POST /subscribe": () => this.postSubscribe(body),
+      "POST /readings": () => this.postReading(body),
       "POST /readings-offline": () => this.postReadingOffline(body),
-      "GET /readings":          () => this.getReadings(url.searchParams),
-      "GET /stats":             () => this.getStats(),
-      "GET /events":            () => this.getEvents(url.searchParams),
-      "POST /sql":              () => this.postSql(body),
-      "POST /catchup":          () => this.postCatchup(body),
-      "POST /disconnect":       () => this.postDisconnect(),
-      "POST /connect":          () => this.postConnect(),
-      "POST /create-snapshot":  () => this.postCreateSnapshot(),
-      "GET /catalog":           () => this.getCatalog(),
-      "GET /snapshot-entries":  () => this.getSnapshotEntries(),
-      "POST /pull-snapshot":    () => this.postPullSnapshot(body),
+      "GET /readings": () => this.getReadings(url.searchParams),
+      "GET /stats": () => this.getStats(),
+      "GET /events": () => this.getEvents(url.searchParams),
+      "POST /sql": () => this.postSql(body),
+      "POST /catchup": () => this.postCatchup(body),
+      "POST /disconnect": () => this.postDisconnect(),
+      "POST /connect": () => this.postConnect(),
+      "POST /create-snapshot": () => this.postCreateSnapshot(),
+      "GET /catalog": () => this.getCatalog(),
+      "GET /snapshot-entries": () => this.getSnapshotEntries(),
+      "POST /pull-snapshot": () => this.postPullSnapshot(body),
     };
 
     const handler = routes[`${meth} ${path}`];
@@ -266,7 +293,12 @@ export class EdgeNodeServer {
 
   private async getStatus() {
     const events = await this.inner.listEventsAfterCursors(this.config.partitionId, new Map());
-    return { nodeId: this.config.nodeId, online: this.online, partitionId: this.config.partitionId, eventCount: events.length };
+    return {
+      nodeId: this.config.nodeId,
+      online: this.online,
+      partitionId: this.config.partitionId,
+      eventCount: events.length,
+    };
   }
 
   private async postSubscribe(body: unknown) {
@@ -278,13 +310,21 @@ export class EdgeNodeServer {
   private async postReading(body: unknown) {
     if (!this.online) throw new Error("node is offline — use /readings-offline");
     const p = parseSensorPayload(body);
-    const event = await this.syncNode.write({ partitionId: this.config.partitionId, schemaVersion: 1, payload: p });
+    const event = await this.syncNode.write({
+      partitionId: this.config.partitionId,
+      schemaVersion: 1,
+      payload: p,
+    });
     return { eventId: event.eventId, sensorId: p.sensorId, reading: p.reading };
   }
 
   private async postReadingOffline(body: unknown) {
     const p = parseSensorPayload(body);
-    const event = await this.store.appendLocal({ partitionId: this.config.partitionId, schemaVersion: 1, payload: p });
+    const event = await this.store.appendLocal({
+      partitionId: this.config.partitionId,
+      schemaVersion: 1,
+      payload: p,
+    });
     return { eventId: event.eventId, sensorId: p.sensorId, reading: p.reading, offline: true };
   }
 
@@ -349,7 +389,10 @@ export class EdgeNodeServer {
 
   private async postCatchup(body: unknown) {
     const { peerNodeId, partitionId } = parseCatchupBody(body);
-    const applied = await this.syncNode.catchUpFrom(peerNodeId, partitionId ?? this.config.partitionId);
+    const applied = await this.syncNode.catchUpFrom(
+      peerNodeId,
+      partitionId ?? this.config.partitionId,
+    );
     return { applied };
   }
 
@@ -364,9 +407,8 @@ export class EdgeNodeServer {
     await this.syncNode.start();
     await this.syncNode.subscribe(this.config.partitionId);
     this.online = true;
-    const catchup = this.config.autoCatchupOnConnect === false
-      ? []
-      : await this.catchupKnownPeers();
+    const catchup =
+      this.config.autoCatchupOnConnect === false ? [] : await this.catchupKnownPeers();
     return {
       ok: true,
       online: true,
@@ -410,7 +452,10 @@ export class EdgeNodeServer {
   }
 
   private async getSnapshotEntries() {
-    const entries = await listStorageSnapshotCatalogEntries<CasManifest>({ db: this.db, groupId: GROUP_ID });
+    const entries = await listStorageSnapshotCatalogEntries<CasManifest>({
+      db: this.db,
+      groupId: GROUP_ID,
+    });
     return { entries };
   }
 
@@ -427,11 +472,16 @@ export class EdgeNodeServer {
       requirement?: StoragePullRequirement;
     };
 
-    const storageBinding = catalogManifest.bindings.find((b) => b.partitionId === this.config.partitionId);
+    const storageBinding = catalogManifest.bindings.find(
+      (b) => b.partitionId === this.config.partitionId,
+    );
     if (!storageBinding) throw new Error(`no binding for partition ${this.config.partitionId}`);
 
     const wasOnline = this.online;
-    if (wasOnline) { await this.syncNode.stop(); this.online = false; }
+    if (wasOnline) {
+      await this.syncNode.stop();
+      this.online = false;
+    }
     await this.db.close();
 
     const pulled = await pullPartitionCasSnapshot({
@@ -446,7 +496,7 @@ export class EdgeNodeServer {
     });
 
     // PGlite を復元済みデータディレクトリで再起動
-    this.db    = new PGlite(this.config.dataDir, { relaxedDurability: false });
+    this.db = new PGlite(this.config.dataDir, { relaxedDurability: false });
     this.inner = new PGlitePartitionStore(this.config.nodeId, this.db);
     await this.inner.migrate();
     this.store = new SensorPartitionStore(this.inner, this.db, this.config.partitionId);
@@ -458,7 +508,11 @@ export class EdgeNodeServer {
       this.online = true;
     }
 
-    return { ok: true, transferredBlocks: pulled.transferredBlocks, snapshotId: pulled.entry.snapshotId };
+    return {
+      ok: true,
+      transferredBlocks: pulled.transferredBlocks,
+      snapshotId: pulled.entry.snapshotId,
+    };
   }
 }
 
@@ -468,7 +522,13 @@ async function readJson(req: IncomingMessage): Promise<unknown> {
   return new Promise((resolve, reject) => {
     let data = "";
     req.on("data", (c) => (data += c));
-    req.on("end", () => { try { resolve(data ? JSON.parse(data) : {}); } catch (e) { reject(e); } });
+    req.on("end", () => {
+      try {
+        resolve(data ? JSON.parse(data) : {});
+      } catch (e) {
+        reject(e);
+      }
+    });
     req.on("error", reject);
   });
 }

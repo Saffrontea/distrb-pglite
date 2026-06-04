@@ -75,12 +75,15 @@ describe("storage snapshot policy", () => {
 
     expect(canSatisfyStorageSnapshotCatalogPull(entries[0]!, "data-refresh")).toBe(true);
     expect(canSatisfyStorageSnapshotCatalogPull(entries[0]!, "bootstrap")).toBe(false);
-    expect(selectStorageSnapshotCatalogEntryForPull(entries, "data-refresh")?.snapshotId)
-      .toBe("new-data");
-    expect(selectStorageSnapshotCatalogEntryForPull(entries, "catalog-refresh")?.snapshotId)
-      .toBe("catalog");
-    expect(selectStorageSnapshotCatalogEntryForPull(entries, "bootstrap")?.snapshotId)
-      .toBe("bootstrap");
+    expect(selectStorageSnapshotCatalogEntryForPull(entries, "data-refresh")?.snapshotId).toBe(
+      "new-data",
+    );
+    expect(selectStorageSnapshotCatalogEntryForPull(entries, "catalog-refresh")?.snapshotId).toBe(
+      "catalog",
+    );
+    expect(selectStorageSnapshotCatalogEntryForPull(entries, "bootstrap")?.snapshotId).toBe(
+      "bootstrap",
+    );
   });
 
   it("prefers the newest storage generation for pulls that require data", () => {
@@ -95,8 +98,9 @@ describe("storage snapshot policy", () => {
       },
     ];
 
-    expect(selectStorageSnapshotCatalogEntryForPull(entries, "data-refresh")?.snapshotId)
-      .toBe("a-new-storage");
+    expect(selectStorageSnapshotCatalogEntryForPull(entries, "data-refresh")?.snapshotId).toBe(
+      "a-new-storage",
+    );
   });
 
   it("prefers DDL generation over storage generation when selecting pull snapshots", () => {
@@ -111,8 +115,9 @@ describe("storage snapshot policy", () => {
       },
     ];
 
-    expect(selectStorageSnapshotCatalogEntryForPull(entries, "catalog-refresh")?.snapshotId)
-      .toBe("newer-ddl-stale-storage");
+    expect(selectStorageSnapshotCatalogEntryForPull(entries, "catalog-refresh")?.snapshotId).toBe(
+      "newer-ddl-stale-storage",
+    );
   });
 });
 
@@ -163,14 +168,17 @@ describe("storage GC policy", () => {
   });
 
   it("uses storage generations for physical snapshot GC boundaries", () => {
-    const plan = planStorageGc({
-      ...group,
-      ddlGeneration: 3,
-      storageGeneration: 10,
-    }, {
-      activeStorageGenerations: [5],
-      retainedSnapshotStorageGenerations: [4, 9],
-    });
+    const plan = planStorageGc(
+      {
+        ...group,
+        ddlGeneration: 3,
+        storageGeneration: 10,
+      },
+      {
+        activeStorageGenerations: [5],
+        retainedSnapshotStorageGenerations: [4, 9],
+      },
+    );
 
     expect(plan.protectedGenerations).toEqual([1, 2, 3]);
     expect(plan.gcAllowedThroughGeneration).toBe(0);

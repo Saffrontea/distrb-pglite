@@ -47,9 +47,15 @@ export class CasSnapshotFilesystem implements SnapshotFilesystem {
 
   async snapshot(): Promise<SnapshotFilesystemManifest> {
     const files: SnapshotFile[] = [];
-    for (const [path, content] of [...this.files].sort(([left], [right]) => left.localeCompare(right))) {
+    for (const [path, content] of [...this.files].sort(([left], [right]) =>
+      left.localeCompare(right),
+    )) {
       const blocks: BlobRef[] = [];
-      for (let offset = 0; offset < content.length || (content.length === 0 && offset === 0); offset += this.chunkSize) {
+      for (
+        let offset = 0;
+        offset < content.length || (content.length === 0 && offset === 0);
+        offset += this.chunkSize
+      ) {
         const chunk = content.subarray(offset, Math.min(offset + this.chunkSize, content.length));
         blocks.push(await this.blobs.put(chunk));
         if (content.length === 0) {

@@ -67,14 +67,15 @@ export class PGliteCasFilesystem extends BaseFilesystem {
 
   asSnapshotDataFilesystem(): SnapshotDataFilesystem {
     return {
-      listDir: async (path) => this.readdir(path).map((name) => {
-        const childPath = joinPath(path, name);
-        const node = this.requireNode(childPath);
-        return {
-          name,
-          type: node.kind === "dir" ? "directory" as const : "file" as const,
-        };
-      }),
+      listDir: async (path) =>
+        this.readdir(path).map((name) => {
+          const childPath = joinPath(path, name);
+          const node = this.requireNode(childPath);
+          return {
+            name,
+            type: node.kind === "dir" ? ("directory" as const) : ("file" as const),
+          };
+        }),
       readFile: async (path) => new Uint8Array(this.requireFile(path).content),
       writeFile: async (path, data) => {
         this.writeFile(path, data);
@@ -177,13 +178,7 @@ export class PGliteCasFilesystem extends BaseFilesystem {
     return [...names].sort();
   }
 
-  read(
-    fd: number,
-    buffer: Uint8Array,
-    offset: number,
-    length: number,
-    position: number,
-  ): number {
+  read(fd: number, buffer: Uint8Array, offset: number, length: number, position: number): number {
     const open = this.requireFd(fd);
     const node = this.requireFile(open.path);
     const start = position == null || position < 0 ? open.position : position;
@@ -250,13 +245,7 @@ export class PGliteCasFilesystem extends BaseFilesystem {
     this.nodes.set(normalized, this.createFileNode(new Uint8Array(content), options?.mode));
   }
 
-  write(
-    fd: number,
-    buffer: Uint8Array,
-    offset: number,
-    length: number,
-    position: number,
-  ): number {
+  write(fd: number, buffer: Uint8Array, offset: number, length: number, position: number): number {
     const bytes = toUint8Array(buffer);
     const open = this.requireFd(fd);
     const node = this.requireFile(open.path);

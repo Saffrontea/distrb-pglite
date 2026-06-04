@@ -51,7 +51,7 @@ export function requiredStorageSnapshotComponents(
   return normalizeStorageSnapshotComponents(
     requirement
       ? componentsForPullRequirement(requirement)
-      : binding.pullRequires ?? componentsForSnapshotScope(binding.snapshotScope),
+      : (binding.pullRequires ?? componentsForSnapshotScope(binding.snapshotScope)),
   );
 }
 
@@ -82,22 +82,21 @@ export function canSatisfyStorageSnapshotCatalogPull(
   requirement: StoragePullRequirement,
 ): boolean {
   return (
-    missingStorageSnapshotComponents(
-      entry.components,
-      componentsForPullRequirement(requirement),
-    ).length === 0
+    missingStorageSnapshotComponents(entry.components, componentsForPullRequirement(requirement))
+      .length === 0
   );
 }
 
-export function selectStorageSnapshotCatalogEntryForPull<TEntry extends StorageSnapshotCatalogEntry>(
-  entries: readonly TEntry[],
-  requirement: StoragePullRequirement,
-): TEntry | undefined {
+export function selectStorageSnapshotCatalogEntryForPull<
+  TEntry extends StorageSnapshotCatalogEntry,
+>(entries: readonly TEntry[], requirement: StoragePullRequirement): TEntry | undefined {
   return [...entries]
-    .sort((left, right) =>
-      right.ddlGeneration - left.ddlGeneration
-      || (right.storageGeneration ?? right.ddlGeneration) - (left.storageGeneration ?? left.ddlGeneration)
-      || right.snapshotId.localeCompare(left.snapshotId)
+    .sort(
+      (left, right) =>
+        right.ddlGeneration - left.ddlGeneration ||
+        (right.storageGeneration ?? right.ddlGeneration) -
+          (left.storageGeneration ?? left.ddlGeneration) ||
+        right.snapshotId.localeCompare(left.snapshotId),
     )
     .find((entry) => canSatisfyStorageSnapshotCatalogPull(entry, requirement));
 }
@@ -122,7 +121,8 @@ export function planStorageGc(
     ...(options.retainedSnapshotStorageGenerations ?? []),
   ]);
   const earliestProtectedGeneration = protectedGenerations[0] ?? Number.POSITIVE_INFINITY;
-  const earliestProtectedStorageGeneration = protectedStorageGenerations[0] ?? Number.POSITIVE_INFINITY;
+  const earliestProtectedStorageGeneration =
+    protectedStorageGenerations[0] ?? Number.POSITIVE_INFINITY;
   const gcAllowedThroughGeneration = Math.max(
     0,
     Math.min(policyGcAfterGeneration, earliestProtectedGeneration - 1),

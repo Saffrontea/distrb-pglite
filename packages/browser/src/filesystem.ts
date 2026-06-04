@@ -7,7 +7,11 @@ export type BrowserSnapshotDataFilesystem = {
   listDir(path: string): Promise<BrowserSnapshotFilesystemEntry[]>;
   readFile(path: string): Promise<Uint8Array>;
   writeFile(path: string, data: Uint8Array): Promise<void>;
-  writeFileChunks?(path: string, chunks: AsyncIterable<Uint8Array>, expectedSize: number): Promise<void>;
+  writeFileChunks?(
+    path: string,
+    chunks: AsyncIterable<Uint8Array>,
+    expectedSize: number,
+  ): Promise<void>;
   mkdir(path: string): Promise<void>;
 };
 
@@ -115,11 +119,7 @@ export async function inventoryBrowserFilesystem(options: {
 }
 
 export function normalizeBrowserLogicalPath(path: string): string {
-  return path
-    .replaceAll("\\", "/")
-    .replace(/^\/+/, "")
-    .replace(/\/+/g, "/")
-    .replace(/\/$/, "");
+  return path.replaceAll("\\", "/").replace(/^\/+/, "").replace(/\/+/g, "/").replace(/\/$/, "");
 }
 
 export function validateBrowserLogicalPath(path: string): string {
@@ -170,7 +170,5 @@ function splitLogicalPath(path: string): string[] {
 
 async function sha256(content: Uint8Array): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new Uint8Array(content));
-  return [...new Uint8Array(digest)]
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }

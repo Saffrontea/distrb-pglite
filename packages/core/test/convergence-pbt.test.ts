@@ -36,7 +36,10 @@ function makeEventId(sourceIndex: number, seq: number): string {
 
 async function eventKey(store: InMemoryPartitionStore, partitionId: string): Promise<string> {
   const events = await store.listEventsAfterCursors(partitionId, new Map());
-  return events.map((e) => `${e.sourceNodeId}/${e.eventId}`).sort().join(",");
+  return events
+    .map((e) => `${e.sourceNodeId}/${e.eventId}`)
+    .sort()
+    .join(",");
 }
 
 // ─── arbitraries ──────────────────────────────────────────────────────────────
@@ -47,8 +50,8 @@ async function eventKey(store: InMemoryPartitionStore, partitionId: string): Pro
  */
 const scenarioArb = fc.record({
   eventsPerNode: fc.array(fc.integer({ min: 1, max: 8 }), { minLength: 2, maxLength: 5 }),
-  partitionId:   fc.constantFrom("tenant:jp", "tenant:us", "tenant:eu"),
-  seed:          fc.integer({ min: 0, max: 0xffff_ffff }),
+  partitionId: fc.constantFrom("tenant:jp", "tenant:us", "tenant:eu"),
+  seed: fc.integer({ min: 0, max: 0xffff_ffff }),
 });
 
 // ─── property: convergence (reorder + duplicates, no drops) ──────────────────
@@ -255,7 +258,7 @@ describe("PBT: high-watermark monotonicity", () => {
     const eventSeqArb = fc.array(
       fc.record({
         sourceIndex: fc.integer({ min: 0, max: 2 }),
-        seq:         fc.integer({ min: 0, max: 999 }),
+        seq: fc.integer({ min: 0, max: 999 }),
       }),
       { minLength: 2, maxLength: 20 },
     );

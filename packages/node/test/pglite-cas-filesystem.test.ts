@@ -46,8 +46,9 @@ describe("PGliteCasFilesystem", () => {
 
     expect(new TextDecoder().decode(output)).toBe("aaaabbbb");
     expect(manifest.files.map((file) => file.path)).toEqual(["/base/a", "/base/b"]);
-    expect(new Set(manifest.files.flatMap((file) => file.blocks.map((block) => block.hash))).size)
-      .toBeLessThan(4);
+    expect(
+      new Set(manifest.files.flatMap((file) => file.blocks.map((block) => block.hash))).size,
+    ).toBeLessThan(4);
   });
 
   it("fails restore when a required CAS block is unavailable", async () => {
@@ -85,7 +86,5 @@ function createFs(): PGliteCasFilesystem {
 }
 
 function createBlobStore(): MemoryBlobStore {
-  return new MemoryBlobStore((content) =>
-    createHash("sha256").update(content).digest("hex"),
-  );
+  return new MemoryBlobStore((content) => createHash("sha256").update(content).digest("hex"));
 }

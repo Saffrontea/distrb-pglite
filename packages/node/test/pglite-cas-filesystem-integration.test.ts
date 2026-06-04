@@ -46,9 +46,7 @@ describe("PGliteCasFilesystem PGlite integration", () => {
     await restoredFs.restore(manifest);
     const restoredDb = new PGlite({ fs: restoredFs as never });
 
-    const result = await restoredDb.query<{ title: string }>(
-      "SELECT title FROM notes ORDER BY id",
-    );
+    const result = await restoredDb.query<{ title: string }>("SELECT title FROM notes ORDER BY id");
 
     expect(result.rows).toEqual([{ title: "restored" }]);
     await restoredDb.close();
@@ -107,35 +105,37 @@ describe("PGliteCasFilesystem PGlite integration", () => {
     const targetStore = new PGlitePartitionStore("node-target", targetDb);
     await targetStore.migrate();
 
-    await expect(
-      targetStore.listEventsAfterCursors("tenant:jp", new Map()),
-    ).resolves.toMatchObject([
-      {
-        eventId: snapshottedEvent.eventId,
-        payload: { title: "snapshotted" },
-      },
-    ]);
+    await expect(targetStore.listEventsAfterCursors("tenant:jp", new Map())).resolves.toMatchObject(
+      [
+        {
+          eventId: snapshottedEvent.eventId,
+          payload: { title: "snapshotted" },
+        },
+      ],
+    );
 
-    await expect(replayEventsAfterPartitionSnapshot({
-      sourceStore,
-      targetStore,
-      snapshot,
-    })).resolves.toBe(1);
     await expect(
-      targetStore.listEventsAfterCursors("tenant:jp", new Map()),
-    ).resolves.toMatchObject([
-      {
-        eventId: snapshottedEvent.eventId,
-        payload: { title: "snapshotted" },
-      },
-      {
-        eventId: replayedEvent.eventId,
-        payload: { title: "replayed" },
-      },
-    ]);
-    await expect(
-      targetStore.listEventsAfterCursors("tenant:us", new Map()),
-    ).resolves.toHaveLength(0);
+      replayEventsAfterPartitionSnapshot({
+        sourceStore,
+        targetStore,
+        snapshot,
+      }),
+    ).resolves.toBe(1);
+    await expect(targetStore.listEventsAfterCursors("tenant:jp", new Map())).resolves.toMatchObject(
+      [
+        {
+          eventId: snapshottedEvent.eventId,
+          payload: { title: "snapshotted" },
+        },
+        {
+          eventId: replayedEvent.eventId,
+          payload: { title: "replayed" },
+        },
+      ],
+    );
+    await expect(targetStore.listEventsAfterCursors("tenant:us", new Map())).resolves.toHaveLength(
+      0,
+    );
 
     await targetDb.close();
     await sourceDb.close();

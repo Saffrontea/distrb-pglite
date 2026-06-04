@@ -4,8 +4,7 @@ import { v7 as uuidV7FromLibrary } from "uuid";
 export type RandomBytes = (length: number) => Uint8Array;
 export type Now = () => number;
 
-const UUID_V7_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const UUID_V7_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 export class UuidV7Factory {
   private lastTimestamp = 0;
@@ -66,10 +65,5 @@ function randomSequence(bytes: Uint8Array): number {
   if (bytes.length < 4) {
     throw new Error("randomBytes must return at least 4 bytes");
   }
-  return (
-    (bytes[0]! * 0x1000000)
-    + (bytes[1]! << 16)
-    + (bytes[2]! << 8)
-    + bytes[3]!
-  ) >>> 0;
+  return (bytes[0]! * 0x1000000 + (bytes[1]! << 16) + (bytes[2]! << 8) + bytes[3]!) >>> 0;
 }

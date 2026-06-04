@@ -74,15 +74,15 @@ mise exec -- pnpm --filter @distrb-pglite/sensor-demo run
 
 4 ノード構成をインプロセスで立ち上げ、以下を順に実行します。
 
-| ステップ | 内容 |
-|---------|------|
-| 1 | jp-edge がセンサー値を 3 件書き込む |
-| 2 | us-edge が `tenant:us` に書き込む (partition isolation 確認) |
-| 3 | dashboard が `tenant:jp` を購読し、初回 catchup で集計 |
-| 4 | jp-edge をオフラインにし、ローカルに 2 件書き込む |
-| 5 | jp-edge 再接続 → dashboard が差分を catchup |
-| 6 | jp-replica が CAS スナップショット + delta replay で参加 |
-| 7 | jp-edge と jp-replica のイベント数・SQL 集計が一致するか検証 |
+| ステップ | 内容                                                         |
+| -------- | ------------------------------------------------------------ |
+| 1        | jp-edge がセンサー値を 3 件書き込む                          |
+| 2        | us-edge が `tenant:us` に書き込む (partition isolation 確認) |
+| 3        | dashboard が `tenant:jp` を購読し、初回 catchup で集計       |
+| 4        | jp-edge をオフラインにし、ローカルに 2 件書き込む            |
+| 5        | jp-edge 再接続 → dashboard が差分を catchup                  |
+| 6        | jp-replica が CAS スナップショット + delta replay で参加     |
+| 7        | jp-edge と jp-replica のイベント数・SQL 集計が一致するか検証 |
 
 ---
 
@@ -94,16 +94,16 @@ mise exec -- pnpm --filter @distrb-pglite/sensor-demo scenarios
 
 `EdgeNodeServer` (HTTP ラッパー) を複数立ち上げ、8 つのシナリオを順に検証します。
 
-| シナリオ | 検証内容 |
-|---------|---------|
-| A | Basic CRUD — 書き込み・集計・stats |
-| B | Cross-node sync — catchup による伝播 |
-| C | Concurrent writes — 2 ノードの並列書き込み + WebSocket 伝播 |
-| D | Offline write + catchup — disconnect 中の書き込み → 再接続後の収束 |
-| E | Partition isolation — `tenant:us` が jp ノードに届かないこと |
-| F | Snapshot bootstrap — 新規ノードが CAS snapshot + delta で追いつく |
-| G | Stats consistency — 双方向 catchup 後に集計が一致する |
-| H | P2P transport smoke — hub なしで P2PTransport が機能する |
+| シナリオ | 検証内容                                                           |
+| -------- | ------------------------------------------------------------------ |
+| A        | Basic CRUD — 書き込み・集計・stats                                 |
+| B        | Cross-node sync — catchup による伝播                               |
+| C        | Concurrent writes — 2 ノードの並列書き込み + WebSocket 伝播        |
+| D        | Offline write + catchup — disconnect 中の書き込み → 再接続後の収束 |
+| E        | Partition isolation — `tenant:us` が jp ノードに届かないこと       |
+| F        | Snapshot bootstrap — 新規ノードが CAS snapshot + delta で追いつく  |
+| G        | Stats consistency — 双方向 catchup 後に集計が一致する              |
+| H        | P2P transport smoke — hub なしで P2PTransport が機能する           |
 
 全シナリオ PASS で終了コード 0、失敗があれば 1。
 
@@ -137,22 +137,22 @@ distrb イベントログ経由でレプリケートします。受信ノード�
 `scenarios`・`scale`・`ui` が共通で使うノード実装です。
 各ノードは PGlite + SyncNode を内包し、以下の HTTP エンドポイントを持ちます。
 
-| Method | Path | 説明 |
-|--------|------|------|
-| GET | `/status` | nodeId・online 状態・partitionId・eventCount |
-| POST | `/readings` | センサー値を書き込む (online 時) |
-| POST | `/readings-offline` | センサー値をローカルのみに書き込む (offline 書き込みシミュレート) |
-| GET | `/readings` | `sensor_readings` テーブルを返す |
-| GET | `/stats` | sensor_id ごとの avg / min / max / count |
-| GET | `/events` | イベントログ |
-| POST | `/sql` | ローカル PGlite に任意の SQL を投げる |
-| POST | `/catchup` | 指定ピアから catchup する (`{ peerNodeId }`) |
-| POST | `/disconnect` | SyncNode を停止してオフラインにする |
-| POST | `/connect` | SyncNode を再起動し、既知ピアから自動 catchup する |
-| POST | `/create-snapshot` | CAS スナップショットを作成する |
-| GET | `/catalog` | ストレージカタログマニフェストを返す |
-| GET | `/snapshot-entries` | スナップショットカタログエントリ一覧 |
-| POST | `/pull-snapshot` | スナップショットを pull して PGlite を復元・再起動する |
+| Method | Path                | 説明                                                              |
+| ------ | ------------------- | ----------------------------------------------------------------- |
+| GET    | `/status`           | nodeId・online 状態・partitionId・eventCount                      |
+| POST   | `/readings`         | センサー値を書き込む (online 時)                                  |
+| POST   | `/readings-offline` | センサー値をローカルのみに書き込む (offline 書き込みシミュレート) |
+| GET    | `/readings`         | `sensor_readings` テーブルを返す                                  |
+| GET    | `/stats`            | sensor_id ごとの avg / min / max / count                          |
+| GET    | `/events`           | イベントログ                                                      |
+| POST   | `/sql`              | ローカル PGlite に任意の SQL を投げる                             |
+| POST   | `/catchup`          | 指定ピアから catchup する (`{ peerNodeId }`)                      |
+| POST   | `/disconnect`       | SyncNode を停止してオフラインにする                               |
+| POST   | `/connect`          | SyncNode を再起動し、既知ピアから自動 catchup する                |
+| POST   | `/create-snapshot`  | CAS スナップショットを作成する                                    |
+| GET    | `/catalog`          | ストレージカタログマニフェストを返す                              |
+| GET    | `/snapshot-entries` | スナップショットカタログエントリ一覧                              |
+| POST   | `/pull-snapshot`    | スナップショットを pull して PGlite を復元・再起動する            |
 
 ### `SensorPartitionStore` の役割
 

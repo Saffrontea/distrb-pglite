@@ -20,11 +20,7 @@ describe("browser relay transport compatibility", () => {
       new InMemoryPartitionStore("browser-a"),
       new BrowserWebSocketTransport(url),
     );
-    const nodeB = new SyncNode(
-      "browser-b",
-      storeB,
-      new BrowserWebSocketTransport(url),
-    );
+    const nodeB = new SyncNode("browser-b", storeB, new BrowserWebSocketTransport(url));
     nodes.push(nodeA, nodeB);
 
     await nodeA.start();
@@ -53,11 +49,7 @@ describe("browser relay transport compatibility", () => {
       new InMemoryPartitionStore("browser-a"),
       new BrowserWebSocketTransport(url),
     );
-    const nodeC = new SyncNode(
-      "browser-c",
-      storeC,
-      new BrowserWebSocketTransport(url),
-    );
+    const nodeC = new SyncNode("browser-c", storeC, new BrowserWebSocketTransport(url));
     nodes.push(nodeA, nodeC);
 
     await nodeA.start();
@@ -110,7 +102,7 @@ async function getFreePort(): Promise<number> {
     });
   });
   await new Promise<void>((resolve, reject) => {
-    server.close((error) => error ? reject(error) : resolve());
+    server.close((error) => (error ? reject(error) : resolve()));
   });
   return port;
 }

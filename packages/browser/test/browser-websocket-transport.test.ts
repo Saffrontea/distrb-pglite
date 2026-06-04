@@ -37,17 +37,22 @@ describe("BrowserWebSocketTransport", () => {
   it("rejects empty node ids before opening a browser websocket", async () => {
     const transport = new BrowserWebSocketTransport("ws://relay.test");
 
-    await expect(transport.connect("", { onEvent: vi.fn() }))
-      .rejects.toThrow("nodeId must be a non-empty string");
+    await expect(transport.connect("", { onEvent: vi.fn() })).rejects.toThrow(
+      "nodeId must be a non-empty string",
+    );
     expect(FakeWebSocket.instances).toHaveLength(0);
   });
 
   it("rejects invalid relay urls before opening a browser websocket", () => {
-    expect(() => new BrowserWebSocketTransport("http://relay.test"))
-      .toThrow("url must use ws or wss protocol");
-    expect(() => new BrowserWebSocketTransport({
-      url: "",
-    })).toThrow("url must be a non-empty websocket URL");
+    expect(() => new BrowserWebSocketTransport("http://relay.test")).toThrow(
+      "url must use ws or wss protocol",
+    );
+    expect(
+      () =>
+        new BrowserWebSocketTransport({
+          url: "",
+        }),
+    ).toThrow("url must be a non-empty websocket URL");
     expect(FakeWebSocket.instances).toHaveLength(0);
   });
 
@@ -327,8 +332,9 @@ describe("BrowserWebSocketTransport", () => {
 
     await connection.close();
 
-    await expect(connection.requestReplay("browser-b", "tenant:jp", new Map()))
-      .rejects.toThrow("websocket connection is closed");
+    await expect(connection.requestReplay("browser-b", "tenant:jp", new Map())).rejects.toThrow(
+      "websocket connection is closed",
+    );
   });
 
   it("rejects subscriptions after the browser connection is closed", async () => {
@@ -340,8 +346,9 @@ describe("BrowserWebSocketTransport", () => {
 
     await connection.close();
 
-    await expect(connection.subscribe("tenant:jp"))
-      .rejects.toThrow("websocket connection is closed");
+    await expect(connection.subscribe("tenant:jp")).rejects.toThrow(
+      "websocket connection is closed",
+    );
   });
 
   it("rejects invalid events before publishing", async () => {
@@ -351,13 +358,15 @@ describe("BrowserWebSocketTransport", () => {
     socket.open();
     const connection = await connected;
 
-    await expect(connection.publish({
-      eventId: "not-a-uuid",
-      sourceNodeId: "browser-a",
-      partitionId: "tenant:jp",
-      schemaVersion: 1,
-      payload: {},
-    })).rejects.toThrow("eventId must be a UUIDv7");
+    await expect(
+      connection.publish({
+        eventId: "not-a-uuid",
+        sourceNodeId: "browser-a",
+        partitionId: "tenant:jp",
+        schemaVersion: 1,
+        payload: {},
+      }),
+    ).rejects.toThrow("eventId must be a UUIDv7");
 
     expect(socket.sent).toHaveLength(1);
   });
@@ -369,13 +378,15 @@ describe("BrowserWebSocketTransport", () => {
     socket.open();
     const connection = await connected;
 
-    await expect(connection.publish({
-      eventId: sampleEventId("01"),
-      sourceNodeId: "browser-b",
-      partitionId: "tenant:jp",
-      schemaVersion: 1,
-      payload: {},
-    })).rejects.toThrow("event source mismatch");
+    await expect(
+      connection.publish({
+        eventId: sampleEventId("01"),
+        sourceNodeId: "browser-b",
+        partitionId: "tenant:jp",
+        schemaVersion: 1,
+        payload: {},
+      }),
+    ).rejects.toThrow("event source mismatch");
 
     expect(socket.sent).toHaveLength(1);
   });
@@ -387,17 +398,18 @@ describe("BrowserWebSocketTransport", () => {
     socket.open();
     const connection = await connected;
 
-    await expect(connection.subscribe(""))
-      .rejects.toThrow("partitionId must be a non-empty string");
-    await expect(connection.requestReplay("browser-b", "", new Map()))
-      .rejects.toThrow("partitionId must be a non-empty string");
-    await expect(connection.requestReplay("", "tenant:jp", new Map()))
-      .rejects.toThrow("nodeId must be a non-empty string");
-    await expect(connection.requestReplay(
-      "browser-b",
-      "tenant:jp",
-      new Map([["browser-a", "not-a-uuid"]]),
-    )).rejects.toThrow("cursor eventId must be a UUIDv7");
+    await expect(connection.subscribe("")).rejects.toThrow(
+      "partitionId must be a non-empty string",
+    );
+    await expect(connection.requestReplay("browser-b", "", new Map())).rejects.toThrow(
+      "partitionId must be a non-empty string",
+    );
+    await expect(connection.requestReplay("", "tenant:jp", new Map())).rejects.toThrow(
+      "nodeId must be a non-empty string",
+    );
+    await expect(
+      connection.requestReplay("browser-b", "tenant:jp", new Map([["browser-a", "not-a-uuid"]])),
+    ).rejects.toThrow("cursor eventId must be a UUIDv7");
   });
 });
 

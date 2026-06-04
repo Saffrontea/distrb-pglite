@@ -101,11 +101,13 @@ describe("CAS snapshots", () => {
     await mkdir(dataDir, { recursive: true });
     await writeFile(join(dataDir, "payload.txt"), "payload");
 
-    await expect(snapshotToCas({
-      dataDir,
-      casDir,
-      chunkSize: 0,
-    })).rejects.toThrow("chunkSize must be a positive integer");
+    await expect(
+      snapshotToCas({
+        dataDir,
+        casDir,
+        chunkSize: 0,
+      }),
+    ).rejects.toThrow("chunkSize must be a positive integer");
   });
 
   it("rejects invalid page-aligned chunking parameters before snapshotting", async () => {
@@ -115,16 +117,20 @@ describe("CAS snapshots", () => {
     await mkdir(dataDir, { recursive: true });
     await writeFile(join(dataDir, "payload.txt"), "payload");
 
-    await expect(snapshotToCas({
-      dataDir,
-      casDir,
-      chunking: { strategy: "page-aligned", pageSize: 0, maxChunkSize: 4096 },
-    })).rejects.toThrow("pageSize must be a positive integer");
-    await expect(snapshotToCas({
-      dataDir,
-      casDir,
-      chunking: { strategy: "page-aligned", pageSize: 4096, maxChunkSize: 2048 },
-    })).rejects.toThrow("maxChunkSize must be greater than or equal to pageSize");
+    await expect(
+      snapshotToCas({
+        dataDir,
+        casDir,
+        chunking: { strategy: "page-aligned", pageSize: 0, maxChunkSize: 4096 },
+      }),
+    ).rejects.toThrow("pageSize must be a positive integer");
+    await expect(
+      snapshotToCas({
+        dataDir,
+        casDir,
+        chunking: { strategy: "page-aligned", pageSize: 4096, maxChunkSize: 2048 },
+      }),
+    ).rejects.toThrow("maxChunkSize must be greater than or equal to pageSize");
   });
 
   it("garbage collects CAS blocks not referenced by retained manifests", async () => {
@@ -152,7 +158,9 @@ describe("CAS snapshots", () => {
     const before = await listCasBlockHashes(casDir);
     const gc = await gcCasBlocks({ casDir, retainedManifests: [second] });
     const after = await listCasBlockHashes(casDir);
-    const secondHashes = new Set(second.files.flatMap((file) => file.blocks.map((block) => block.hash)));
+    const secondHashes = new Set(
+      second.files.flatMap((file) => file.blocks.map((block) => block.hash)),
+    );
 
     expect(before.size).toBeGreaterThan(after.size);
     expect(gc.deleted.length).toBeGreaterThan(0);
@@ -169,23 +177,27 @@ describe("CAS snapshots", () => {
     await mkdir(casDir, { recursive: true });
     await writeFile(join(casDir, hash), content);
 
-    await expect(restoreFromCas({
-      manifest: {
-        version: 1,
-        snapshotId: "bad-path",
-        parentSnapshotIds: [],
-        chunkSize: 64 * 1024,
-        directories: [],
-        files: [{
-          path: "../outside.txt",
-          size: content.length,
-          sha256: hash,
-          blocks: [{ hash, size: content.length }],
-        }],
-      },
-      casDir,
-      targetDir,
-    })).rejects.toThrow("logical path escapes filesystem root");
+    await expect(
+      restoreFromCas({
+        manifest: {
+          version: 1,
+          snapshotId: "bad-path",
+          parentSnapshotIds: [],
+          chunkSize: 64 * 1024,
+          directories: [],
+          files: [
+            {
+              path: "../outside.txt",
+              size: content.length,
+              sha256: hash,
+              blocks: [{ hash, size: content.length }],
+            },
+          ],
+        },
+        casDir,
+        targetDir,
+      }),
+    ).rejects.toThrow("logical path escapes filesystem root");
     await expect(readFile(outside)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
@@ -193,40 +205,48 @@ describe("CAS snapshots", () => {
     const root = await makeTempDir("cas-invalid-hash");
     const targetDir = join(root, "restore");
 
-    await expect(restoreFromCas({
-      manifest: {
-        version: 1,
-        snapshotId: "bad-hash",
-        parentSnapshotIds: [],
-        chunkSize: 64 * 1024,
-        directories: [],
-        files: [{
-          path: "payload.txt",
-          size: 0,
-          sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-          blocks: [{ hash: "../escape", size: 0 }],
-        }],
-      },
-      casDir: join(root, "cas"),
-      targetDir,
-    })).rejects.toThrow("CAS manifest files[0].blocks[0].hash must be a 64-character lowercase sha256 hash");
+    await expect(
+      restoreFromCas({
+        manifest: {
+          version: 1,
+          snapshotId: "bad-hash",
+          parentSnapshotIds: [],
+          chunkSize: 64 * 1024,
+          directories: [],
+          files: [
+            {
+              path: "payload.txt",
+              size: 0,
+              sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              blocks: [{ hash: "../escape", size: 0 }],
+            },
+          ],
+        },
+        casDir: join(root, "cas"),
+        targetDir,
+      }),
+    ).rejects.toThrow(
+      "CAS manifest files[0].blocks[0].hash must be a 64-character lowercase sha256 hash",
+    );
   });
 
   it("rejects restore manifests with invalid chunk sizes", async () => {
     const root = await makeTempDir("cas-invalid-restore-chunk");
 
-    await expect(restoreFromCas({
-      manifest: {
-        version: 1,
-        snapshotId: "bad-chunk-size",
-        parentSnapshotIds: [],
-        chunkSize: 0,
-        directories: [],
-        files: [],
-      },
-      casDir: join(root, "cas"),
-      targetDir: join(root, "restore"),
-    })).rejects.toThrow("CAS manifest chunkSize must be a positive integer");
+    await expect(
+      restoreFromCas({
+        manifest: {
+          version: 1,
+          snapshotId: "bad-chunk-size",
+          parentSnapshotIds: [],
+          chunkSize: 0,
+          directories: [],
+          files: [],
+        },
+        casDir: join(root, "cas"),
+        targetDir: join(root, "restore"),
+      }),
+    ).rejects.toThrow("CAS manifest chunkSize must be a positive integer");
   });
 
   it("rejects invalid CAS manifests before diff, transfer, and GC", async () => {
@@ -234,10 +254,12 @@ describe("CAS snapshots", () => {
     const valid = casManifest("snapshot-1", "a".repeat(64), 1);
     const invalidHash = {
       ...valid,
-      files: [{
-        ...valid.files[0]!,
-        blocks: [{ hash: "not-a-hash", size: 1 }],
-      }],
+      files: [
+        {
+          ...valid.files[0]!,
+          blocks: [{ hash: "not-a-hash", size: 1 }],
+        },
+      ],
     };
     const invalidSnapshotId = {
       ...valid,
@@ -263,40 +285,58 @@ describe("CAS snapshots", () => {
       directories: [valid.files[0]!.path],
     };
 
-    expect(() => validateCasManifest(invalidSnapshotId, "snapshot-1"))
-      .toThrow("CAS manifest snapshotId mismatch: snapshot-2 !== snapshot-1");
-    expect(() => validateCasManifest(duplicatePath))
-      .toThrow("duplicate CAS manifest file path");
-    expect(() => validateCasManifest(duplicateDirectory))
-      .toThrow("duplicate CAS manifest directory path");
-    expect(() => validateCasManifest(fileDirectoryCollision))
-      .toThrow("CAS manifest path is both a file and directory");
-    expect(() => diffMissingBlocks(invalidHash, new Set()))
-      .toThrow("CAS manifest files[0].blocks[0].hash must be a 64-character lowercase sha256 hash");
-    expect(() => diffMissingBlocks(duplicatePath, new Set()))
-      .toThrow("duplicate CAS manifest file path");
-    expect(() => diffMissingBlocks(duplicateDirectory, new Set()))
-      .toThrow("duplicate CAS manifest directory path");
-    expect(() => diffMissingBlocks(fileDirectoryCollision, new Set()))
-      .toThrow("CAS manifest path is both a file and directory");
-    await expect(transferMissingBlocks({
-      manifest: invalidHash,
-      sourceCasDir: join(root, "source-cas"),
-      targetCasDir: join(root, "target-cas"),
-    })).rejects.toThrow("CAS manifest files[0].blocks[0].hash must be a 64-character lowercase sha256 hash");
-    await expect(transferMissingBlocks({
-      manifest: duplicatePath,
-      sourceCasDir: join(root, "source-cas"),
-      targetCasDir: join(root, "target-cas"),
-    })).rejects.toThrow("duplicate CAS manifest file path");
-    await expect(gcCasBlocks({
-      casDir: join(root, "cas"),
-      retainedManifests: [invalidHash],
-    })).rejects.toThrow("CAS manifest files[0].blocks[0].hash must be a 64-character lowercase sha256 hash");
-    await expect(gcCasBlocks({
-      casDir: join(root, "cas"),
-      retainedManifests: [duplicatePath],
-    })).rejects.toThrow("duplicate CAS manifest file path");
+    expect(() => validateCasManifest(invalidSnapshotId, "snapshot-1")).toThrow(
+      "CAS manifest snapshotId mismatch: snapshot-2 !== snapshot-1",
+    );
+    expect(() => validateCasManifest(duplicatePath)).toThrow("duplicate CAS manifest file path");
+    expect(() => validateCasManifest(duplicateDirectory)).toThrow(
+      "duplicate CAS manifest directory path",
+    );
+    expect(() => validateCasManifest(fileDirectoryCollision)).toThrow(
+      "CAS manifest path is both a file and directory",
+    );
+    expect(() => diffMissingBlocks(invalidHash, new Set())).toThrow(
+      "CAS manifest files[0].blocks[0].hash must be a 64-character lowercase sha256 hash",
+    );
+    expect(() => diffMissingBlocks(duplicatePath, new Set())).toThrow(
+      "duplicate CAS manifest file path",
+    );
+    expect(() => diffMissingBlocks(duplicateDirectory, new Set())).toThrow(
+      "duplicate CAS manifest directory path",
+    );
+    expect(() => diffMissingBlocks(fileDirectoryCollision, new Set())).toThrow(
+      "CAS manifest path is both a file and directory",
+    );
+    await expect(
+      transferMissingBlocks({
+        manifest: invalidHash,
+        sourceCasDir: join(root, "source-cas"),
+        targetCasDir: join(root, "target-cas"),
+      }),
+    ).rejects.toThrow(
+      "CAS manifest files[0].blocks[0].hash must be a 64-character lowercase sha256 hash",
+    );
+    await expect(
+      transferMissingBlocks({
+        manifest: duplicatePath,
+        sourceCasDir: join(root, "source-cas"),
+        targetCasDir: join(root, "target-cas"),
+      }),
+    ).rejects.toThrow("duplicate CAS manifest file path");
+    await expect(
+      gcCasBlocks({
+        casDir: join(root, "cas"),
+        retainedManifests: [invalidHash],
+      }),
+    ).rejects.toThrow(
+      "CAS manifest files[0].blocks[0].hash must be a 64-character lowercase sha256 hash",
+    );
+    await expect(
+      gcCasBlocks({
+        casDir: join(root, "cas"),
+        retainedManifests: [duplicatePath],
+      }),
+    ).rejects.toThrow("duplicate CAS manifest file path");
   });
 
   it("transfers only missing blocks between parented snapshots and restores a readable PGlite data directory", async () => {
@@ -393,9 +433,7 @@ describe("CAS snapshots", () => {
     const readings = await restoredDb.query<{
       sensor_id: string;
       reading: number;
-    }>(
-      "SELECT sensor_id, reading FROM sensor_readings ORDER BY sensor_id",
-    );
+    }>("SELECT sensor_id, reading FROM sensor_readings ORDER BY sensor_id");
     expect(readings.rows).toEqual([
       { sensor_id: "tokyo-1", reading: 42 },
       { sensor_id: "tokyo-2", reading: 43 },
@@ -418,12 +456,14 @@ function casManifest(snapshotId: string, hash: string, size: number): CasManifes
     parentSnapshotIds: [],
     chunkSize: 64 * 1024,
     directories: [],
-    files: [{
-      path: `${snapshotId}.bin`,
-      size,
-      sha256: hash,
-      components: ["data"],
-      blocks: [{ hash, size }],
-    }],
+    files: [
+      {
+        path: `${snapshotId}.bin`,
+        size,
+        sha256: hash,
+        components: ["data"],
+        blocks: [{ hash, size }],
+      },
+    ],
   };
 }

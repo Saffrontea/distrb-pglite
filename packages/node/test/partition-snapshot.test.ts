@@ -1,4 +1,8 @@
-import { InMemoryPartitionStore, type EventEnvelope, type PartitionStore } from "@distrb-pglite/core";
+import {
+  InMemoryPartitionStore,
+  type EventEnvelope,
+  type PartitionStore,
+} from "@distrb-pglite/core";
 import { PGlite } from "@electric-sql/pglite";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -130,10 +134,7 @@ describe("partition CAS snapshots", () => {
 
     const replay = await listEventsAfterPartitionSnapshot(peerStore, snapshot);
 
-    expect(replay.map((event) => event.payload)).toEqual([
-      { value: "a2" },
-      { value: "b1" },
-    ]);
+    expect(replay.map((event) => event.payload)).toEqual([{ value: "a2" }, { value: "b1" }]);
   });
 
   it("rejects post-snapshot replay events for another partition before applying them", async () => {
@@ -148,45 +149,53 @@ describe("partition CAS snapshots", () => {
       payload: { value: "leak" },
     };
 
-    await expect(replayEventsAfterPartitionSnapshot({
-      sourceStore: sourceStoreReturning([foreignEvent]),
-      targetStore,
-      snapshot: {
-        partitionId: "tenant:jp",
-        highWatermark: [],
-      },
-    })).rejects.toThrow("partition snapshot replay event partition mismatch");
-    await expect(targetStore.listEventsAfterCursors("tenant:us", new Map())).resolves.toHaveLength(0);
+    await expect(
+      replayEventsAfterPartitionSnapshot({
+        sourceStore: sourceStoreReturning([foreignEvent]),
+        targetStore,
+        snapshot: {
+          partitionId: "tenant:jp",
+          highWatermark: [],
+        },
+      }),
+    ).rejects.toThrow("partition snapshot replay event partition mismatch");
+    await expect(targetStore.listEventsAfterCursors("tenant:us", new Map())).resolves.toHaveLength(
+      0,
+    );
   });
 
   it("rejects conflicting duplicate post-snapshot replay events before applying them", async () => {
     const targetStore = new InMemoryPartitionStore("node-target");
     await targetStore.registerPartition("tenant:jp");
 
-    await expect(replayEventsAfterPartitionSnapshot({
-      sourceStore: sourceStoreReturning([
-        {
-          eventId: "018bcfe5-6800-7001-8000-000000000001",
-          sourceNodeId: "node-source",
+    await expect(
+      replayEventsAfterPartitionSnapshot({
+        sourceStore: sourceStoreReturning([
+          {
+            eventId: "018bcfe5-6800-7001-8000-000000000001",
+            sourceNodeId: "node-source",
+            partitionId: "tenant:jp",
+            schemaVersion: 1,
+            payload: { value: "first" },
+          },
+          {
+            eventId: "018bcfe5-6800-7001-8000-000000000001",
+            sourceNodeId: "node-source",
+            partitionId: "tenant:jp",
+            schemaVersion: 1,
+            payload: { value: "conflict" },
+          },
+        ]),
+        targetStore,
+        snapshot: {
           partitionId: "tenant:jp",
-          schemaVersion: 1,
-          payload: { value: "first" },
+          highWatermark: [],
         },
-        {
-          eventId: "018bcfe5-6800-7001-8000-000000000001",
-          sourceNodeId: "node-source",
-          partitionId: "tenant:jp",
-          schemaVersion: 1,
-          payload: { value: "conflict" },
-        },
-      ]),
-      targetStore,
-      snapshot: {
-        partitionId: "tenant:jp",
-        highWatermark: [],
-      },
-    })).rejects.toThrow("partition snapshot replay event id conflict");
-    await expect(targetStore.listEventsAfterCursors("tenant:jp", new Map())).resolves.toHaveLength(0);
+      }),
+    ).rejects.toThrow("partition snapshot replay event id conflict");
+    await expect(targetStore.listEventsAfterCursors("tenant:jp", new Map())).resolves.toHaveLength(
+      0,
+    );
   });
 
   it("uses data-only storage bindings to snapshot matching relation files", async () => {
@@ -236,13 +245,15 @@ describe("partition CAS snapshots", () => {
     const store = new InMemoryPartitionStore("node-c");
     await store.registerPartition("tenant:jp");
 
-    await expect(createPartitionCasSnapshot({
-      store,
-      partitionId: "tenant:jp",
-      storageBinding: storageBinding("tenant:us"),
-      dataDir,
-      casDir,
-    })).rejects.toThrow("storage binding partition mismatch");
+    await expect(
+      createPartitionCasSnapshot({
+        store,
+        partitionId: "tenant:jp",
+        storageBinding: storageBinding("tenant:us"),
+        dataDir,
+        casDir,
+      }),
+    ).rejects.toThrow("storage binding partition mismatch");
   });
 
   it("rejects data-only restore remapping with a target binding for another partition", async () => {
@@ -258,32 +269,36 @@ describe("partition CAS snapshots", () => {
       snapshotScope: "data-only" as const,
     };
 
-    await expect(restorePartitionDataOnlyCasSnapshot({
-      snapshot: {
-        version: 1,
-        snapshotId: "partition-snapshot:tenant:jp:fixed",
-        partitionId: "tenant:jp",
-        storageBinding: sourceBinding,
-        highWatermark: [],
-        manifest: {
+    await expect(
+      restorePartitionDataOnlyCasSnapshot({
+        snapshot: {
           version: 1,
           snapshotId: "partition-snapshot:tenant:jp:fixed",
-          parentSnapshotIds: [],
-          chunkSize: 64 * 1024,
-          directories: ["base", "base/5"],
-          files: [{
-            path: "base/5/16384",
-            size: 0,
-            sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-            components: ["data"],
-            blocks: [],
-          }],
+          partitionId: "tenant:jp",
+          storageBinding: sourceBinding,
+          highWatermark: [],
+          manifest: {
+            version: 1,
+            snapshotId: "partition-snapshot:tenant:jp:fixed",
+            parentSnapshotIds: [],
+            chunkSize: 64 * 1024,
+            directories: ["base", "base/5"],
+            files: [
+              {
+                path: "base/5/16384",
+                size: 0,
+                sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                components: ["data"],
+                blocks: [],
+              },
+            ],
+          },
         },
-      },
-      casDir,
-      targetDir,
-      targetStorageBinding: targetBinding,
-    })).rejects.toThrow("target storage binding partition mismatch");
+        casDir,
+        targetDir,
+        targetStorageBinding: targetBinding,
+      }),
+    ).rejects.toThrow("target storage binding partition mismatch");
   });
 
   it("rejects data-only restore remapping with a non-data-only target binding", async () => {
@@ -293,12 +308,14 @@ describe("partition CAS snapshots", () => {
       snapshotScope: "data-only" as const,
     };
 
-    await expect(restorePartitionDataOnlyCasSnapshot({
-      snapshot: dataOnlySnapshot(sourceBinding),
-      casDir: join(root, "cas"),
-      targetDir: join(root, "target"),
-      targetStorageBinding: storageBinding("tenant:jp"),
-    })).rejects.toThrow("target storage binding must use data-only snapshot scope");
+    await expect(
+      restorePartitionDataOnlyCasSnapshot({
+        snapshot: dataOnlySnapshot(sourceBinding),
+        casDir: join(root, "cas"),
+        targetDir: join(root, "target"),
+        targetStorageBinding: storageBinding("tenant:jp"),
+      }),
+    ).rejects.toThrow("target storage binding must use data-only snapshot scope");
   });
 
   it("rejects data-only restore remapping when target binding DDL generation differs", async () => {
@@ -314,12 +331,14 @@ describe("partition CAS snapshots", () => {
       ddlGeneration: 4,
     };
 
-    await expect(restorePartitionDataOnlyCasSnapshot({
-      snapshot: dataOnlySnapshot(sourceBinding),
-      casDir: join(root, "cas"),
-      targetDir: join(root, "target"),
-      targetStorageBinding: targetBinding,
-    })).rejects.toThrow("target storage binding DDL generation mismatch");
+    await expect(
+      restorePartitionDataOnlyCasSnapshot({
+        snapshot: dataOnlySnapshot(sourceBinding),
+        casDir: join(root, "cas"),
+        targetDir: join(root, "target"),
+        targetStorageBinding: targetBinding,
+      }),
+    ).rejects.toThrow("target storage binding DDL generation mismatch");
   });
 
   it("rejects data-only restore remapping when target binding relation shape differs", async () => {
@@ -344,12 +363,14 @@ describe("partition CAS snapshots", () => {
       snapshotScope: "data-only" as const,
     };
 
-    await expect(restorePartitionDataOnlyCasSnapshot({
-      snapshot: dataOnlySnapshot(sourceBinding),
-      casDir: join(root, "cas"),
-      targetDir: join(root, "target"),
-      targetStorageBinding: targetBinding,
-    })).rejects.toThrow("target storage binding relation count mismatch");
+    await expect(
+      restorePartitionDataOnlyCasSnapshot({
+        snapshot: dataOnlySnapshot(sourceBinding),
+        casDir: join(root, "cas"),
+        targetDir: join(root, "target"),
+        targetStorageBinding: targetBinding,
+      }),
+    ).rejects.toThrow("target storage binding relation count mismatch");
   });
 
   it("restores a catalog-and-data snapshot and replays only events after its high-watermark", async () => {
@@ -417,42 +438,44 @@ describe("partition CAS snapshots", () => {
     const targetDb = new PGlite(targetDir, { relaxedDurability: false });
     const targetStore = new PGlitePartitionStore("node-target", targetDb);
     await targetStore.migrate();
-    await expect(
-      targetStore.listEventsAfterCursors("tenant:jp", new Map()),
-    ).resolves.toMatchObject([
-      {
-        eventId: snapshottedEvent.eventId,
-        partitionId: "tenant:jp",
-        payload: { sensorId: "tokyo-1", reading: 42 },
-      },
-    ]);
+    await expect(targetStore.listEventsAfterCursors("tenant:jp", new Map())).resolves.toMatchObject(
+      [
+        {
+          eventId: snapshottedEvent.eventId,
+          partitionId: "tenant:jp",
+          payload: { sensorId: "tokyo-1", reading: 42 },
+        },
+      ],
+    );
 
     sourceDb = new PGlite(sourceDir);
     sourceStore = new PGlitePartitionStore("node-a", sourceDb);
     await sourceStore.migrate();
-    await expect(replayEventsAfterPartitionSnapshot({
-      sourceStore,
-      targetStore,
-      snapshot,
-    })).resolves.toBe(1);
+    await expect(
+      replayEventsAfterPartitionSnapshot({
+        sourceStore,
+        targetStore,
+        snapshot,
+      }),
+    ).resolves.toBe(1);
 
-    await expect(
-      targetStore.listEventsAfterCursors("tenant:jp", new Map()),
-    ).resolves.toMatchObject([
-      {
-        eventId: snapshottedEvent.eventId,
-        partitionId: "tenant:jp",
-        payload: { sensorId: "tokyo-1", reading: 42 },
-      },
-      {
-        eventId: replayedEvent.eventId,
-        partitionId: "tenant:jp",
-        payload: { sensorId: "tokyo-2", reading: 43 },
-      },
-    ]);
-    await expect(
-      targetStore.listEventsAfterCursors("tenant:us", new Map()),
-    ).resolves.toHaveLength(0);
+    await expect(targetStore.listEventsAfterCursors("tenant:jp", new Map())).resolves.toMatchObject(
+      [
+        {
+          eventId: snapshottedEvent.eventId,
+          partitionId: "tenant:jp",
+          payload: { sensorId: "tokyo-1", reading: 42 },
+        },
+        {
+          eventId: replayedEvent.eventId,
+          partitionId: "tenant:jp",
+          payload: { sensorId: "tokyo-2", reading: 43 },
+        },
+      ],
+    );
+    await expect(targetStore.listEventsAfterCursors("tenant:us", new Map())).resolves.toHaveLength(
+      0,
+    );
 
     await targetDb.close();
     await sourceDb.close();
@@ -508,24 +531,30 @@ describe("partition CAS snapshots", () => {
     const targetDb = new PGlite(targetDir, { relaxedDurability: false });
     const targetStore = new PGlitePartitionStore("node-target", targetDb);
     await targetStore.migrate();
-    await expect(targetStore.listEventsAfterCursors("tenant:jp", new Map())).resolves.toMatchObject([
-      {
-        eventId: includedEvent!.eventId,
-        partitionId: "tenant:jp",
-        payload: { sensorId: "during-snapshot", reading: 44 },
-      },
-    ]);
+    await expect(targetStore.listEventsAfterCursors("tenant:jp", new Map())).resolves.toMatchObject(
+      [
+        {
+          eventId: includedEvent!.eventId,
+          partitionId: "tenant:jp",
+          payload: { sensorId: "during-snapshot", reading: 44 },
+        },
+      ],
+    );
 
     sourceDb = new PGlite(sourceDir);
     sourceStore = new PGlitePartitionStore("node-a", sourceDb);
     await sourceStore.migrate();
-    await expect(replayEventsAfterPartitionSnapshot({
-      sourceStore,
-      targetStore,
-      snapshot,
-    })).resolves.toBe(0);
+    await expect(
+      replayEventsAfterPartitionSnapshot({
+        sourceStore,
+        targetStore,
+        snapshot,
+      }),
+    ).resolves.toBe(0);
 
-    await expect(targetStore.listEventsAfterCursors("tenant:jp", new Map())).resolves.toHaveLength(1);
+    await expect(targetStore.listEventsAfterCursors("tenant:jp", new Map())).resolves.toHaveLength(
+      1,
+    );
     await targetDb.close();
     await sourceDb.close();
   }, 120_000);
@@ -593,11 +622,13 @@ describe("partition CAS snapshots", () => {
       schemaVersion: 1,
       payload: { sensorId: "tokyo-1", reading: 42 },
     });
-    await expect(prepareStorageSnapshotFence({
-      db: sourceDb,
-      groupId: "sensor_readings",
-      partitionId: "tenant:jp",
-    })).resolves.toEqual([
+    await expect(
+      prepareStorageSnapshotFence({
+        db: sourceDb,
+        groupId: "sensor_readings",
+        partitionId: "tenant:jp",
+      }),
+    ).resolves.toEqual([
       expect.objectContaining({
         partitionId: "tenant:jp",
         relationName: "sensor_readings",
@@ -652,14 +683,14 @@ describe("partition CAS snapshots", () => {
     });
 
     const pulledDb = new PGlite(targetDir, { relaxedDurability: false });
-    const readings = await pulledDb.query<{ tenant_id: string; sensor_id: string; reading: number }>(
-      "SELECT tenant_id, sensor_id, reading FROM sensor_readings",
-    );
+    const readings = await pulledDb.query<{
+      tenant_id: string;
+      sensor_id: string;
+      reading: number;
+    }>("SELECT tenant_id, sensor_id, reading FROM sensor_readings");
     await pulledDb.close();
 
-    expect(readings.rows).toEqual([
-      { tenant_id: "tenant:jp", sensor_id: "tokyo-1", reading: 42 },
-    ]);
+    expect(readings.rows).toEqual([{ tenant_id: "tenant:jp", sensor_id: "tokyo-1", reading: 42 }]);
   }, 120_000);
 });
 
@@ -692,13 +723,15 @@ function dataOnlySnapshot(storageBinding: ReturnType<typeof storageBinding>) {
       parentSnapshotIds: [],
       chunkSize: 64 * 1024,
       directories: ["base", "base/5"],
-      files: [{
-        path: "base/5/16384",
-        size: 0,
-        sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        components: ["data" as const],
-        blocks: [],
-      }],
+      files: [
+        {
+          path: "base/5/16384",
+          size: 0,
+          sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          components: ["data" as const],
+          blocks: [],
+        },
+      ],
     },
   };
 }

@@ -129,15 +129,17 @@ export async function snapshotToCas(options: {
   });
 }
 
-export async function snapshotFilesystemToCas(options: {
-  fs: SnapshotDataFilesystem;
-  chunkSize?: number;
-  chunking?: CasChunking;
-  snapshotId?: string;
-  parentSnapshotIds?: string[];
-  filter?: CasSnapshotFilter;
-  compress?: boolean;
-} & CasBlockStoreOption): Promise<CasManifest> {
+export async function snapshotFilesystemToCas(
+  options: {
+    fs: SnapshotDataFilesystem;
+    chunkSize?: number;
+    chunking?: CasChunking;
+    snapshotId?: string;
+    parentSnapshotIds?: string[];
+    filter?: CasSnapshotFilter;
+    compress?: boolean;
+  } & CasBlockStoreOption,
+): Promise<CasManifest> {
   const casStore = resolveCasBlockStore(options);
   const chunking = options.chunking ?? fixedChunking(options.chunkSize ?? 64 * 1024);
   const chunkSize = manifestChunkSize(chunking);
@@ -232,7 +234,9 @@ export function validateCasManifest(manifest: unknown, expectedSnapshotId?: stri
   }
   assertNonEmptyString(manifest.snapshotId, "CAS manifest snapshotId");
   if (expectedSnapshotId !== undefined && manifest.snapshotId !== expectedSnapshotId) {
-    throw new Error(`CAS manifest snapshotId mismatch: ${manifest.snapshotId} !== ${expectedSnapshotId}`);
+    throw new Error(
+      `CAS manifest snapshotId mismatch: ${manifest.snapshotId} !== ${expectedSnapshotId}`,
+    );
   }
   assertPositiveInteger(manifest.chunkSize, "CAS manifest chunkSize");
 
@@ -294,10 +298,12 @@ export async function restoreFromCas(options: {
   });
 }
 
-export async function restoreFilesystemFromCas(options: {
-  manifest: CasManifest;
-  fs: SnapshotDataFilesystem;
-} & CasBlockStoreOption): Promise<void> {
+export async function restoreFilesystemFromCas(
+  options: {
+    manifest: CasManifest;
+    fs: SnapshotDataFilesystem;
+  } & CasBlockStoreOption,
+): Promise<void> {
   const casStore = resolveCasBlockStore(options);
   const manifest = validateCasManifest(options.manifest);
   await options.fs.mkdir("");
@@ -370,7 +376,8 @@ export async function transferMissingBlocksBetweenStores(options: {
   availableBlockHashes?: ReadonlySet<string>;
 }): Promise<CasBlock[]> {
   const manifest = validateCasManifest(options.manifest);
-  const available = options.availableBlockHashes ?? await options.targetCasStore.listBlockHashes();
+  const available =
+    options.availableBlockHashes ?? (await options.targetCasStore.listBlockHashes());
   const missing = diffMissingBlocks(manifest, available);
 
   for (const block of missing) {
@@ -392,13 +399,16 @@ export function manifestFilesEqualInventory(
     return JSON.stringify(manifest.files.map(stripBlocks)) === JSON.stringify(inventory);
   }
 
-  return JSON.stringify({
-    directories: manifest.directories,
-    files: manifest.files.map(stripBlocks),
-  }) === JSON.stringify({
-    directories: inventory.directories,
-    files: inventory.files,
-  });
+  return (
+    JSON.stringify({
+      directories: manifest.directories,
+      files: manifest.files.map(stripBlocks),
+    }) ===
+    JSON.stringify({
+      directories: inventory.directories,
+      files: inventory.files,
+    })
+  );
 }
 
 async function writeBlocks(
@@ -445,9 +455,14 @@ function manifestChunkSize(chunking: CasChunking): number {
   assertPositiveInteger(chunking.pageSize, "pageSize");
   assertPositiveInteger(chunking.maxChunkSize, "maxChunkSize");
   if (chunking.maxChunkSize < chunking.pageSize) {
-    throw new Error(`maxChunkSize must be greater than or equal to pageSize: ${chunking.maxChunkSize} < ${chunking.pageSize}`);
+    throw new Error(
+      `maxChunkSize must be greater than or equal to pageSize: ${chunking.maxChunkSize} < ${chunking.pageSize}`,
+    );
   }
-  return Math.max(chunking.pageSize, Math.floor(chunking.maxChunkSize / chunking.pageSize) * chunking.pageSize);
+  return Math.max(
+    chunking.pageSize,
+    Math.floor(chunking.maxChunkSize / chunking.pageSize) * chunking.pageSize,
+  );
 }
 
 function validateCasFileManifest(file: unknown, index: number): void {

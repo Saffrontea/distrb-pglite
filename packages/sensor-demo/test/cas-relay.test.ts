@@ -12,7 +12,7 @@ describe("browser CAS relay", () => {
         resolve();
         return;
       }
-      server.close((error) => error ? reject(error) : resolve());
+      server.close((error) => (error ? reject(error) : resolve()));
       server = undefined;
     });
   });
@@ -71,7 +71,7 @@ describe("browser CAS relay", () => {
 async function listHashes(baseUrl: string, namespace: string): Promise<string[]> {
   const response = await fetch(`${baseUrl}/${namespace}`);
   expect(response.status).toBe(200);
-  const body = await response.json() as { hashes: string[] };
+  const body = (await response.json()) as { hashes: string[] };
   return body.hashes;
 }
 

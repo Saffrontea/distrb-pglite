@@ -41,7 +41,10 @@ async function sleep(ms: number): Promise<void> {
 
 async function getFreePort(): Promise<number> {
   const srv = createServer();
-  await new Promise<void>((r, j) => { srv.once("error", j); srv.listen(0, "127.0.0.1", r); });
+  await new Promise<void>((r, j) => {
+    srv.once("error", j);
+    srv.listen(0, "127.0.0.1", r);
+  });
   const addr = srv.address();
   await new Promise<void>((r, j) => srv.close((e) => (e ? j(e) : r())));
   if (!addr || typeof addr === "string") throw new Error("no port");
@@ -222,7 +225,9 @@ async function runForN(options: {
 
   // late-snap が data-refresh で pull (既に bootstrap 済みなのでカタログ不要)
   const doManifest = await get(`${dataOnlyNode.baseUrl}/catalog`);
-  const { entries: doEntries } = await get<{ entries: unknown[] }>(`${dataOnlyNode.baseUrl}/snapshot-entries`);
+  const { entries: doEntries } = await get<{ entries: unknown[] }>(
+    `${dataOnlyNode.baseUrl}/snapshot-entries`,
+  );
   await post(`${lateSnap.baseUrl}/pull-snapshot`, {
     catalogManifest: doManifest,
     snapshotEntries: doEntries,
@@ -255,13 +260,13 @@ async function runForN(options: {
 // ─── main ─────────────────────────────────────────────────────────────────────
 
 async function run(): Promise<void> {
-  const NS = [2, 5, 10];  // N=20 は PGlite WASM インスタンスのメモリ制約で除外
+  const NS = [2, 5, 10]; // N=20 は PGlite WASM インスタンスのメモリ制約で除外
   const WRITES_PER_NODE = 10;
 
   const baseDir = await mkdtemp(join(tmpdir(), "distrb-scale-"));
-  const casDir  = join(baseDir, "cas");
-  const port    = await getFreePort();
-  const hubUrl  = `ws://127.0.0.1:${port}`;
+  const casDir = join(baseDir, "cas");
+  const port = await getFreePort();
+  const hubUrl = `ws://127.0.0.1:${port}`;
 
   console.log(`\n${"═".repeat(72)}`);
   console.log("  分散スケールテスト");
@@ -317,4 +322,7 @@ async function run(): Promise<void> {
   await rm(baseDir, { recursive: true, force: true });
 }
 
-run().catch((err) => { console.error(err); process.exit(1); });
+run().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

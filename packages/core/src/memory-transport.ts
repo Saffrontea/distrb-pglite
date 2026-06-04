@@ -1,10 +1,4 @@
-import type {
-  EventEnvelope,
-  EventId,
-  NodeId,
-  PartitionId,
-  ReplayResponse,
-} from "./types.js";
+import type { EventEnvelope, EventId, NodeId, PartitionId, ReplayResponse } from "./types.js";
 import type { Transport, TransportConnection, TransportHandlers } from "./transport.js";
 import {
   assertValidEventCursors,
@@ -133,7 +127,10 @@ function assertNodeMatches(name: string, expected: NodeId, actual: NodeId): void
   }
 }
 
-function assertValidReplayResponse(response: ReplayResponse, requestedPartitionId: PartitionId): void {
+function assertValidReplayResponse(
+  response: ReplayResponse,
+  requestedPartitionId: PartitionId,
+): void {
   assertValidPartitionId(response.partitionId);
   if (response.partitionId !== requestedPartitionId) {
     throw new Error(

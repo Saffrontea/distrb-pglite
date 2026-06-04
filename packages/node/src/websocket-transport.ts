@@ -231,9 +231,9 @@ export class WebSocketHub {
       throw new Error(`unexpected replay response: ${message.requestId}`);
     }
     if (
-      source.nodeId !== pending.targetNodeId
-      || message.requesterNodeId !== pending.requesterNodeId
-      || message.partitionId !== pending.partitionId
+      source.nodeId !== pending.targetNodeId ||
+      message.requesterNodeId !== pending.requesterNodeId ||
+      message.partitionId !== pending.partitionId
     ) {
       throw new Error(`replay response mismatch: ${message.requestId}`);
     }
@@ -272,9 +272,7 @@ export class WebSocketHub {
   }
 
   private async decode(data: Buffer): Promise<WireMessage> {
-    const message = this.compress
-      ? await this.decodeCompressed(data)
-      : JSON.parse(data.toString());
+    const message = this.compress ? await this.decodeCompressed(data) : JSON.parse(data.toString());
     assertKnownWireMessage(message);
     return message;
   }
@@ -325,19 +323,29 @@ export class WebSocketTransport implements Transport {
     });
 
     const zstd = this.compress ? await loadZstd() : undefined;
-    return new WebSocketTransportConnection(nodeId, socket, handlers, zstd, this.reconnectOptions, this.url);
+    return new WebSocketTransportConnection(
+      nodeId,
+      socket,
+      handlers,
+      zstd,
+      this.reconnectOptions,
+      this.url,
+    );
   }
 }
 
 class WebSocketTransportConnection implements TransportConnection {
   private socket: WebSocket;
   private readonly subscriptions = new Set<PartitionId>();
-  private readonly pendingReplay = new Map<string, {
-    partitionId: PartitionId;
-    resolve: (response: ReplayResponse) => void;
-    reject: (error: Error) => void;
-    timer: ReturnType<typeof setTimeout>;
-  }>();
+  private readonly pendingReplay = new Map<
+    string,
+    {
+      partitionId: PartitionId;
+      resolve: (response: ReplayResponse) => void;
+      reject: (error: Error) => void;
+      timer: ReturnType<typeof setTimeout>;
+    }
+  >();
   private pingInterval?: ReturnType<typeof setInterval>;
   private rttEwmaMs: number | undefined;
   private closed = false;
@@ -556,14 +564,19 @@ class WebSocketTransportConnection implements TransportConnection {
         }
         const pending = this.pendingReplay.get(message.requestId);
         if (pending) {
-          if (message.requesterNodeId !== this.nodeId || message.partitionId !== pending.partitionId) {
+          if (
+            message.requesterNodeId !== this.nodeId ||
+            message.partitionId !== pending.partitionId
+          ) {
             this.rejectPendingReplay(
               message.requestId,
               `replay response mismatch: ${message.requestId}`,
             );
             break;
           }
-          const mismatchedEvent = message.events.find((event) => event.partitionId !== message.partitionId);
+          const mismatchedEvent = message.events.find(
+            (event) => event.partitionId !== message.partitionId,
+          );
           if (mismatchedEvent) {
             this.rejectPendingReplay(
               message.requestId,
@@ -631,9 +644,10 @@ class WebSocketTransportConnection implements TransportConnection {
     if (!Number.isFinite(rttMs) || rttMs < 0) {
       return;
     }
-    this.rttEwmaMs = this.rttEwmaMs === undefined
-      ? rttMs
-      : this.rttEwmaMs * (1 - RTT_EWMA_ALPHA) + rttMs * RTT_EWMA_ALPHA;
+    this.rttEwmaMs =
+      this.rttEwmaMs === undefined
+        ? rttMs
+        : this.rttEwmaMs * (1 - RTT_EWMA_ALPHA) + rttMs * RTT_EWMA_ALPHA;
   }
 
   private replayRequestTimeoutMs(): number {

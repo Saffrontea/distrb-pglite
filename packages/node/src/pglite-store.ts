@@ -94,9 +94,7 @@ export class PGlitePartitionStore implements PartitionStore {
     return result.rows[0]?.exists ?? false;
   }
 
-  async appendLocal<TPayload>(
-    input: LocalEventInput<TPayload>,
-  ): Promise<EventEnvelope<TPayload>> {
+  async appendLocal<TPayload>(input: LocalEventInput<TPayload>): Promise<EventEnvelope<TPayload>> {
     return this.appendLocalEventTransaction(input);
   }
 
@@ -157,10 +155,7 @@ export class PGlitePartitionStore implements PartitionStore {
     });
   }
 
-  async listEventsAfter(
-    partitionId: PartitionId,
-    cursor?: EventCursor,
-  ): Promise<EventEnvelope[]> {
+  async listEventsAfter(partitionId: PartitionId, cursor?: EventCursor): Promise<EventEnvelope[]> {
     assertValidPartitionId(partitionId);
     if (cursor) {
       assertValidEventCursor(cursor);
@@ -183,12 +178,10 @@ export class PGlitePartitionStore implements PartitionStore {
     assertValidPartitionId(partitionId);
     assertValidEventCursors(cursors);
     const rows = await this.loadPartitionEvents(partitionId);
-    return rows
-      .map(rowToEvent)
-      .filter((event) => {
-        const cursor = cursors.get(event.sourceNodeId);
-        return !cursor || compareEventIds(event.eventId, cursor) > 0;
-      });
+    return rows.map(rowToEvent).filter((event) => {
+      const cursor = cursors.get(event.sourceNodeId);
+      return !cursor || compareEventIds(event.eventId, cursor) > 0;
+    });
   }
 
   async getHighWatermark(partitionId: PartitionId): Promise<HighWatermark> {
@@ -257,7 +250,9 @@ export class PGlitePartitionStore implements PartitionStore {
   private async assertExistingEventMatches(event: EventEnvelope): Promise<void> {
     const matched = await this.assertExistingEventMatchesIfPresent(event);
     if (!matched) {
-      throw new Error(`event id conflict without stored event: ${event.sourceNodeId}/${event.eventId}`);
+      throw new Error(
+        `event id conflict without stored event: ${event.sourceNodeId}/${event.eventId}`,
+      );
     }
   }
 
@@ -282,9 +277,9 @@ export class PGlitePartitionStore implements PartitionStore {
     }
 
     if (
-      row.partition_id !== event.partitionId
-      || row.schema_version !== event.schemaVersion
-      || canonicalJson(row.payload) !== canonicalJson(event.payload)
+      row.partition_id !== event.partitionId ||
+      row.schema_version !== event.schemaVersion ||
+      canonicalJson(row.payload) !== canonicalJson(event.payload)
     ) {
       throw new Error(`event id conflict: ${event.sourceNodeId}/${event.eventId}`);
     }

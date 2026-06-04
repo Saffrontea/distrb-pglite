@@ -19,9 +19,7 @@ describe("CasSnapshotFilesystem", () => {
     expect(new TextDecoder().decode(await restored.readFile("base/one"))).toBe("aaaabbbb");
     expect(new TextDecoder().decode(await restored.readFile("base/two"))).toBe("aaaacccc");
 
-    const blockHashes = manifest.files.flatMap((file) =>
-      file.blocks.map((block) => block.hash),
-    );
+    const blockHashes = manifest.files.flatMap((file) => file.blocks.map((block) => block.hash));
     expect(new Set(blockHashes).size).toBeLessThan(blockHashes.length);
   });
 
@@ -50,8 +48,9 @@ describe("CasSnapshotFilesystem", () => {
     const manifest = await source.snapshot();
 
     await expect(target.restore(manifest)).rejects.toThrow("blob not found");
-    await expect(target.readFile("base/existing"))
-      .resolves.toEqual(new TextEncoder().encode("keep-me"));
+    await expect(target.readFile("base/existing")).resolves.toEqual(
+      new TextEncoder().encode("keep-me"),
+    );
   });
 
   it("rejects invalid chunk sizes before snapshotting", () => {
@@ -59,12 +58,15 @@ describe("CasSnapshotFilesystem", () => {
       createHash("sha256").update(content).digest("hex"),
     );
 
-    expect(() => new CasSnapshotFilesystem(blobs, 0))
-      .toThrow("chunkSize must be a positive integer");
-    expect(() => new CasSnapshotFilesystem(blobs, -1))
-      .toThrow("chunkSize must be a positive integer");
-    expect(() => new CasSnapshotFilesystem(blobs, 1.5))
-      .toThrow("chunkSize must be a positive integer");
+    expect(() => new CasSnapshotFilesystem(blobs, 0)).toThrow(
+      "chunkSize must be a positive integer",
+    );
+    expect(() => new CasSnapshotFilesystem(blobs, -1)).toThrow(
+      "chunkSize must be a positive integer",
+    );
+    expect(() => new CasSnapshotFilesystem(blobs, 1.5)).toThrow(
+      "chunkSize must be a positive integer",
+    );
   });
 
   it("rejects restore manifests with invalid chunk sizes", async () => {
@@ -73,11 +75,13 @@ describe("CasSnapshotFilesystem", () => {
     );
     const fs = new CasSnapshotFilesystem(blobs, 4);
 
-    await expect(fs.restore({
-      version: 1,
-      chunkSize: 0,
-      directories: [],
-      files: [],
-    })).rejects.toThrow("manifest chunkSize must be a positive integer");
+    await expect(
+      fs.restore({
+        version: 1,
+        chunkSize: 0,
+        directories: [],
+        files: [],
+      }),
+    ).rejects.toThrow("manifest chunkSize must be a positive integer");
   });
 });

@@ -27,4 +27,3 @@ export type TransportConnection = {
 export type Transport = {
   connect(nodeId: NodeId, handlers: TransportHandlers): Promise<TransportConnection>;
 };
-

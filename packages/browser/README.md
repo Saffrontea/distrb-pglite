@@ -45,11 +45,7 @@ import { InMemoryPartitionStore, SyncNode } from "@distrb-pglite/core";
 import { BrowserWebSocketTransport } from "@distrb-pglite/browser";
 
 const store = new InMemoryPartitionStore("browser-a");
-const sync = new SyncNode(
-  "browser-a",
-  store,
-  new BrowserWebSocketTransport("ws://127.0.0.1:4000"),
-);
+const sync = new SyncNode("browser-a", store, new BrowserWebSocketTransport("ws://127.0.0.1:4000"));
 
 await sync.start({ autoRecoverSubscriptions: true });
 await sync.subscribe("tenant:jp");

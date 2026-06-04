@@ -1,27 +1,27 @@
 {
-    "name": "distrb-pglite",
-    "private": true,
-    "type": "module",
-    "packageManager": "pnpm@9.15.0",
-    "scripts": {
-        "build": "pnpm -r build",
-        "check": "pnpm build && pnpm -r check",
-        "lint": "oxlint",
-        "lint:fix": "oxlint --fix",
-        "fmt": "oxfmt",
-        "fmt:check": "oxfmt --check",
-        "test": "pnpm -r test",
-        "test:integration": "pnpm --filter @distrb-pglite/node test:integration",
-        "test:all": "pnpm test && pnpm test:integration",
-        "playground": "pnpm --filter @distrb-pglite/sensor-demo playground",
-        "playground:browser": "pnpm --filter @distrb-pglite/sensor-demo browser:dev"
-    },
-    "devDependencies": {
-        "@types/node": "^22.10.2",
-        "fast-check": "^4.8.0",
-        "oxfmt": "^0.53.0",
-        "oxlint": "^1.68.0",
-        "typescript": "^5.7.2",
-        "vitest": "^2.1.8"
-    }
+  "name": "distrb-pglite",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "pnpm -r build",
+    "check": "pnpm build && pnpm -r check",
+    "lint": "oxlint",
+    "lint:fix": "oxlint --fix",
+    "fmt": "oxfmt",
+    "fmt:check": "oxfmt --check",
+    "test": "pnpm -r test",
+    "test:integration": "pnpm --filter @distrb-pglite/node test:integration",
+    "test:all": "pnpm test && pnpm test:integration",
+    "playground": "pnpm --filter @distrb-pglite/sensor-demo playground",
+    "playground:browser": "pnpm --filter @distrb-pglite/sensor-demo browser:dev"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "fast-check": "^4.8.0",
+    "oxfmt": "^0.53.0",
+    "oxlint": "^1.68.0",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  },
+  "packageManager": "pnpm@9.15.0"
 }

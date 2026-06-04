@@ -291,10 +291,10 @@ erDiagram
 
 ## 主要なアーキテクチャ決定
 
-| ADR | 決定 |
-|-----|------|
-| [0001](adr/0001-eventual-consistency.md) | global transaction を持たず、結果整合性のみ |
-| [0002](adr/0002-transport-abstraction.md) | Transport を VFS 的インターフェースで抽象化 |
-| [0003](adr/0003-node-adapter-boundary.md) | core はランタイム非依存、Node.js 依存は packages/node に閉じ込める |
-| [0004](adr/0004-per-node-uuidv7-cursors.md) | cursor は global clock でなく source node ごとの UUIDv7 HighWatermark vector |
-| [0005](adr/0005-storage-layer-escalation.md) | PGlite を black box として扱い、smgr には入らない |
+| ADR                                          | 決定                                                                         |
+| -------------------------------------------- | ---------------------------------------------------------------------------- |
+| [0001](adr/0001-eventual-consistency.md)     | global transaction を持たず、結果整合性のみ                                  |
+| [0002](adr/0002-transport-abstraction.md)    | Transport を VFS 的インターフェースで抽象化                                  |
+| [0003](adr/0003-node-adapter-boundary.md)    | core はランタイム非依存、Node.js 依存は packages/node に閉じ込める           |
+| [0004](adr/0004-per-node-uuidv7-cursors.md)  | cursor は global clock でなく source node ごとの UUIDv7 HighWatermark vector |
+| [0005](adr/0005-storage-layer-escalation.md) | PGlite を black box として扱い、smgr には入らない                            |

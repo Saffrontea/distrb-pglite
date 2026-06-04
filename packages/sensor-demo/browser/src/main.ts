@@ -247,11 +247,26 @@ async function addNode(
     }
   });
   const stats = await readNodeStats(db);
-  nodes.set(id, { id, role, lineId, partitions, fs, blobs, db, store, relayOnline: false, eventCount: stats.events, stats });
+  nodes.set(id, {
+    id,
+    role,
+    lineId,
+    partitions,
+    fs,
+    blobs,
+    db,
+    store,
+    relayOnline: false,
+    eventCount: stats.events,
+    stats,
+  });
   if (!sourceNodeId) sourceNodeId = id;
   if (!targetNodeId) targetNodeId = id;
   selectedSqlNodeId = selectedSqlNodeId || id;
-  addLog("system", `${id} joined as ${role} node on ${lineId}; subscribes ${partitions.join(", ")}`);
+  addLog(
+    "system",
+    `${id} joined as ${role} node on ${lineId}; subscribes ${partitions.join(", ")}`,
+  );
 }
 
 async function resetNode(id: string): Promise<void> {
@@ -364,7 +379,10 @@ async function catchupTargetFromSource(): Promise<void> {
   const source = requireNode(sourceNodeId);
   const partitions = sharedPartitions(target, source);
   const applied = await catchUpNodeFromPeer(target, source);
-  addLog("sync", `${targetNodeId} catchup from ${sourceNodeId} on ${partitions.join(", ") || "no shared partitions"}: +${applied}`);
+  addLog(
+    "sync",
+    `${targetNodeId} catchup from ${sourceNodeId} on ${partitions.join(", ") || "no shared partitions"}: +${applied}`,
+  );
   render(false);
 }
 
@@ -443,7 +461,10 @@ async function simulationStep(): Promise<void> {
       const partitions = peer ? sharedPartitions(target, peer) : [];
       if (target.syncNode && peer && partitions.length > 0) {
         const applied = await catchUpNodeFromPeer(target, peer);
-        addLog("sync", `${target.id} auto catchup from ${peer.id} on ${partitions.join(", ")}: +${applied}`);
+        addLog(
+          "sync",
+          `${target.id} auto catchup from ${peer.id} on ${partitions.join(", ")}: +${applied}`,
+        );
         render(false);
       }
     }
@@ -463,7 +484,10 @@ async function incidentStep(): Promise<void> {
     if (node) {
       await disconnectRelay(node.id);
       addLog("system", `${node.id} network segment isolated`);
-      await writeFactoryEvent(node.id, node.role === "maintenance" ? "downtime" : eventTypeForRole(node.role));
+      await writeFactoryEvent(
+        node.id,
+        node.role === "maintenance" ? "downtime" : eventTypeForRole(node.role),
+      );
     }
     return;
   }
@@ -477,7 +501,10 @@ async function incidentStep(): Promise<void> {
     if (node.syncNode && peer && partitions.length > 0) {
       const applied = await catchUpNodeFromPeer(node, peer);
       const fannedOut = await fanOutCatchupFromPeer(node);
-      addLog("sync", `${node.id} rejoined and caught up from ${peer.id} on ${partitions.join(", ")}: +${applied}`);
+      addLog(
+        "sync",
+        `${node.id} rejoined and caught up from ${peer.id} on ${partitions.join(", ")}: +${applied}`,
+      );
       if (fannedOut > 0) {
         addLog("sync", `${node.id} shared offline backlog to subscribers: +${fannedOut}`);
       }
@@ -552,7 +579,10 @@ async function restoreSnapshot(): Promise<void> {
     eventCount: stats.events,
     stats,
   });
-  addLog("restore", `${target.id} restored ${manifest.snapshotId}; transferred ${missing.length} missing blocks`);
+  addLog(
+    "restore",
+    `${target.id} restored ${manifest.snapshotId}; transferred ${missing.length} missing blocks`,
+  );
   selectedSqlNodeId = target.id;
   render();
   await runSql();
@@ -564,7 +594,10 @@ async function diffBlocks(): Promise<void> {
   }
   const available = await targetCasStore.listBlockHashes();
   const missing = diffMissingBrowserCasBlocks(lastManifest!, available);
-  addLog("snapshot", `${targetNodeId} is missing ${missing.length} blocks for ${lastManifest!.snapshotId}`);
+  addLog(
+    "snapshot",
+    `${targetNodeId} is missing ${missing.length} blocks for ${lastManifest!.snapshotId}`,
+  );
   render();
 }
 
@@ -573,7 +606,10 @@ async function runGc(): Promise<void> {
     casStore: targetCasStore,
     retainedManifests: lastManifest ? [lastManifest] : [],
   });
-  addLog("gc", `target CAS GC deleted ${result.deleted.length}, retained ${result.retained.length}`);
+  addLog(
+    "gc",
+    `target CAS GC deleted ${result.deleted.length}, retained ${result.retained.length}`,
+  );
   render();
 }
 
@@ -626,7 +662,9 @@ async function readNodeStats(db: PGlite): Promise<NodeStats> {
     units: Number(row?.units ?? 0),
     defects: Number(row?.defects ?? 0),
     openIssues: Number(row?.open_issues ?? 0),
-    latest: row?.latest ? new Date(row.latest).toLocaleTimeString("ja-JP", { hour12: false }) : "none",
+    latest: row?.latest
+      ? new Date(row.latest).toLocaleTimeString("ja-JP", { hour12: false })
+      : "none",
     partitions: Object.fromEntries(
       partitionRows.rows.map((partition) => [partition.partition_id, Number(partition.count)]),
     ),
@@ -665,12 +703,12 @@ async function openCasStore(namespace: string, rootName: string): Promise<Browse
   const local = await openLocalCasStore(rootName);
   const relay = new RelayCasBlockStore(namespace);
   casRelayEnabled = await relay.isAvailable();
-  return casRelayEnabled
-    ? new MirroredCasBlockStore(relay, local)
-    : local;
+  return casRelayEnabled ? new MirroredCasBlockStore(relay, local) : local;
 }
 
-async function openLocalCasStore(rootName: string): Promise<OpfsCasBlockStore | MemoryCasBlockStore> {
+async function openLocalCasStore(
+  rootName: string,
+): Promise<OpfsCasBlockStore | MemoryCasBlockStore> {
   if ("storage" in navigator && "getDirectory" in navigator.storage) {
     try {
       opfsEnabled = true;
@@ -777,9 +815,9 @@ function renderNode(node: BrowserNode): string {
         <strong>${node.id}</strong>
         <span>${node.role}</span>
         <span>${node.lineId}</span>
-        ${isSource ? '<span>source</span>' : ""}
-        ${isTarget ? '<span>target</span>' : ""}
-        ${node.relayOnline ? '<span>relay</span>' : ""}
+        ${isSource ? "<span>source</span>" : ""}
+        ${isTarget ? "<span>target</span>" : ""}
+        ${node.relayOnline ? "<span>relay</span>" : ""}
       </div>
       <div class="partitions">${node.partitions.map((partition) => `<span>${escapeHtml(partition)}</span>`).join("")}</div>
       <div class="node-metrics">
@@ -789,9 +827,13 @@ function renderNode(node: BrowserNode): string {
         <div><strong>${node.stats.openIssues}</strong><span>open</span></div>
       </div>
       <div class="partition-counts">
-        ${visiblePartitions.length
-          ? visiblePartitions.map(([partition, count]) => `<span>${escapeHtml(partition)} ${count}</span>`).join("")
-          : '<span>no partition rows</span>'}
+        ${
+          visiblePartitions.length
+            ? visiblePartitions
+                .map(([partition, count]) => `<span>${escapeHtml(partition)} ${count}</span>`)
+                .join("")
+            : "<span>no partition rows</span>"
+        }
       </div>
       <p>${stale}</p>
       <div class="node-actions">
@@ -839,7 +881,9 @@ function bindEvents(): void {
   document.querySelector<HTMLTextAreaElement>("#sql-input")?.addEventListener("input", (event) => {
     sqlText = (event.target as HTMLTextAreaElement).value;
   });
-  document.querySelector("[data-action='add-node']")?.addEventListener("click", () => void addNode().then(() => render()));
+  document
+    .querySelector("[data-action='add-node']")
+    ?.addEventListener("click", () => void addNode().then(() => render()));
   document.querySelector("[data-action='toggle-sim']")?.addEventListener("click", () => {
     if (simulationRunning) {
       stopSimulation();
@@ -847,14 +891,30 @@ function bindEvents(): void {
       resumeSimulation();
     }
   });
-  document.querySelector("[data-action='write-source']")?.addEventListener("click", () => void writeFactoryEvent(sourceNodeId));
-  document.querySelector("[data-action='burst-source']")?.addEventListener("click", () => void writeBurst(sourceNodeId));
-  document.querySelector("[data-action='connect-source']")?.addEventListener("click", () => void connectRelay(sourceNodeId));
-  document.querySelector("[data-action='connect-target']")?.addEventListener("click", () => void connectRelay(targetNodeId));
-  document.querySelector("[data-action='catchup']")?.addEventListener("click", () => void catchupTargetFromSource());
-  document.querySelector("[data-action='snapshot']")?.addEventListener("click", () => void createSnapshot());
-  document.querySelector("[data-action='diff']")?.addEventListener("click", () => void diffBlocks());
-  document.querySelector("[data-action='restore']")?.addEventListener("click", () => void restoreSnapshot());
+  document
+    .querySelector("[data-action='write-source']")
+    ?.addEventListener("click", () => void writeFactoryEvent(sourceNodeId));
+  document
+    .querySelector("[data-action='burst-source']")
+    ?.addEventListener("click", () => void writeBurst(sourceNodeId));
+  document
+    .querySelector("[data-action='connect-source']")
+    ?.addEventListener("click", () => void connectRelay(sourceNodeId));
+  document
+    .querySelector("[data-action='connect-target']")
+    ?.addEventListener("click", () => void connectRelay(targetNodeId));
+  document
+    .querySelector("[data-action='catchup']")
+    ?.addEventListener("click", () => void catchupTargetFromSource());
+  document
+    .querySelector("[data-action='snapshot']")
+    ?.addEventListener("click", () => void createSnapshot());
+  document
+    .querySelector("[data-action='diff']")
+    ?.addEventListener("click", () => void diffBlocks());
+  document
+    .querySelector("[data-action='restore']")
+    ?.addEventListener("click", () => void restoreSnapshot());
   document.querySelector("[data-action='gc']")?.addEventListener("click", () => void runGc());
   document.querySelector("[data-action='run-sql']")?.addEventListener("click", () => void runSql());
   document.querySelectorAll<HTMLButtonElement>("[data-write]").forEach((button) => {
@@ -959,7 +1019,9 @@ function createFactoryPayload(
       workOrder,
       sku,
       quantity: 0,
-      defectCode: hasDefect ? pick(["scratch", "torque-low", "vision-fail", "label-miss"]) : undefined,
+      defectCode: hasDefect
+        ? pick(["scratch", "torque-low", "vision-fail", "label-miss"])
+        : undefined,
       severity: hasDefect ? pick(["warn", "critical"]) : "info",
       status: hasDefect ? "open" : "closed",
       reading: Math.round((96 + Math.random() * 3.5) * 10) / 10,
@@ -990,7 +1052,10 @@ function createFactoryPayload(
     workOrder,
     sku,
     quantity: 0,
-    defectCode: preferredType === "downtime" ? pick(["jam", "overheat", "air-pressure", "changeover"]) : undefined,
+    defectCode:
+      preferredType === "downtime"
+        ? pick(["jam", "overheat", "air-pressure", "changeover"])
+        : undefined,
     severity: preferredType === "downtime" ? pick(["warn", "critical"]) : "warn",
     status: "open",
     reading: Math.floor(6 + Math.random() * 24),
@@ -1142,7 +1207,7 @@ class RelayCasBlockStore implements BrowserCasBlockStore {
     if (!response.ok) {
       throw new Error(`relay CAS list failed: ${response.status}`);
     }
-    const body = await response.json() as { hashes?: string[] };
+    const body = (await response.json()) as { hashes?: string[] };
     return new Set(body.hashes ?? []);
   }
 
@@ -1188,10 +1253,7 @@ class MirroredCasBlockStore implements BrowserCasBlockStore {
   }
 
   async deleteBlock(hash: string): Promise<void> {
-    await Promise.allSettled([
-      this.primary.deleteBlock(hash),
-      this.mirror.deleteBlock(hash),
-    ]);
+    await Promise.allSettled([this.primary.deleteBlock(hash), this.mirror.deleteBlock(hash)]);
   }
 }
 

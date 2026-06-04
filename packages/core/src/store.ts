@@ -67,9 +67,7 @@ export class InMemoryPartitionStore implements PartitionStore {
     return this.partitions.has(partitionId);
   }
 
-  async appendLocal<TPayload>(
-    input: LocalEventInput<TPayload>,
-  ): Promise<EventEnvelope<TPayload>> {
+  async appendLocal<TPayload>(input: LocalEventInput<TPayload>): Promise<EventEnvelope<TPayload>> {
     assertValidLocalEventInput(input);
     await this.registerPartition(input.partitionId);
     const event: EventEnvelope<TPayload> = {
@@ -97,17 +95,19 @@ export class InMemoryPartitionStore implements PartitionStore {
     return this.record(event);
   }
 
-  async listEventsAfter(
-    partitionId: PartitionId,
-    cursor?: EventCursor,
-  ): Promise<EventEnvelope[]> {
+  async listEventsAfter(partitionId: PartitionId, cursor?: EventCursor): Promise<EventEnvelope[]> {
     assertValidPartitionId(partitionId);
     if (cursor) {
       assertValidEventCursor(cursor);
     }
     return this.events
       .filter((event) => event.partitionId === partitionId)
-      .filter((event) => !cursor || event.sourceNodeId !== cursor.sourceNodeId || compareEventIds(event.eventId, cursor.eventId) > 0)
+      .filter(
+        (event) =>
+          !cursor ||
+          event.sourceNodeId !== cursor.sourceNodeId ||
+          compareEventIds(event.eventId, cursor.eventId) > 0,
+      )
       .sort(compareEvents);
   }
 
@@ -304,13 +304,11 @@ function compareEvents(left: EventEnvelope, right: EventEnvelope): number {
 
 function assertSameEvent(left: EventEnvelope, right: EventEnvelope): void {
   if (
-    left.partitionId !== right.partitionId
-    || left.schemaVersion !== right.schemaVersion
-    || canonicalJson(left.payload) !== canonicalJson(right.payload)
+    left.partitionId !== right.partitionId ||
+    left.schemaVersion !== right.schemaVersion ||
+    canonicalJson(left.payload) !== canonicalJson(right.payload)
   ) {
-    throw new Error(
-      `event id conflict: ${right.sourceNodeId}/${right.eventId}`,
-    );
+    throw new Error(`event id conflict: ${right.sourceNodeId}/${right.eventId}`);
   }
 }
 

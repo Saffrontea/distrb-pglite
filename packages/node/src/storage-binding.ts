@@ -1,7 +1,4 @@
-import {
-  planStorageGc,
-  selectStorageSnapshotCatalogEntryForPull,
-} from "@distrb-pglite/core";
+import { planStorageGc, selectStorageSnapshotCatalogEntryForPull } from "@distrb-pglite/core";
 import type {
   PartitionId,
   StorageBindingGroup,
@@ -16,7 +13,11 @@ import type {
   StorageSnapshotComponent,
   StorageSnapshotScope,
 } from "@distrb-pglite/core";
-import { validateHighWatermarkEntries, type PartitionCasSnapshot, type PartitionFilesystemSnapshot } from "./partition-snapshot.js";
+import {
+  validateHighWatermarkEntries,
+  type PartitionCasSnapshot,
+  type PartitionFilesystemSnapshot,
+} from "./partition-snapshot.js";
 import type { PGliteClient } from "./pglite-store.js";
 import { gcCasBlocks, validateCasManifest, type CasGcResult, type CasManifest } from "./cas.js";
 
@@ -1233,8 +1234,9 @@ export async function saveStorageBindingGroup(
       `,
       [group.groupId, binding.partitionId],
     );
-    const childRelationOids = binding.boundChildRelationOids
-      ?? binding.relations
+    const childRelationOids =
+      binding.boundChildRelationOids ??
+      binding.relations
         .filter((relation) => (relation.role ?? "child") === "child")
         .map((relation) => relation.relationOid);
     for (const [childIndex, childRelationOid] of childRelationOids.entries()) {
@@ -1346,14 +1348,15 @@ export async function loadStorageBindingGroup(
     ddlGeneration: row.ddl_generation,
     storageGeneration: row.storage_generation ?? row.ddl_generation,
     vacuumPolicy: row.vacuum_policy
-      ? row.vacuum_policy as StorageBindingGroup["vacuumPolicy"]
+      ? (row.vacuum_policy as StorageBindingGroup["vacuumPolicy"])
       : undefined,
     bindings: bindingsResult.rows.map((bindingRow) => {
       const binding = bindingRow.binding as StoragePartitionBinding;
       return {
         ...binding,
         ddlGeneration: binding.ddlGeneration ?? row.ddl_generation,
-        storageGeneration: binding.storageGeneration ?? row.storage_generation ?? row.ddl_generation,
+        storageGeneration:
+          binding.storageGeneration ?? row.storage_generation ?? row.ddl_generation,
         boundChildRelationOids: childRows
           .filter((child) => child.partition_id === bindingRow.partition_id)
           .map((child) => child.child_relation_oid),
@@ -1429,7 +1432,8 @@ export async function savePartitionCasSnapshotCatalogEntry(options: {
     groupId: options.groupId,
     partitionId: options.snapshot.partitionId,
     snapshotId: options.snapshot.snapshotId,
-    components: options.components ?? defaultComponents(options.snapshot.storageBinding.snapshotScope),
+    components:
+      options.components ?? defaultComponents(options.snapshot.storageBinding.snapshotScope),
     highWatermark: options.snapshot.highWatermark,
     ddlGeneration: options.snapshot.storageBinding.ddlGeneration ?? 0,
     storageGeneration: options.snapshot.storageBinding.storageGeneration,
@@ -1448,7 +1452,8 @@ export async function savePartitionFilesystemSnapshotCatalogEntry(options: {
     groupId: options.groupId,
     partitionId: options.snapshot.partitionId,
     snapshotId: options.snapshot.snapshotId,
-    components: options.components ?? defaultComponents(options.snapshot.storageBinding.snapshotScope),
+    components:
+      options.components ?? defaultComponents(options.snapshot.storageBinding.snapshotScope),
     highWatermark: options.snapshot.highWatermark,
     ddlGeneration: options.snapshot.storageBinding.ddlGeneration ?? 0,
     storageGeneration: options.snapshot.storageBinding.storageGeneration,
@@ -1621,15 +1626,19 @@ export async function runStorageControlOperation(options: {
     partitionId: options.partitionId,
   });
   if (relationNames.length === 0) {
-    throw new Error(`storage partition binding has no child relations: ${options.groupId}/${options.partitionId}`);
+    throw new Error(
+      `storage partition binding has no child relations: ${options.groupId}/${options.partitionId}`,
+    );
   }
 
   for (const relationName of relationNames) {
-    await options.db.exec(storageControlSql({
-      operation: options.operation,
-      relationName,
-      clusterIndexName: options.clusterIndexByRelation?.[relationName],
-    }));
+    await options.db.exec(
+      storageControlSql({
+        operation: options.operation,
+        relationName,
+        clusterIndexName: options.clusterIndexByRelation?.[relationName],
+      }),
+    );
   }
 
   return {
@@ -1724,7 +1733,9 @@ export async function applyStorageCatalogManifest(options: {
 
   const group = await loadStorageBindingGroup(options.db, manifest.groupId);
   if (!group) {
-    throw new Error(`storage binding group not found after applying catalog manifest: ${manifest.groupId}`);
+    throw new Error(
+      `storage binding group not found after applying catalog manifest: ${manifest.groupId}`,
+    );
   }
   return group;
 }
@@ -1755,7 +1766,9 @@ export async function planStorageGcFromCatalog(options: {
     activePullGenerations: options.activePullGenerations,
     activeStorageGenerations: options.activeStorageGenerations,
     retainedSnapshotGenerations: snapshotGenerations.rows.map((row) => row.ddl_generation),
-    retainedSnapshotStorageGenerations: snapshotGenerations.rows.map((row) => row.storage_generation),
+    retainedSnapshotStorageGenerations: snapshotGenerations.rows.map(
+      (row) => row.storage_generation,
+    ),
   });
 }
 
@@ -1781,13 +1794,15 @@ export async function runStorageCasGcFromCatalog(options: {
     db: options.db,
     groupId: options.groupId,
   });
-  const retainedEntries = entries.filter((entry) =>
-    entry.manifestKind === "cas"
-    && !plan.canGcStorageGeneration(entry.storageGeneration ?? entry.ddlGeneration)
+  const retainedEntries = entries.filter(
+    (entry) =>
+      entry.manifestKind === "cas" &&
+      !plan.canGcStorageGeneration(entry.storageGeneration ?? entry.ddlGeneration),
   );
-  const gcEligibleEntries = entries.filter((entry) =>
-    entry.manifestKind === "cas"
-    && plan.canGcStorageGeneration(entry.storageGeneration ?? entry.ddlGeneration)
+  const gcEligibleEntries = entries.filter(
+    (entry) =>
+      entry.manifestKind === "cas" &&
+      plan.canGcStorageGeneration(entry.storageGeneration ?? entry.ddlGeneration),
   );
 
   return {
@@ -1842,11 +1857,7 @@ export async function createStorageBindingGroup(options: {
     `
       SELECT distrb_create_binding_group($1, $2::regclass, $3::jsonb)
     `,
-    [
-      options.groupId,
-      options.rootRelation,
-      JSON.stringify(options.vacuumPolicy ?? null),
-    ],
+    [options.groupId, options.rootRelation, JSON.stringify(options.vacuumPolicy ?? null)],
   );
 
   if (options.ddlGeneration !== undefined && options.ddlGeneration !== 1) {
@@ -1912,9 +1923,7 @@ export async function discoverStoragePartitionBinding(options: {
   relations?: string[];
   snapshotScope: StorageSnapshotScope;
 }): Promise<StoragePartitionBinding> {
-  const relationNames = options.relations?.length
-    ? options.relations
-    : [options.rootRelation];
+  const relationNames = options.relations?.length ? options.relations : [options.rootRelation];
   const relations: StorageRelationLocator[] = [];
 
   for (const relationName of relationNames) {
@@ -2063,7 +2072,11 @@ function storageControlSql(options: {
 
 function quoteRelationName(relationName: string): string {
   const parts = relationName.split(".");
-  if (parts.length < 1 || parts.length > 2 || parts.some((part) => !/^[A-Za-z_][A-Za-z0-9_$]*$/.test(part))) {
+  if (
+    parts.length < 1 ||
+    parts.length > 2 ||
+    parts.some((part) => !/^[A-Za-z_][A-Za-z0-9_$]*$/.test(part))
+  ) {
     throw new Error(`relation name must be unqualified or schema-qualified: ${relationName}`);
   }
   return parts.map((part) => `"${part.replaceAll('"', '""')}"`).join(".");
@@ -2185,7 +2198,9 @@ function validateStorageBindingGroup(group: StorageBindingGroup): void {
   }
 }
 
-export function validateStorageCatalogManifest(manifest: StorageCatalogManifest): StorageCatalogManifest {
+export function validateStorageCatalogManifest(
+  manifest: StorageCatalogManifest,
+): StorageCatalogManifest {
   if (manifest.version !== 1) {
     throw new Error(`invalid storage catalog manifest version: ${manifest.version}`);
   }
@@ -2193,7 +2208,10 @@ export function validateStorageCatalogManifest(manifest: StorageCatalogManifest)
   assertPositiveInteger(manifest.rootRelationOid, "storage catalog manifest rootRelationOid");
   assertNonNegativeInteger(manifest.ddlGeneration, "storage catalog manifest ddlGeneration");
   if (manifest.storageGeneration !== undefined) {
-    assertNonNegativeInteger(manifest.storageGeneration, "storage catalog manifest storageGeneration");
+    assertNonNegativeInteger(
+      manifest.storageGeneration,
+      "storage catalog manifest storageGeneration",
+    );
   }
 
   validateStorageBindingGroup({
@@ -2213,13 +2231,18 @@ export function validateStorageCatalogManifest(manifest: StorageCatalogManifest)
   for (const snapshot of manifest.snapshots) {
     assertNonEmptyString(snapshot.partitionId, "storage catalog snapshot partitionId");
     if (!bindingPartitions.has(snapshot.partitionId)) {
-      throw new Error(`storage catalog snapshot references unknown partition: ${snapshot.partitionId}`);
+      throw new Error(
+        `storage catalog snapshot references unknown partition: ${snapshot.partitionId}`,
+      );
     }
     assertNonEmptyString(snapshot.snapshotId, "storage catalog snapshotId");
     assertSnapshotComponents(snapshot.components);
     assertNonNegativeInteger(snapshot.ddlGeneration, "storage catalog snapshot ddlGeneration");
     if (snapshot.storageGeneration !== undefined) {
-      assertNonNegativeInteger(snapshot.storageGeneration, "storage catalog snapshot storageGeneration");
+      assertNonNegativeInteger(
+        snapshot.storageGeneration,
+        "storage catalog snapshot storageGeneration",
+      );
     }
     if (snapshot.manifestKind !== "cas" && snapshot.manifestKind !== "filesystem") {
       throw new Error(`invalid storage catalog snapshot manifest kind: ${snapshot.manifestKind}`);
@@ -2259,12 +2282,12 @@ function validateStoragePartitionBinding(binding: StoragePartitionBinding): void
   }
 }
 
-function validateStorageRelationLocator(
-  relation: StorageRelationLocator,
-  index: number,
-): void {
+function validateStorageRelationLocator(relation: StorageRelationLocator, index: number): void {
   assertPositiveInteger(relation.databaseOid, `storage binding relations[${index}].databaseOid`);
-  assertPositiveInteger(relation.tablespaceOid, `storage binding relations[${index}].tablespaceOid`);
+  assertPositiveInteger(
+    relation.tablespaceOid,
+    `storage binding relations[${index}].tablespaceOid`,
+  );
   assertPositiveInteger(relation.relationOid, `storage binding relations[${index}].relationOid`);
   if (relation.relfilenode != null) {
     assertPositiveInteger(relation.relfilenode, `storage binding relations[${index}].relfilenode`);
@@ -2273,21 +2296,26 @@ function validateStorageRelationLocator(
     assertNonEmptyString(relation.storagePath, `storage binding relations[${index}].storagePath`);
   }
   if (
-    relation.role != null
-    && relation.role !== "root"
-    && relation.role !== "child"
-    && relation.role !== "index"
-    && relation.role !== "toast"
-    && relation.role !== "data-catalog"
+    relation.role != null &&
+    relation.role !== "root" &&
+    relation.role !== "child" &&
+    relation.role !== "index" &&
+    relation.role !== "toast" &&
+    relation.role !== "data-catalog"
   ) {
     throw new Error(`invalid storage binding relation role at index ${index}: ${relation.role}`);
   }
   if (relation.parentRelationOid != null) {
-    assertNonNegativeInteger(relation.parentRelationOid, `storage binding relations[${index}].parentRelationOid`);
+    assertNonNegativeInteger(
+      relation.parentRelationOid,
+      `storage binding relations[${index}].parentRelationOid`,
+    );
   }
 }
 
-function assertSnapshotComponents(components: unknown): asserts components is StorageSnapshotComponent[] {
+function assertSnapshotComponents(
+  components: unknown,
+): asserts components is StorageSnapshotComponent[] {
   if (!Array.isArray(components) || components.length === 0) {
     throw new Error("snapshot catalog components must be a non-empty array");
   }

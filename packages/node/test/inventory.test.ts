@@ -1,11 +1,7 @@
 import { PGlite } from "@electric-sql/pglite";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import {
-  copyDataDirSnapshot,
-  inventoryDataDir,
-  PGlitePartitionStore,
-} from "../src/index.js";
+import { copyDataDirSnapshot, inventoryDataDir, PGlitePartitionStore } from "../src/index.js";
 import { makeTempDir } from "./temp-dir.js";
 
 describe("inventoryDataDir", () => {
@@ -72,12 +68,8 @@ describe("inventoryDataDir", () => {
       tenant_id: string;
       sensor_id: string;
       reading: number;
-    }>(
-      "SELECT tenant_id, sensor_id, reading FROM sensor_readings ORDER BY sensor_id",
-    );
-    expect(readings.rows).toEqual([
-      { tenant_id: "tenant:jp", sensor_id: "tokyo-1", reading: 42 },
-    ]);
+    }>("SELECT tenant_id, sensor_id, reading FROM sensor_readings ORDER BY sensor_id");
+    expect(readings.rows).toEqual([{ tenant_id: "tenant:jp", sensor_id: "tokyo-1", reading: 42 }]);
 
     await expect(
       importedStore.listEventsAfterCursors("tenant:jp", new Map()),

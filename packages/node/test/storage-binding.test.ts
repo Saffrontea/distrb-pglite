@@ -88,9 +88,11 @@ describe("discoverStoragePartitionBinding", () => {
     await db.close();
 
     expect(snapshot.manifest.files.length).toBeGreaterThan(0);
-    expect(snapshot.manifest.files.some((file) =>
-      file.path.startsWith(binding.relations[0]?.storagePath ?? "missing"),
-    )).toBe(true);
+    expect(
+      snapshot.manifest.files.some((file) =>
+        file.path.startsWith(binding.relations[0]?.storagePath ?? "missing"),
+      ),
+    ).toBe(true);
     expect(snapshot.manifest.files.some((file) => file.path.startsWith("pg_xact/"))).toBe(true);
   }, 120_000);
 
@@ -98,12 +100,14 @@ describe("discoverStoragePartitionBinding", () => {
     const root = await makeTempDir("storage-binding-missing");
     const db = new PGlite(join(root, "data"));
 
-    await expect(discoverStoragePartitionBinding({
-      db,
-      partitionId: "tenant:jp",
-      rootRelation: "public.missing_relation",
-      snapshotScope: "data-only",
-    })).rejects.toThrow("relation not found");
+    await expect(
+      discoverStoragePartitionBinding({
+        db,
+        partitionId: "tenant:jp",
+        rootRelation: "public.missing_relation",
+        snapshotScope: "data-only",
+      }),
+    ).rejects.toThrow("relation not found");
     await db.close();
   }, 120_000);
 
@@ -307,12 +311,17 @@ describe("discoverStoragePartitionBinding", () => {
       gcAfterGeneration: 8,
     });
     expect(reloaded?.bindings).toHaveLength(2);
-    expect(reloaded?.bindings.every((binding) => binding.boundChildRelationOids?.length === 1)).toBe(true);
-    expect(reloaded?.bindings.every((binding) =>
-      binding.relations.some((relation) =>
-        relation.role === "child" && relation.parentRelationOid === created.rootRelationOid
+    expect(
+      reloaded?.bindings.every((binding) => binding.boundChildRelationOids?.length === 1),
+    ).toBe(true);
+    expect(
+      reloaded?.bindings.every((binding) =>
+        binding.relations.some(
+          (relation) =>
+            relation.role === "child" && relation.parentRelationOid === created.rootRelationOid,
+        ),
       ),
-    )).toBe(true);
+    ).toBe(true);
   }, 120_000);
 
   it("exposes SQL DDL and DML for binding relation groups", async () => {
@@ -654,7 +663,9 @@ describe("discoverStoragePartitionBinding", () => {
       expect.arrayContaining(["child", "toast", "data-catalog", "index"]),
     );
 
-    await db.exec("CREATE INDEX sensor_readings_tenant_jp_sensor_id ON sensor_readings_tenant_jp (sensor_id)");
+    await db.exec(
+      "CREATE INDEX sensor_readings_tenant_jp_sensor_id ON sensor_readings_tenant_jp (sensor_id)",
+    );
     const drift = await detectStorageBindingDrift({
       db,
       groupId: "sensor_readings",
@@ -682,12 +693,14 @@ describe("discoverStoragePartitionBinding", () => {
     );
     await db.close();
 
-    expect(drift).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        partitionId: "tenant:jp",
-        currentRelation: expect.objectContaining({ role: "index" }),
-      }),
-    ]));
+    expect(drift).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          partitionId: "tenant:jp",
+          currentRelation: expect.objectContaining({ role: "index" }),
+        }),
+      ]),
+    );
     expect(refreshed.ddlGeneration).toBe(3);
     expect(refreshed.bindings[0]).toMatchObject({
       ddlGeneration: 3,
@@ -756,12 +769,14 @@ describe("discoverStoragePartitionBinding", () => {
     });
     await db.close();
 
-    expect(drift).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        driftKind: "changed",
-        currentRelation: expect.objectContaining({ role: "child" }),
-      }),
-    ]));
+    expect(drift).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          driftKind: "changed",
+          currentRelation: expect.objectContaining({ role: "child" }),
+        }),
+      ]),
+    );
     expect(refreshed.ddlGeneration).toBe(3);
     expect(refreshed.storageGeneration).toBe(3);
     expect(refreshed.bindings[0]).toMatchObject({ ddlGeneration: 3, storageGeneration: 3 });
@@ -812,7 +827,9 @@ describe("discoverStoragePartitionBinding", () => {
       partitionId: "tenant:jp",
     });
     const refreshed = control.group;
-    const afterChild = refreshed.bindings[0]?.relations.find((relation) => relation.role === "child");
+    const afterChild = refreshed.bindings[0]?.relations.find(
+      (relation) => relation.role === "child",
+    );
     const afterDrift = await detectStorageBindingDrift({
       db,
       groupId: "sensor_readings",
@@ -1051,10 +1068,13 @@ describe("discoverStoragePartitionBinding", () => {
       "tenant:jp",
       "tenant:us",
     ]);
-    expect(catalogManifest?.bindings.every((binding) =>
-      binding.relations.some((relation) => relation.role === "child")
-      && binding.relations.some((relation) => relation.role === "toast")
-    )).toBe(true);
+    expect(
+      catalogManifest?.bindings.every(
+        (binding) =>
+          binding.relations.some((relation) => relation.role === "child") &&
+          binding.relations.some((relation) => relation.role === "toast"),
+      ),
+    ).toBe(true);
   }, 120_000);
 
   it("applies pulled storage catalog manifests to a local catalog", async () => {
@@ -1134,55 +1154,73 @@ describe("discoverStoragePartitionBinding", () => {
       rootRelationOid: 1,
       ddlGeneration: 1,
       bindings: [binding],
-      snapshots: [{
-        partitionId: "tenant:jp",
-        snapshotId: "snapshot-1",
-        components: ["data" as const],
-        ddlGeneration: 1,
-        manifestKind: "cas" as const,
-      }],
+      snapshots: [
+        {
+          partitionId: "tenant:jp",
+          snapshotId: "snapshot-1",
+          components: ["data" as const],
+          ddlGeneration: 1,
+          manifestKind: "cas" as const,
+        },
+      ],
     };
 
-    await expect(applyStorageCatalogManifest({
-      db,
-      manifest: {
-        ...manifest,
-        snapshots: [{
-          ...manifest.snapshots[0]!,
-          components: ["indexes" as never],
-        }],
-      },
-    })).rejects.toThrow("invalid snapshot catalog component: indexes");
-    await expect(applyStorageCatalogManifest({
-      db,
-      manifest: {
-        ...manifest,
-        snapshots: [{
-          ...manifest.snapshots[0]!,
-          partitionId: "tenant:missing",
-        }],
-      },
-    })).rejects.toThrow("storage catalog snapshot references unknown partition: tenant:missing");
-    await expect(applyStorageCatalogManifest({
-      db,
-      manifest: {
-        ...manifest,
-        snapshots: [{
-          ...manifest.snapshots[0]!,
-          manifestKind: "tarball" as never,
-        }],
-      },
-    })).rejects.toThrow("invalid storage catalog snapshot manifest kind: tarball");
-    await expect(applyStorageCatalogManifest({
-      db,
-      manifest: {
-        ...manifest,
-        snapshots: [{
-          ...manifest.snapshots[0]!,
-          ddlGeneration: -1,
-        }],
-      },
-    })).rejects.toThrow("storage catalog snapshot ddlGeneration must be a non-negative integer");
+    await expect(
+      applyStorageCatalogManifest({
+        db,
+        manifest: {
+          ...manifest,
+          snapshots: [
+            {
+              ...manifest.snapshots[0]!,
+              components: ["indexes" as never],
+            },
+          ],
+        },
+      }),
+    ).rejects.toThrow("invalid snapshot catalog component: indexes");
+    await expect(
+      applyStorageCatalogManifest({
+        db,
+        manifest: {
+          ...manifest,
+          snapshots: [
+            {
+              ...manifest.snapshots[0]!,
+              partitionId: "tenant:missing",
+            },
+          ],
+        },
+      }),
+    ).rejects.toThrow("storage catalog snapshot references unknown partition: tenant:missing");
+    await expect(
+      applyStorageCatalogManifest({
+        db,
+        manifest: {
+          ...manifest,
+          snapshots: [
+            {
+              ...manifest.snapshots[0]!,
+              manifestKind: "tarball" as never,
+            },
+          ],
+        },
+      }),
+    ).rejects.toThrow("invalid storage catalog snapshot manifest kind: tarball");
+    await expect(
+      applyStorageCatalogManifest({
+        db,
+        manifest: {
+          ...manifest,
+          snapshots: [
+            {
+              ...manifest.snapshots[0]!,
+              ddlGeneration: -1,
+            },
+          ],
+        },
+      }),
+    ).rejects.toThrow("storage catalog snapshot ddlGeneration must be a non-negative integer");
 
     await db.close();
   });
@@ -1197,39 +1235,48 @@ describe("discoverStoragePartitionBinding", () => {
       snapshotScope: "data-only" as const,
     };
 
-    await expect(saveStorageBindingGroup(db, {
-      groupId: "sensor_readings",
-      rootRelationOid: 1,
-      ddlGeneration: 1,
-      bindings: [
-        validBinding,
-        { ...validBinding },
-      ],
-    })).rejects.toThrow("duplicate storage binding partitionId: tenant:jp");
-    await expect(saveStorageBindingGroup(db, {
-      groupId: "sensor_readings",
-      rootRelationOid: 1,
-      ddlGeneration: 1,
-      bindings: [{
-        ...validBinding,
-        snapshotScope: "delta" as never,
-      }],
-    })).rejects.toThrow("invalid storage binding snapshot scope: delta");
-    await expect(saveStorageBindingGroup(db, {
-      groupId: "sensor_readings",
-      rootRelationOid: 1,
-      ddlGeneration: 1,
-      bindings: [{
-        ...validBinding,
-        relations: [],
-      }],
-    })).rejects.toThrow("storage binding relations must be a non-empty array");
-    await expect(saveStorageBindingGroup(db, {
-      groupId: "sensor_readings",
-      rootRelationOid: 1,
-      ddlGeneration: -1,
-      bindings: [validBinding],
-    })).rejects.toThrow("storage binding ddlGeneration must be a non-negative integer");
+    await expect(
+      saveStorageBindingGroup(db, {
+        groupId: "sensor_readings",
+        rootRelationOid: 1,
+        ddlGeneration: 1,
+        bindings: [validBinding, { ...validBinding }],
+      }),
+    ).rejects.toThrow("duplicate storage binding partitionId: tenant:jp");
+    await expect(
+      saveStorageBindingGroup(db, {
+        groupId: "sensor_readings",
+        rootRelationOid: 1,
+        ddlGeneration: 1,
+        bindings: [
+          {
+            ...validBinding,
+            snapshotScope: "delta" as never,
+          },
+        ],
+      }),
+    ).rejects.toThrow("invalid storage binding snapshot scope: delta");
+    await expect(
+      saveStorageBindingGroup(db, {
+        groupId: "sensor_readings",
+        rootRelationOid: 1,
+        ddlGeneration: 1,
+        bindings: [
+          {
+            ...validBinding,
+            relations: [],
+          },
+        ],
+      }),
+    ).rejects.toThrow("storage binding relations must be a non-empty array");
+    await expect(
+      saveStorageBindingGroup(db, {
+        groupId: "sensor_readings",
+        rootRelationOid: 1,
+        ddlGeneration: -1,
+        bindings: [validBinding],
+      }),
+    ).rejects.toThrow("storage binding ddlGeneration must be a non-negative integer");
 
     await db.close();
   });
@@ -1242,12 +1289,14 @@ describe("discoverStoragePartitionBinding", () => {
       groupId: "sensor_readings",
       rootRelationOid: 1,
       ddlGeneration: 1,
-      bindings: [{
-        partitionId: "tenant:jp",
-        rootRelationOid: 1,
-        relations: [storageRelation(1, "jp.bin")],
-        snapshotScope: "data-only",
-      }],
+      bindings: [
+        {
+          partitionId: "tenant:jp",
+          rootRelationOid: 1,
+          relations: [storageRelation(1, "jp.bin")],
+          snapshotScope: "data-only",
+        },
+      ],
     });
     await db.query(
       `
@@ -1259,8 +1308,9 @@ describe("discoverStoragePartitionBinding", () => {
       ["sensor_readings", "tenant:jp"],
     );
 
-    await expect(loadStorageBindingGroup(db, "sensor_readings"))
-      .rejects.toThrow("invalid storage binding snapshot scope: delta");
+    await expect(loadStorageBindingGroup(db, "sensor_readings")).rejects.toThrow(
+      "invalid storage binding snapshot scope: delta",
+    );
 
     await db.close();
   });
@@ -1274,12 +1324,14 @@ describe("discoverStoragePartitionBinding", () => {
       groupId: "sensor_readings",
       rootRelationOid: 1,
       ddlGeneration: 1,
-      bindings: [{
-        partitionId: "tenant:old",
-        rootRelationOid: 1,
-        relations: [storageRelation(1, "old.bin")],
-        snapshotScope: "data-only",
-      }],
+      bindings: [
+        {
+          partitionId: "tenant:old",
+          rootRelationOid: 1,
+          relations: [storageRelation(1, "old.bin")],
+          snapshotScope: "data-only",
+        },
+      ],
     });
     await saveStorageSnapshotCatalogEntry(db, {
       groupId: "sensor_readings",
@@ -1299,12 +1351,14 @@ describe("discoverStoragePartitionBinding", () => {
         groupId: "sensor_readings",
         rootRelationOid: 2,
         ddlGeneration: 2,
-        bindings: [{
-          partitionId: "tenant:new",
-          rootRelationOid: 2,
-          relations: [storageRelation(2, "new.bin")],
-          snapshotScope: "data-only",
-        }],
+        bindings: [
+          {
+            partitionId: "tenant:new",
+            rootRelationOid: 2,
+            relations: [storageRelation(2, "new.bin")],
+            snapshotScope: "data-only",
+          },
+        ],
         snapshots: [],
       },
     });
@@ -1326,19 +1380,21 @@ describe("discoverStoragePartitionBinding", () => {
     const root = await makeTempDir("storage-catalog-duplicate-hwm");
     const db = new PGlite(join(root, "data"));
 
-    await expect(saveStorageSnapshotCatalogEntry(db, {
-      groupId: "sensor_readings",
-      partitionId: "tenant:jp",
-      snapshotId: "bad-snapshot",
-      components: ["data"],
-      highWatermark: [
-        ["node-a", "018bcfe5-6800-7001-8000-000000000001"],
-        ["node-a", "018bcfe5-6800-7002-8000-000000000002"],
-      ],
-      ddlGeneration: 1,
-      manifestKind: "cas",
-      manifest: casManifest("bad-snapshot", "a".repeat(64), 1),
-    })).rejects.toThrow("duplicate high-watermark source node: node-a");
+    await expect(
+      saveStorageSnapshotCatalogEntry(db, {
+        groupId: "sensor_readings",
+        partitionId: "tenant:jp",
+        snapshotId: "bad-snapshot",
+        components: ["data"],
+        highWatermark: [
+          ["node-a", "018bcfe5-6800-7001-8000-000000000001"],
+          ["node-a", "018bcfe5-6800-7002-8000-000000000002"],
+        ],
+        ddlGeneration: 1,
+        manifestKind: "cas",
+        manifest: casManifest("bad-snapshot", "a".repeat(64), 1),
+      }),
+    ).rejects.toThrow("duplicate high-watermark source node: node-a");
 
     await db.close();
   });
@@ -1347,18 +1403,18 @@ describe("discoverStoragePartitionBinding", () => {
     const root = await makeTempDir("storage-catalog-invalid-hwm-event-id");
     const db = new PGlite(join(root, "data"));
 
-    await expect(saveStorageSnapshotCatalogEntry(db, {
-      groupId: "sensor_readings",
-      partitionId: "tenant:jp",
-      snapshotId: "bad-snapshot",
-      components: ["data"],
-      highWatermark: [
-        ["node-a", "not-a-uuid"],
-      ],
-      ddlGeneration: 1,
-      manifestKind: "cas",
-      manifest: casManifest("bad-snapshot", "a".repeat(64), 1),
-    })).rejects.toThrow("invalid high-watermark event id at index 0");
+    await expect(
+      saveStorageSnapshotCatalogEntry(db, {
+        groupId: "sensor_readings",
+        partitionId: "tenant:jp",
+        snapshotId: "bad-snapshot",
+        components: ["data"],
+        highWatermark: [["node-a", "not-a-uuid"]],
+        ddlGeneration: 1,
+        manifestKind: "cas",
+        manifest: casManifest("bad-snapshot", "a".repeat(64), 1),
+      }),
+    ).rejects.toThrow("invalid high-watermark event id at index 0");
 
     await db.close();
   });
@@ -1378,26 +1434,36 @@ describe("discoverStoragePartitionBinding", () => {
       manifest: casManifest("bad-snapshot", "a".repeat(64), 1),
     };
 
-    await expect(saveStorageSnapshotCatalogEntry(db, {
-      ...baseEntry,
-      components: [] as never,
-    })).rejects.toThrow("snapshot catalog components must be a non-empty array");
-    await expect(saveStorageSnapshotCatalogEntry(db, {
-      ...baseEntry,
-      components: ["data", "data"],
-    })).rejects.toThrow("duplicate snapshot catalog component: data");
-    await expect(saveStorageSnapshotCatalogEntry(db, {
-      ...baseEntry,
-      components: ["indexes"] as never,
-    })).rejects.toThrow("invalid snapshot catalog component: indexes");
-    await expect(saveStorageSnapshotCatalogEntry(db, {
-      ...baseEntry,
-      manifestKind: "tarball" as never,
-    })).rejects.toThrow("invalid snapshot catalog manifest kind: tarball");
-    await expect(saveStorageSnapshotCatalogEntry(db, {
-      ...baseEntry,
-      ddlGeneration: -1,
-    })).rejects.toThrow("snapshot catalog ddlGeneration must be a non-negative integer");
+    await expect(
+      saveStorageSnapshotCatalogEntry(db, {
+        ...baseEntry,
+        components: [] as never,
+      }),
+    ).rejects.toThrow("snapshot catalog components must be a non-empty array");
+    await expect(
+      saveStorageSnapshotCatalogEntry(db, {
+        ...baseEntry,
+        components: ["data", "data"],
+      }),
+    ).rejects.toThrow("duplicate snapshot catalog component: data");
+    await expect(
+      saveStorageSnapshotCatalogEntry(db, {
+        ...baseEntry,
+        components: ["indexes"] as never,
+      }),
+    ).rejects.toThrow("invalid snapshot catalog component: indexes");
+    await expect(
+      saveStorageSnapshotCatalogEntry(db, {
+        ...baseEntry,
+        manifestKind: "tarball" as never,
+      }),
+    ).rejects.toThrow("invalid snapshot catalog manifest kind: tarball");
+    await expect(
+      saveStorageSnapshotCatalogEntry(db, {
+        ...baseEntry,
+        ddlGeneration: -1,
+      }),
+    ).rejects.toThrow("snapshot catalog ddlGeneration must be a non-negative integer");
 
     await db.close();
   });
@@ -1417,20 +1483,28 @@ describe("discoverStoragePartitionBinding", () => {
       manifest: casManifest("bad-snapshot", "a".repeat(64), 1),
     };
 
-    await expect(saveStorageSnapshotCatalogEntry(db, {
-      ...baseEntry,
-      manifest: casManifest("other-snapshot", "a".repeat(64), 1),
-    })).rejects.toThrow("CAS manifest snapshotId mismatch: other-snapshot !== bad-snapshot");
-    await expect(saveStorageSnapshotCatalogEntry(db, {
-      ...baseEntry,
-      manifest: {
-        ...baseEntry.manifest,
-        files: [{
-          ...baseEntry.manifest.files[0],
-          blocks: [{ hash: "not-a-hash", size: 1 }],
-        }],
-      },
-    })).rejects.toThrow("CAS manifest files[0].blocks[0].hash must be a 64-character lowercase sha256 hash");
+    await expect(
+      saveStorageSnapshotCatalogEntry(db, {
+        ...baseEntry,
+        manifest: casManifest("other-snapshot", "a".repeat(64), 1),
+      }),
+    ).rejects.toThrow("CAS manifest snapshotId mismatch: other-snapshot !== bad-snapshot");
+    await expect(
+      saveStorageSnapshotCatalogEntry(db, {
+        ...baseEntry,
+        manifest: {
+          ...baseEntry.manifest,
+          files: [
+            {
+              ...baseEntry.manifest.files[0],
+              blocks: [{ hash: "not-a-hash", size: 1 }],
+            },
+          ],
+        },
+      }),
+    ).rejects.toThrow(
+      "CAS manifest files[0].blocks[0].hash must be a 64-character lowercase sha256 hash",
+    );
 
     await db.close();
   });
@@ -1443,12 +1517,14 @@ describe("discoverStoragePartitionBinding", () => {
       groupId: "sensor_readings",
       rootRelationOid: 1,
       ddlGeneration: 1,
-      bindings: [{
-        partitionId: "tenant:jp",
-        rootRelationOid: 1,
-        relations: [storageRelation(1, "jp.bin")],
-        snapshotScope: "data-only",
-      }],
+      bindings: [
+        {
+          partitionId: "tenant:jp",
+          rootRelationOid: 1,
+          relations: [storageRelation(1, "jp.bin")],
+          snapshotScope: "data-only",
+        },
+      ],
     });
     await saveStorageSnapshotCatalogEntry(db, {
       groupId: "sensor_readings",
@@ -1471,12 +1547,14 @@ describe("discoverStoragePartitionBinding", () => {
       ["sensor_readings", "tenant:jp", "bad-snapshot"],
     );
 
-    await expect(loadStorageSnapshotCatalogEntry({
-      db,
-      groupId: "sensor_readings",
-      partitionId: "tenant:jp",
-      snapshotId: "bad-snapshot",
-    })).rejects.toThrow("CAS manifest snapshotId mismatch: other-snapshot !== bad-snapshot");
+    await expect(
+      loadStorageSnapshotCatalogEntry({
+        db,
+        groupId: "sensor_readings",
+        partitionId: "tenant:jp",
+        snapshotId: "bad-snapshot",
+      }),
+    ).rejects.toThrow("CAS manifest snapshotId mismatch: other-snapshot !== bad-snapshot");
 
     await db.close();
   });
@@ -1707,12 +1785,14 @@ describe("discoverStoragePartitionBinding", () => {
       manifest: casManifest("new", newHash, 3),
     });
 
-    await expect(runStorageCasAutoGcFromCatalog({
-      db,
-      groupId: "sensor_readings",
-      casDir,
-      policy: { enabled: false },
-    })).resolves.toEqual({ skipped: true, reason: "disabled" });
+    await expect(
+      runStorageCasAutoGcFromCatalog({
+        db,
+        groupId: "sensor_readings",
+        casDir,
+        policy: { enabled: false },
+      }),
+    ).resolves.toEqual({ skipped: true, reason: "disabled" });
 
     const result = await runStorageCasAutoGcFromCatalog({
       db,
@@ -1741,13 +1821,15 @@ function casManifest(snapshotId: string, hash: string, size: number) {
     parentSnapshotIds: [],
     chunkSize: 64 * 1024,
     directories: [],
-    files: [{
-      path: `${snapshotId}.bin`,
-      size,
-      sha256: hash,
-      components: ["data" as const],
-      blocks: [{ hash, size }],
-    }],
+    files: [
+      {
+        path: `${snapshotId}.bin`,
+        size,
+        sha256: hash,
+        components: ["data" as const],
+        blocks: [{ hash, size }],
+      },
+    ],
   };
 }
 

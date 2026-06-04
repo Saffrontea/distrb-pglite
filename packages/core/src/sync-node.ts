@@ -76,9 +76,7 @@ export class SyncNode {
     await this.requireConnection().subscribe(partitionId);
   }
 
-  async write<TPayload>(
-    input: LocalEventInput<TPayload>,
-  ): Promise<EventEnvelope<TPayload>> {
+  async write<TPayload>(input: LocalEventInput<TPayload>): Promise<EventEnvelope<TPayload>> {
     const connection = this.requireConnection();
     return this.store
       .appendLocal(input)
@@ -117,11 +115,7 @@ export class SyncNode {
     partitionId: PartitionId,
     cursors: ReadonlyMap<NodeId, EventId>,
   ): Promise<number> {
-    const response = await this.requireConnection().requestReplay(
-      peerNodeId,
-      partitionId,
-      cursors,
-    );
+    const response = await this.requireConnection().requestReplay(peerNodeId, partitionId, cursors);
 
     if (response.partitionId !== partitionId) {
       throw new Error(
@@ -202,9 +196,9 @@ function validateReplayEvents(events: readonly EventEnvelope[], partitionId: Par
 
 function assertSameReplayEvent(left: EventEnvelope, right: EventEnvelope): void {
   if (
-    left.partitionId !== right.partitionId
-    || left.schemaVersion !== right.schemaVersion
-    || canonicalJson(left.payload) !== canonicalJson(right.payload)
+    left.partitionId !== right.partitionId ||
+    left.schemaVersion !== right.schemaVersion ||
+    canonicalJson(left.payload) !== canonicalJson(right.payload)
   ) {
     throw new Error(`replay response event id conflict: ${right.sourceNodeId}/${right.eventId}`);
   }

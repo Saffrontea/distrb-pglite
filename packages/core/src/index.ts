@@ -35,20 +35,12 @@ export {
   isEventTransactionalPartitionStore,
   validateEventCursorEntries,
 } from "./store.js";
-export type {
-  EventProjection,
-  EventTransactionalPartitionStore,
-  PartitionStore,
-} from "./store.js";
+export type { EventProjection, EventTransactionalPartitionStore, PartitionStore } from "./store.js";
 export { MemoryTransport } from "./memory-transport.js";
 export type { Transport, TransportConnection, TransportHandlers } from "./transport.js";
 export { SyncNode } from "./sync-node.js";
 export type { SyncNodeStartOptions, SubscribeOptions } from "./sync-node.js";
-export {
-  compareHighWatermarks,
-  convergenceStatus,
-  planCatchupFromStatus,
-} from "./convergence.js";
+export { compareHighWatermarks, convergenceStatus, planCatchupFromStatus } from "./convergence.js";
 export type {
   CatchupPlan,
   CursorComparison,

@@ -1,12 +1,17 @@
-import { MemoryBlobStore, SyncNode, type EventEnvelope, type ReplayResponse, type Transport, type TransportConnection, type TransportHandlers } from "@distrb-pglite/core";
+import {
+  MemoryBlobStore,
+  SyncNode,
+  type EventEnvelope,
+  type ReplayResponse,
+  type Transport,
+  type TransportConnection,
+  type TransportHandlers,
+} from "@distrb-pglite/core";
 import { PGlite } from "@electric-sql/pglite";
 import * as fc from "fast-check";
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import {
-  PGliteCasFilesystem,
-  PGlitePartitionStore,
-} from "../src/index.js";
+import { PGliteCasFilesystem, PGlitePartitionStore } from "../src/index.js";
 
 type Operation = "commit" | "projection-error" | "publish-error";
 
@@ -53,10 +58,10 @@ describe("PBT: PGlite VFS and event send transaction boundary", () => {
               payload: { value: index },
             },
             async (event) => {
-              await db.query(
-                "INSERT INTO tx_notes (event_id, value) VALUES ($1, $2)",
-                [event.eventId, index],
-              );
+              await db.query("INSERT INTO tx_notes (event_id, value) VALUES ($1, $2)", [
+                event.eventId,
+                index,
+              ]);
               if (operation === "projection-error") {
                 throw new Error("projection failed");
               }
@@ -79,8 +84,9 @@ describe("PBT: PGlite VFS and event send transaction boundary", () => {
           }
 
           await expect(countRows(db, "tx_notes")).resolves.toBe(committed);
-          await expect(store.listEventsAfterCursors("tenant:jp", new Map()))
-            .resolves.toHaveLength(committed);
+          await expect(store.listEventsAfterCursors("tenant:jp", new Map())).resolves.toHaveLength(
+            committed,
+          );
           expect(transport.published).toHaveLength(successfulPublishes);
         }
 
@@ -94,8 +100,9 @@ describe("PBT: PGlite VFS and event send transaction boundary", () => {
         const restoredStore = new PGlitePartitionStore("node-a", db);
 
         await expect(countRows(db, "tx_notes")).resolves.toBe(committed);
-        await expect(restoredStore.listEventsAfterCursors("tenant:jp", new Map()))
-          .resolves.toHaveLength(committed);
+        await expect(
+          restoredStore.listEventsAfterCursors("tenant:jp", new Map()),
+        ).resolves.toHaveLength(committed);
 
         await db.close();
       }),
@@ -110,9 +117,7 @@ async function countRows(db: PGlite, table: string): Promise<number> {
 }
 
 function createBlobStore(): MemoryBlobStore {
-  return new MemoryBlobStore((content) =>
-    createHash("sha256").update(content).digest("hex"),
-  );
+  return new MemoryBlobStore((content) => createHash("sha256").update(content).digest("hex"));
 }
 
 class ScriptedTransport implements Transport {

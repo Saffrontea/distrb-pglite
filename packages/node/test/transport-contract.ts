@@ -66,8 +66,16 @@ export function describeTransportContract(
         await nodeB.subscribe("tenant:jp");
         await settle?.();
 
-        await nodeA.write({ partitionId: "tenant:us", schemaVersion: 1, payload: { ignored: true } });
-        await nodeA.write({ partitionId: "tenant:jp", schemaVersion: 1, payload: { visible: true } });
+        await nodeA.write({
+          partitionId: "tenant:us",
+          schemaVersion: 1,
+          payload: { ignored: true },
+        });
+        await nodeA.write({
+          partitionId: "tenant:jp",
+          schemaVersion: 1,
+          payload: { visible: true },
+        });
 
         await waitFor(async () => {
           expect(await storB.listEventsAfterCursors("tenant:jp", new Map())).toHaveLength(1);
@@ -173,7 +181,12 @@ export async function waitFor(assertion: () => Promise<void>, timeoutMs = 4000):
   const start = Date.now();
   let last: unknown;
   while (Date.now() - start < timeoutMs) {
-    try { await assertion(); return; } catch (e) { last = e; }
+    try {
+      await assertion();
+      return;
+    } catch (e) {
+      last = e;
+    }
     await new Promise((r) => setTimeout(r, 20));
   }
   throw last;
@@ -186,10 +199,13 @@ export async function getFreePort(): Promise<number> {
     server.once("error", reject);
     server.listen(0, "127.0.0.1", () => {
       const addr = server.address();
-      if (!addr || typeof addr === "string") { reject(new Error("no addr")); return; }
+      if (!addr || typeof addr === "string") {
+        reject(new Error("no addr"));
+        return;
+      }
       resolve(addr.port);
     });
   });
-  await new Promise<void>((r, j) => server.close((e) => e ? j(e) : r()));
+  await new Promise<void>((r, j) => server.close((e) => (e ? j(e) : r())));
   return port;
 }

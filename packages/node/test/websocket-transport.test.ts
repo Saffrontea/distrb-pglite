@@ -19,7 +19,7 @@ describeTransportContract("WebSocketHub+WebSocketTransport", async () => {
   const setup: TransportSetup = {
     createNode: async (nodeId) => {
       const store = new InMemoryPartitionStore(nodeId);
-      const node  = new SyncNode(nodeId, store, new WebSocketTransport(url));
+      const node = new SyncNode(nodeId, store, new WebSocketTransport(url));
       nodes.push(node);
       return { node, store };
     },
@@ -48,15 +48,23 @@ describe("WebSocketTransport (Hub 固有)", () => {
 
     const url = `ws://127.0.0.1:${port}`;
     const storeB = new InMemoryPartitionStore("node-b");
-    const nodeA  = new SyncNode("node-a", new InMemoryPartitionStore("node-a"), new WebSocketTransport(url, true));
-    const nodeB  = new SyncNode("node-b", storeB, new WebSocketTransport(url, true));
+    const nodeA = new SyncNode(
+      "node-a",
+      new InMemoryPartitionStore("node-a"),
+      new WebSocketTransport(url, true),
+    );
+    const nodeB = new SyncNode("node-b", storeB, new WebSocketTransport(url, true));
 
     await nodeA.start();
     await nodeA.subscribe("tenant:jp");
     await nodeB.start();
     await nodeB.subscribe("tenant:jp");
 
-    await nodeA.write({ partitionId: "tenant:jp", schemaVersion: 1, payload: { compressed: true } });
+    await nodeA.write({
+      partitionId: "tenant:jp",
+      schemaVersion: 1,
+      payload: { compressed: true },
+    });
 
     await waitFor(async () => {
       const events = await storeB.listEventsAfterCursors("tenant:jp", new Map());
@@ -72,17 +80,23 @@ describe("WebSocketTransport (Hub 固有)", () => {
     const port = await getFreePort();
     if (port === undefined) return;
 
-    await expect(new WebSocketTransport(`ws://127.0.0.1:${port}`).connect("", {
-      onEvent: () => {},
-    })).rejects.toThrow("nodeId must be a non-empty string");
+    await expect(
+      new WebSocketTransport(`ws://127.0.0.1:${port}`).connect("", {
+        onEvent: () => {},
+      }),
+    ).rejects.toThrow("nodeId must be a non-empty string");
   });
 
   it("rejects invalid relay urls before opening a websocket", () => {
-    expect(() => new WebSocketTransport("http://127.0.0.1:1"))
-      .toThrow("url must use ws or wss protocol");
-    expect(() => new WebSocketTransport({
-      url: "",
-    })).toThrow("url must be a non-empty websocket URL");
+    expect(() => new WebSocketTransport("http://127.0.0.1:1")).toThrow(
+      "url must use ws or wss protocol",
+    );
+    expect(
+      () =>
+        new WebSocketTransport({
+          url: "",
+        }),
+    ).toThrow("url must be a non-empty websocket URL");
   });
 
   it("requestReplay は応答がない場合にタイムアウトする", async () => {
@@ -101,8 +115,9 @@ describe("WebSocketTransport (Hub 固有)", () => {
       onReplayRequest: () => new Promise(() => {}),
     });
 
-    await expect(requester.requestReplay("node-b", "tenant:jp", new Map()))
-      .rejects.toThrow("replay request timed out after 1000ms");
+    await expect(requester.requestReplay("node-b", "tenant:jp", new Map())).rejects.toThrow(
+      "replay request timed out after 1000ms",
+    );
 
     await requester.close();
     await target.close();
@@ -128,8 +143,9 @@ describe("WebSocketTransport (Hub 固有)", () => {
         },
       });
 
-      await expect(requester.requestReplay("node-b", "tenant:jp", new Map()))
-        .rejects.toThrow("replay request timed out after 1000ms");
+      await expect(requester.requestReplay("node-b", "tenant:jp", new Map())).rejects.toThrow(
+        "replay request timed out after 1000ms",
+      );
       expect(errorSpy).toHaveBeenCalledWith(
         "[websocket] message handling error",
         expect.any(Error),
@@ -158,20 +174,22 @@ describe("WebSocketTransport (Hub 固有)", () => {
 
       const response = connection.requestReplay("node-b", "tenant:jp", new Map());
       const request = await nextRawMessageOfType(serverSocket, "replay-request");
-      serverSocket.send(JSON.stringify({
-        type: "replay-response",
-        requestId: request.requestId,
-        requesterNodeId: "node-a",
-        partitionId: "tenant:us",
-        events: [],
-      }));
+      serverSocket.send(
+        JSON.stringify({
+          type: "replay-response",
+          requestId: request.requestId,
+          requesterNodeId: "node-a",
+          partitionId: "tenant:us",
+          events: [],
+        }),
+      );
 
       await expect(response).rejects.toThrow("replay response mismatch");
 
       await connection.close();
     } finally {
       await new Promise<void>((resolve, reject) => {
-        server.close((error) => error ? reject(error) : resolve());
+        server.close((error) => (error ? reject(error) : resolve()));
       });
     }
   });
@@ -188,13 +206,15 @@ describe("WebSocketTransport (Hub 固有)", () => {
     });
     await connection.close();
 
-    await expect(connection.publish({
-      sourceNodeId: "node-a",
-      eventId: "018bcfe5-6800-7001-8000-000000000001",
-      partitionId: "tenant:jp",
-      schemaVersion: 1,
-      payload: {},
-    })).rejects.toThrow("websocket connection is closed");
+    await expect(
+      connection.publish({
+        sourceNodeId: "node-a",
+        eventId: "018bcfe5-6800-7001-8000-000000000001",
+        partitionId: "tenant:jp",
+        schemaVersion: 1,
+        payload: {},
+      }),
+    ).rejects.toThrow("websocket connection is closed");
   });
 
   it("rejects invalid events before publishing", async () => {
@@ -208,13 +228,15 @@ describe("WebSocketTransport (Hub 固有)", () => {
       onEvent: () => {},
     });
 
-    await expect(connection.publish({
-      sourceNodeId: "node-a",
-      eventId: "not-a-uuid",
-      partitionId: "tenant:jp",
-      schemaVersion: 1,
-      payload: {},
-    })).rejects.toThrow("eventId must be a UUIDv7");
+    await expect(
+      connection.publish({
+        sourceNodeId: "node-a",
+        eventId: "not-a-uuid",
+        partitionId: "tenant:jp",
+        schemaVersion: 1,
+        payload: {},
+      }),
+    ).rejects.toThrow("eventId must be a UUIDv7");
 
     await connection.close();
   });
@@ -230,13 +252,15 @@ describe("WebSocketTransport (Hub 固有)", () => {
       onEvent: () => {},
     });
 
-    await expect(connection.publish({
-      sourceNodeId: "node-b",
-      eventId: "018bcfe5-6800-7001-8000-000000000001",
-      partitionId: "tenant:jp",
-      schemaVersion: 1,
-      payload: {},
-    })).rejects.toThrow("event source mismatch");
+    await expect(
+      connection.publish({
+        sourceNodeId: "node-b",
+        eventId: "018bcfe5-6800-7001-8000-000000000001",
+        partitionId: "tenant:jp",
+        schemaVersion: 1,
+        payload: {},
+      }),
+    ).rejects.toThrow("event source mismatch");
 
     await connection.close();
   });
@@ -253,8 +277,9 @@ describe("WebSocketTransport (Hub 固有)", () => {
     });
     await connection.close();
 
-    await expect(connection.subscribe("tenant:jp"))
-      .rejects.toThrow("websocket connection is closed");
+    await expect(connection.subscribe("tenant:jp")).rejects.toThrow(
+      "websocket connection is closed",
+    );
   });
 
   it("rejects empty partition ids before sending subscribe or replay requests", async () => {
@@ -268,17 +293,18 @@ describe("WebSocketTransport (Hub 固有)", () => {
       onEvent: () => {},
     });
 
-    await expect(connection.subscribe(""))
-      .rejects.toThrow("partitionId must be a non-empty string");
-    await expect(connection.requestReplay("node-b", "", new Map()))
-      .rejects.toThrow("partitionId must be a non-empty string");
-    await expect(connection.requestReplay("", "tenant:jp", new Map()))
-      .rejects.toThrow("nodeId must be a non-empty string");
-    await expect(connection.requestReplay(
-      "node-b",
-      "tenant:jp",
-      new Map([["node-a", "not-a-uuid"]]),
-    )).rejects.toThrow("cursor eventId must be a UUIDv7");
+    await expect(connection.subscribe("")).rejects.toThrow(
+      "partitionId must be a non-empty string",
+    );
+    await expect(connection.requestReplay("node-b", "", new Map())).rejects.toThrow(
+      "partitionId must be a non-empty string",
+    );
+    await expect(connection.requestReplay("", "tenant:jp", new Map())).rejects.toThrow(
+      "nodeId must be a non-empty string",
+    );
+    await expect(
+      connection.requestReplay("node-b", "tenant:jp", new Map([["node-a", "not-a-uuid"]])),
+    ).rejects.toThrow("cursor eventId must be a UUIDv7");
 
     await connection.close();
   });
@@ -295,8 +321,9 @@ describe("WebSocketTransport (Hub 固有)", () => {
     });
     await connection.close();
 
-    await expect(connection.requestReplay("node-b", "tenant:jp", new Map()))
-      .rejects.toThrow("websocket connection is closed");
+    await expect(connection.requestReplay("node-b", "tenant:jp", new Map())).rejects.toThrow(
+      "websocket connection is closed",
+    );
   });
 
   it("replay-response is routed only to the requester", async () => {
@@ -311,26 +338,30 @@ describe("WebSocketTransport (Hub 固有)", () => {
     const target = await rawClient(`ws://127.0.0.1:${port}`, "target");
 
     try {
-      requester.send(JSON.stringify({
-        type: "replay-request",
-        requestId: "fixed-request",
-        requesterNodeId: "requester",
-        targetNodeId: "target",
-        partitionId: "tenant:jp",
-        cursors: [],
-      }));
+      requester.send(
+        JSON.stringify({
+          type: "replay-request",
+          requestId: "fixed-request",
+          requesterNodeId: "requester",
+          targetNodeId: "target",
+          partitionId: "tenant:jp",
+          cursors: [],
+        }),
+      );
       await expect(nextRawMessage(target)).resolves.toMatchObject({
         type: "replay-request",
         requestId: "fixed-request",
       });
 
-      target.send(JSON.stringify({
-        type: "replay-response",
-        requestId: "fixed-request",
-        requesterNodeId: "requester",
-        partitionId: "tenant:jp",
-        events: [],
-      }));
+      target.send(
+        JSON.stringify({
+          type: "replay-response",
+          requestId: "fixed-request",
+          requesterNodeId: "requester",
+          partitionId: "tenant:jp",
+          events: [],
+        }),
+      );
 
       await expect(nextRawMessage(requester)).resolves.toMatchObject({
         type: "replay-response",
@@ -357,26 +388,30 @@ describe("WebSocketTransport (Hub 固有)", () => {
     const bystander = await rawClient(url, "bystander");
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
-      requester.send(JSON.stringify({
-        type: "replay-request",
-        requestId: "spoofed-response",
-        requesterNodeId: "requester",
-        targetNodeId: "target",
-        partitionId: "tenant:jp",
-        cursors: [],
-      }));
+      requester.send(
+        JSON.stringify({
+          type: "replay-request",
+          requestId: "spoofed-response",
+          requesterNodeId: "requester",
+          targetNodeId: "target",
+          partitionId: "tenant:jp",
+          cursors: [],
+        }),
+      );
       await expect(nextRawMessage(target)).resolves.toMatchObject({
         type: "replay-request",
         requestId: "spoofed-response",
       });
 
-      bystander.send(JSON.stringify({
-        type: "replay-response",
-        requestId: "spoofed-response",
-        requesterNodeId: "requester",
-        partitionId: "tenant:jp",
-        events: [],
-      }));
+      bystander.send(
+        JSON.stringify({
+          type: "replay-response",
+          requestId: "spoofed-response",
+          requesterNodeId: "requester",
+          partitionId: "tenant:jp",
+          events: [],
+        }),
+      );
 
       await expect(waitForSocketCloseCode(bystander)).resolves.toBe(1003);
       await expect(nextRawMessage(requester, 100)).rejects.toThrow("timed out waiting for message");
@@ -405,27 +440,31 @@ describe("WebSocketTransport (Hub 固有)", () => {
     const bystander = await rawClient(url, "bystander");
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
-      requester.send(JSON.stringify({
-        type: "replay-request",
-        requestId: "duplicate-request",
-        requesterNodeId: "requester",
-        targetNodeId: "target",
-        partitionId: "tenant:jp",
-        cursors: [],
-      }));
+      requester.send(
+        JSON.stringify({
+          type: "replay-request",
+          requestId: "duplicate-request",
+          requesterNodeId: "requester",
+          targetNodeId: "target",
+          partitionId: "tenant:jp",
+          cursors: [],
+        }),
+      );
       await expect(nextRawMessage(target)).resolves.toMatchObject({
         type: "replay-request",
         requestId: "duplicate-request",
       });
 
-      bystander.send(JSON.stringify({
-        type: "replay-request",
-        requestId: "duplicate-request",
-        requesterNodeId: "bystander",
-        targetNodeId: "target",
-        partitionId: "tenant:jp",
-        cursors: [],
-      }));
+      bystander.send(
+        JSON.stringify({
+          type: "replay-request",
+          requestId: "duplicate-request",
+          requesterNodeId: "bystander",
+          targetNodeId: "target",
+          partitionId: "tenant:jp",
+          cursors: [],
+        }),
+      );
 
       await expect(waitForSocketCloseCode(bystander)).resolves.toBe(1003);
       await expect(nextRawMessage(target, 100)).rejects.toThrow("timed out waiting for message");
@@ -457,14 +496,16 @@ describe("WebSocketTransport (Hub 固有)", () => {
       oldTarget.close();
       await waitForSocketClose(oldTarget);
 
-      requester.send(JSON.stringify({
-        type: "replay-request",
-        requestId: "after-duplicate-close",
-        requesterNodeId: "requester",
-        targetNodeId: "target",
-        partitionId: "tenant:jp",
-        cursors: [],
-      }));
+      requester.send(
+        JSON.stringify({
+          type: "replay-request",
+          requestId: "after-duplicate-close",
+          requesterNodeId: "requester",
+          targetNodeId: "target",
+          partitionId: "tenant:jp",
+          cursors: [],
+        }),
+      );
 
       const forwarded = await nextRawMessage(newTarget);
       expect(forwarded).toMatchObject({
@@ -560,14 +601,16 @@ describe("WebSocketTransport (Hub 固有)", () => {
     const socket = await rawClient(`ws://127.0.0.1:${port}`, "node-a");
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
-      socket.send(JSON.stringify({
-        type: "replay-request",
-        requestId: "bad-cursor",
-        requesterNodeId: "node-a",
-        targetNodeId: "node-b",
-        partitionId: "tenant:jp",
-        cursors: [["node-a", "not-a-uuid"]],
-      }));
+      socket.send(
+        JSON.stringify({
+          type: "replay-request",
+          requestId: "bad-cursor",
+          requesterNodeId: "node-a",
+          targetNodeId: "node-b",
+          partitionId: "tenant:jp",
+          cursors: [["node-a", "not-a-uuid"]],
+        }),
+      );
 
       await expect(waitForSocketCloseCode(socket)).resolves.toBe(1003);
       expect(errorSpy).toHaveBeenCalledWith(
@@ -589,14 +632,16 @@ describe("WebSocketTransport (Hub 固有)", () => {
     const socket = await rawClient(`ws://127.0.0.1:${port}`, "node-a");
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
-      socket.send(JSON.stringify({
-        type: "replay-request",
-        requestId: "",
-        requesterNodeId: "node-a",
-        targetNodeId: "node-b",
-        partitionId: "tenant:jp",
-        cursors: [],
-      }));
+      socket.send(
+        JSON.stringify({
+          type: "replay-request",
+          requestId: "",
+          requesterNodeId: "node-a",
+          targetNodeId: "node-b",
+          partitionId: "tenant:jp",
+          cursors: [],
+        }),
+      );
 
       await expect(waitForSocketCloseCode(socket)).resolves.toBe(1003);
       expect(errorSpy).toHaveBeenCalledWith(
@@ -618,16 +663,18 @@ describe("WebSocketTransport (Hub 固有)", () => {
     const socket = await rawClient(`ws://127.0.0.1:${port}`, "node-a");
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
-      socket.send(JSON.stringify({
-        type: "event",
-        event: {
-          eventId: "018bcfe5-6800-7001-8000-000000000001",
-          sourceNodeId: "node-b",
-          partitionId: "tenant:jp",
-          schemaVersion: 1,
-          payload: {},
-        },
-      }));
+      socket.send(
+        JSON.stringify({
+          type: "event",
+          event: {
+            eventId: "018bcfe5-6800-7001-8000-000000000001",
+            sourceNodeId: "node-b",
+            partitionId: "tenant:jp",
+            schemaVersion: 1,
+            payload: {},
+          },
+        }),
+      );
 
       await expect(waitForSocketCloseCode(socket)).resolves.toBe(1003);
       expect(errorSpy).toHaveBeenCalledWith(
@@ -649,14 +696,16 @@ describe("WebSocketTransport (Hub 固有)", () => {
     const socket = await rawClient(`ws://127.0.0.1:${port}`, "node-a");
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
-      socket.send(JSON.stringify({
-        type: "replay-request",
-        requestId: "spoofed-requester",
-        requesterNodeId: "node-b",
-        targetNodeId: "node-c",
-        partitionId: "tenant:jp",
-        cursors: [],
-      }));
+      socket.send(
+        JSON.stringify({
+          type: "replay-request",
+          requestId: "spoofed-requester",
+          requesterNodeId: "node-b",
+          targetNodeId: "node-c",
+          partitionId: "tenant:jp",
+          cursors: [],
+        }),
+      );
 
       await expect(waitForSocketCloseCode(socket)).resolves.toBe(1003);
       expect(errorSpy).toHaveBeenCalledWith(
@@ -768,7 +817,7 @@ describe("WebSocketTransport (Hub 固有)", () => {
     } finally {
       errorSpy.mockRestore();
       await new Promise<void>((resolve, reject) => {
-        server.close((error) => error ? reject(error) : resolve());
+        server.close((error) => (error ? reject(error) : resolve()));
       });
     }
   });
@@ -801,7 +850,7 @@ describe("WebSocketTransport (Hub 固有)", () => {
     } finally {
       errorSpy.mockRestore();
       await new Promise<void>((resolve, reject) => {
-        server.close((error) => error ? reject(error) : resolve());
+        server.close((error) => (error ? reject(error) : resolve()));
       });
     }
   });
@@ -834,7 +883,7 @@ describe("WebSocketTransport (Hub 固有)", () => {
     } finally {
       errorSpy.mockRestore();
       await new Promise<void>((resolve, reject) => {
-        server.close((error) => error ? reject(error) : resolve());
+        server.close((error) => (error ? reject(error) : resolve()));
       });
     }
   });
@@ -856,14 +905,16 @@ describe("WebSocketTransport (Hub 固有)", () => {
       });
       const serverSocket = await accepted;
 
-      serverSocket.send(JSON.stringify({
-        type: "replay-request",
-        requestId: "wrong-target",
-        requesterNodeId: "node-b",
-        targetNodeId: "node-c",
-        partitionId: "tenant:jp",
-        cursors: [],
-      }));
+      serverSocket.send(
+        JSON.stringify({
+          type: "replay-request",
+          requestId: "wrong-target",
+          requesterNodeId: "node-b",
+          targetNodeId: "node-c",
+          partitionId: "tenant:jp",
+          cursors: [],
+        }),
+      );
 
       await waitFor(async () => {
         expect(errorSpy).toHaveBeenCalledWith(
@@ -877,7 +928,7 @@ describe("WebSocketTransport (Hub 固有)", () => {
     } finally {
       errorSpy.mockRestore();
       await new Promise<void>((resolve, reject) => {
-        server.close((error) => error ? reject(error) : resolve());
+        server.close((error) => (error ? reject(error) : resolve()));
       });
     }
   });
@@ -889,7 +940,12 @@ async function waitFor(fn: () => Promise<void>, ms = 2000): Promise<void> {
   const start = Date.now();
   let last: unknown;
   while (Date.now() - start < ms) {
-    try { await fn(); return; } catch (e) { last = e; }
+    try {
+      await fn();
+      return;
+    } catch (e) {
+      last = e;
+    }
     await new Promise((r) => setTimeout(r, 20));
   }
   throw last;
@@ -905,7 +961,10 @@ async function rawClient(url: string, nodeId: string): Promise<WebSocket> {
   return socket;
 }
 
-async function nextRawMessage(socket: WebSocket, timeoutMs = 1000): Promise<Record<string, unknown>> {
+async function nextRawMessage(
+  socket: WebSocket,
+  timeoutMs = 1000,
+): Promise<Record<string, unknown>> {
   return await new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       cleanup();

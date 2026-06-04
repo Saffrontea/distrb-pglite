@@ -160,7 +160,7 @@ export async function restoreBrowserFilesystemFromCas(options: {
         file.size,
       );
       const restored = concat(chunks);
-      if (restored.length !== file.size || await sha256(restored) !== file.sha256) {
+      if (restored.length !== file.size || (await sha256(restored)) !== file.sha256) {
         throw new Error(`CAS file integrity check failed: ${file.path}`);
       }
       continue;
@@ -171,7 +171,7 @@ export async function restoreBrowserFilesystemFromCas(options: {
       chunks.push(await readVerifiedBlock(options.casStore, block));
     }
     const restored = concat(chunks);
-    if (restored.length !== file.size || await sha256(restored) !== file.sha256) {
+    if (restored.length !== file.size || (await sha256(restored)) !== file.sha256) {
       throw new Error(`CAS file integrity check failed: ${file.path}`);
     }
     await options.fs.writeFile(file.path, restored);
@@ -201,12 +201,13 @@ export async function transferMissingBrowserCasBlocks(options: {
   availableBlockHashes?: ReadonlySet<string>;
 }): Promise<BrowserCasBlock[]> {
   const manifest = validateBrowserCasManifest(options.manifest);
-  const available = options.availableBlockHashes ?? await options.targetCasStore.listBlockHashes();
+  const available =
+    options.availableBlockHashes ?? (await options.targetCasStore.listBlockHashes());
   const missing = diffMissingBrowserCasBlocks(manifest, available);
 
   for (const block of missing) {
     const content = await options.sourceCasStore.readBlock(block.hash);
-    if (content.length !== block.size || await sha256(content) !== block.hash) {
+    if (content.length !== block.size || (await sha256(content)) !== block.hash) {
       throw new Error(`CAS source block integrity check failed: ${block.hash}`);
     }
     await options.targetCasStore.writeBlock(block.hash, content);
@@ -251,7 +252,10 @@ export async function gcBrowserCasBlocks(options: {
   };
 }
 
-export function validateBrowserCasManifest(manifest: unknown, expectedSnapshotId?: string): BrowserCasManifest {
+export function validateBrowserCasManifest(
+  manifest: unknown,
+  expectedSnapshotId?: string,
+): BrowserCasManifest {
   if (!isRecord(manifest)) {
     throw new Error("browser CAS manifest must be an object");
   }
@@ -260,7 +264,9 @@ export function validateBrowserCasManifest(manifest: unknown, expectedSnapshotId
   }
   assertNonEmptyString(manifest.snapshotId, "browser CAS manifest snapshotId");
   if (expectedSnapshotId !== undefined && manifest.snapshotId !== expectedSnapshotId) {
-    throw new Error(`browser CAS manifest snapshotId mismatch: ${manifest.snapshotId} !== ${expectedSnapshotId}`);
+    throw new Error(
+      `browser CAS manifest snapshotId mismatch: ${manifest.snapshotId} !== ${expectedSnapshotId}`,
+    );
   }
   assertPositiveInteger(manifest.chunkSize, "browser CAS manifest chunkSize");
 
@@ -309,19 +315,24 @@ export function validateBrowserCasManifest(manifest: unknown, expectedSnapshotId
 
 export function browserManifestFilesEqualInventory(
   manifest: BrowserCasManifest,
-  inventory: Pick<BrowserDataDirInventory, "directories" | "files"> | readonly BrowserFileInventoryEntry[],
+  inventory:
+    | Pick<BrowserDataDirInventory, "directories" | "files">
+    | readonly BrowserFileInventoryEntry[],
 ): boolean {
   if (isFileInventoryEntries(inventory)) {
     return JSON.stringify(manifest.files.map(stripBlocks)) === JSON.stringify(inventory);
   }
 
-  return JSON.stringify({
-    directories: manifest.directories,
-    files: manifest.files.map(stripBlocks),
-  }) === JSON.stringify({
-    directories: inventory.directories,
-    files: inventory.files,
-  });
+  return (
+    JSON.stringify({
+      directories: manifest.directories,
+      files: manifest.files.map(stripBlocks),
+    }) ===
+    JSON.stringify({
+      directories: inventory.directories,
+      files: inventory.files,
+    })
+  );
 }
 
 async function writeBlocks(
@@ -365,9 +376,14 @@ function manifestChunkSize(chunking: BrowserCasChunking): number {
   assertPositiveInteger(chunking.pageSize, "pageSize");
   assertPositiveInteger(chunking.maxChunkSize, "maxChunkSize");
   if (chunking.maxChunkSize < chunking.pageSize) {
-    throw new Error(`maxChunkSize must be greater than or equal to pageSize: ${chunking.maxChunkSize} < ${chunking.pageSize}`);
+    throw new Error(
+      `maxChunkSize must be greater than or equal to pageSize: ${chunking.maxChunkSize} < ${chunking.pageSize}`,
+    );
   }
-  return Math.max(chunking.pageSize, Math.floor(chunking.maxChunkSize / chunking.pageSize) * chunking.pageSize);
+  return Math.max(
+    chunking.pageSize,
+    Math.floor(chunking.maxChunkSize / chunking.pageSize) * chunking.pageSize,
+  );
 }
 
 function validateBrowserCasFileManifest(file: unknown, index: number): void {
@@ -493,7 +509,9 @@ function stripBlocks(file: BrowserCasFileManifest): BrowserFileInventoryEntry {
 }
 
 function isFileInventoryEntries(
-  inventory: Pick<BrowserDataDirInventory, "directories" | "files"> | readonly BrowserFileInventoryEntry[],
+  inventory:
+    | Pick<BrowserDataDirInventory, "directories" | "files">
+    | readonly BrowserFileInventoryEntry[],
 ): inventory is readonly BrowserFileInventoryEntry[] {
   return Array.isArray(inventory);
 }
@@ -536,7 +554,7 @@ async function readVerifiedBlock(
 ): Promise<Uint8Array> {
   assertCasBlockHash(block.hash);
   const stored = await casStore.readBlock(block.hash);
-  if (stored.length !== block.size || await sha256(stored) !== block.hash) {
+  if (stored.length !== block.size || (await sha256(stored)) !== block.hash) {
     throw new Error(`CAS block integrity check failed: ${block.hash}`);
   }
   return stored;

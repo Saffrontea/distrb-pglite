@@ -39,8 +39,8 @@ const nodes = new Map<string, EdgeNodeServer>();
 const statuses = new Map<string, NodeStatus>();
 const log: LogEntry[] = [];
 let baseDir = "";
-let casDir  = "";
-let hubUrl  = "";
+let casDir = "";
+let hubUrl = "";
 let lateCounter = 0;
 
 function addLog(msg: string, kind = "info"): void {
@@ -57,8 +57,8 @@ async function pollNode(nodeId: string, url: string): Promise<void> {
       fetch(`${url}/status`),
       fetch(`${url}/stats`),
     ]);
-    const status = await statusRes.json() as { online: boolean; eventCount: number };
-    const statsData = await statsRes.json() as { stats: NodeStatus["stats"] };
+    const status = (await statusRes.json()) as { online: boolean; eventCount: number };
+    const statsData = (await statsRes.json()) as { stats: NodeStatus["stats"] };
 
     const prev = statuses.get(nodeId);
     const next: NodeStatus = {
@@ -82,7 +82,8 @@ async function pollNode(nodeId: string, url: string): Promise<void> {
   } catch {
     const prev = statuses.get(nodeId);
     statuses.set(nodeId, {
-      nodeId, url,
+      nodeId,
+      url,
       online: false,
       eventCount: prev?.eventCount ?? 0,
       stats: prev?.stats ?? [],
@@ -92,9 +93,7 @@ async function pollNode(nodeId: string, url: string): Promise<void> {
 }
 
 async function pollAll(): Promise<void> {
-  await Promise.all(
-    [...nodes.entries()].map(([id, srv]) => pollNode(id, srv.baseUrl))
-  );
+  await Promise.all([...nodes.entries()].map(([id, srv]) => pollNode(id, srv.baseUrl)));
 }
 
 // ─── action proxy ─────────────────────────────────────────────────────────────
@@ -109,18 +108,14 @@ async function proxyPost(targetUrl: string, body?: unknown): Promise<unknown> {
   return res.json();
 }
 
-async function handleAction(
-  nodeId: string,
-  action: string,
-  body: unknown,
-): Promise<unknown> {
+async function handleAction(nodeId: string, action: string, body: unknown): Promise<unknown> {
   const srv = nodes.get(nodeId);
   if (!srv) throw new Error(`node not found: ${nodeId}`);
 
   switch (action) {
     case "write": {
       const sensorId = `sensor-${nodeId}`;
-      const reading  = Math.round(Math.random() * 100);
+      const reading = Math.round(Math.random() * 100);
       await proxyPost(`${srv.baseUrl}/readings`, { sensorId, reading });
       addLog(`${nodeId} → 書き込み ${sensorId}=${reading}`, "write");
       return { ok: true };
@@ -129,7 +124,7 @@ async function handleAction(
       const { count = 5 } = body as { count?: number };
       for (let i = 0; i < count; i++) {
         const sensorId = `sensor-${nodeId}-${i % 3}`;
-        const reading  = Math.round(20 + Math.random() * 80);
+        const reading = Math.round(20 + Math.random() * 80);
         await proxyPost(`${srv.baseUrl}/readings`, { sensorId, reading });
       }
       addLog(`${nodeId} → burst write ${count} 件`, "write");
@@ -139,9 +134,8 @@ async function handleAction(
       await proxyPost(`${srv.baseUrl}/disconnect`);
       addLog(`${nodeId} 切断`, "status");
       return { ok: true };
-    case "connect":
-    {
-      const result = await proxyPost(`${srv.baseUrl}/connect`) as {
+    case "connect": {
+      const result = (await proxyPost(`${srv.baseUrl}/connect`)) as {
         applied?: number;
         catchup?: Array<{ peerNodeId: string; applied: number }>;
       };
@@ -155,12 +149,17 @@ async function handleAction(
     }
     case "catchup": {
       const { peerNodeId } = body as { peerNodeId: string };
-      const result = await proxyPost(`${srv.baseUrl}/catchup`, { peerNodeId }) as { applied: number };
+      const result = (await proxyPost(`${srv.baseUrl}/catchup`, { peerNodeId })) as {
+        applied: number;
+      };
       addLog(`${nodeId} ← catchup(${peerNodeId}) +${result.applied} 件`, "catchup");
       return result;
     }
     case "snapshot": {
-      const snap = await proxyPost(`${srv.baseUrl}/create-snapshot`) as { snapshotId: string; blocks: number };
+      const snap = (await proxyPost(`${srv.baseUrl}/create-snapshot`)) as {
+        snapshotId: string;
+        blocks: number;
+      };
       addLog(`${nodeId} スナップショット作成 (${snap.blocks} blk)`, "snapshot");
       return snap;
     }
@@ -184,7 +183,7 @@ async function handleAction(
     case "add-late-joiner": {
       const { via, peerNodeId } = body as { via: "catchup" | "snapshot"; peerNodeId: string };
       lateCounter++;
-      const lateId  = `late-${lateCounter}`;
+      const lateId = `late-${lateCounter}`;
       const latePort = 4100 + lateCounter;
       const lateSrv = await EdgeNodeServer.create({
         nodeId: lateId,
@@ -205,18 +204,25 @@ async function handleAction(
         // スナップショット bootstrap
         await proxyPost(`${peer.baseUrl}/create-snapshot`);
         const catalogManifest = await (await fetch(`${peer.baseUrl}/catalog`)).json();
-        const { entries } = await (await fetch(`${peer.baseUrl}/snapshot-entries`)).json() as { entries: unknown[] };
-        const pull = await proxyPost(`${lateSrv.baseUrl}/pull-snapshot`, {
+        const { entries } = (await (await fetch(`${peer.baseUrl}/snapshot-entries`)).json()) as {
+          entries: unknown[];
+        };
+        const pull = (await proxyPost(`${lateSrv.baseUrl}/pull-snapshot`, {
           catalogManifest,
           snapshotEntries: entries,
           sourceCasDir: casDir,
           requirement: "bootstrap",
-        }) as { transferredBlocks: number; snapshotId: string };
-        addLog(`${lateId} pull snapshot ${pull.transferredBlocks} blk (${pull.snapshotId})`, "snapshot");
+        })) as { transferredBlocks: number; snapshotId: string };
+        addLog(
+          `${lateId} pull snapshot ${pull.transferredBlocks} blk (${pull.snapshotId})`,
+          "snapshot",
+        );
       }
 
       // delta catchup
-      const cu = await proxyPost(`${lateSrv.baseUrl}/catchup`, { peerNodeId: peer.nodeId }) as { applied: number };
+      const cu = (await proxyPost(`${lateSrv.baseUrl}/catchup`, { peerNodeId: peer.nodeId })) as {
+        applied: number;
+      };
       addLog(`${lateId} catchup +${cu.applied} 件`, "catchup");
       return { ok: true, nodeId: lateId, url: lateSrv.baseUrl };
     }
@@ -234,7 +240,7 @@ async function handleSql(body: unknown): Promise<SqlResponse> {
   if (!srv) {
     throw new Error(`node not found: ${nodeId}`);
   }
-  const result = await proxyPost(`${srv.baseUrl}/sql`, { sql }) as Omit<SqlResponse, "nodeId">;
+  const result = (await proxyPost(`${srv.baseUrl}/sql`, { sql })) as Omit<SqlResponse, "nodeId">;
   addLog(`${nodeId} SQL ${result.mode} (${result.rowCount} rows, ${result.durationMs}ms)`, "sql");
   return { nodeId, ...result };
 }
@@ -249,9 +255,13 @@ function cors(res: ServerResponse): void {
 
 async function dispatch(req: IncomingMessage, res: ServerResponse): Promise<void> {
   cors(res);
-  if (req.method === "OPTIONS") { res.writeHead(204); res.end(); return; }
+  if (req.method === "OPTIONS") {
+    res.writeHead(204);
+    res.end();
+    return;
+  }
 
-  const url  = new URL(req.url ?? "/", "http://localhost");
+  const url = new URL(req.url ?? "/", "http://localhost");
   const path = url.pathname;
 
   // serve dashboard
@@ -265,10 +275,12 @@ async function dispatch(req: IncomingMessage, res: ServerResponse): Promise<void
   if (path === "/api/status" && req.method === "GET") {
     await pollAll();
     res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({
-      nodes: [...statuses.values()],
-      log: log.slice(0, 50),
-    }));
+    res.end(
+      JSON.stringify({
+        nodes: [...statuses.values()],
+        log: log.slice(0, 50),
+      }),
+    );
     return;
   }
 
@@ -292,7 +304,9 @@ async function dispatch(req: IncomingMessage, res: ServerResponse): Promise<void
     let body: unknown = {};
     try {
       body = await readJson(req);
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
 
     try {
       const result = await handleAction(nodeId, action, body);
@@ -313,14 +327,20 @@ async function readJson(req: IncomingMessage): Promise<unknown> {
   return new Promise<unknown>((resolve, reject) => {
     let data = "";
     req.on("data", (c) => (data += c));
-    req.on("end", () => { try { resolve(data ? JSON.parse(data) : {}); } catch (e) { reject(e); } });
+    req.on("end", () => {
+      try {
+        resolve(data ? JSON.parse(data) : {});
+      } catch (e) {
+        reject(e);
+      }
+    });
     req.on("error", reject);
   });
 }
 
 // ─── HTML ─────────────────────────────────────────────────────────────────────
 
-const HTML = /* html */`<!DOCTYPE html>
+const HTML = /* html */ `<!DOCTYPE html>
 <html lang="ja">
 <head>
 <meta charset="utf-8">
@@ -703,7 +723,7 @@ setInterval(poll, 600);
 
 async function run(): Promise<void> {
   baseDir = await mkdtemp(join(tmpdir(), "distrb-ui-"));
-  casDir  = join(baseDir, "cas");
+  casDir = join(baseDir, "cas");
 
   const hubPort = 4000;
   hubUrl = `ws://127.0.0.1:${hubPort}`;
@@ -753,4 +773,7 @@ async function run(): Promise<void> {
   });
 }
 
-run().catch((err) => { console.error(err); process.exit(1); });
+run().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

@@ -36,19 +36,18 @@ describe("CAS logical filesystem snapshots", () => {
       manifest,
     });
 
-    await expect(inventoryFilesystem({
-      fs: new NodeDataDirFilesystem(restoreDir),
-    })).resolves.toMatchObject({
+    await expect(
+      inventoryFilesystem({
+        fs: new NodeDataDirFilesystem(restoreDir),
+      }),
+    ).resolves.toMatchObject({
       directories: ["base", "base/5"],
       files: [
         expect.objectContaining({ path: "base/5/16384", size: 8 }),
         expect.objectContaining({ path: "PG_VERSION", size: 2 }),
       ],
     });
-    expect(manifest.files.map((file) => file.path)).toEqual([
-      "base/5/16384",
-      "PG_VERSION",
-    ]);
+    expect(manifest.files.map((file) => file.path)).toEqual(["base/5/16384", "PG_VERSION"]);
   });
 
   it("snapshots PGlite VFS logical paths without depending on host data-dir layout", async () => {
@@ -69,9 +68,11 @@ describe("CAS logical filesystem snapshots", () => {
       manifest,
     });
 
-    await expect(inventoryFilesystem({
-      fs: restored.asSnapshotDataFilesystem(),
-    })).resolves.toMatchObject({
+    await expect(
+      inventoryFilesystem({
+        fs: restored.asSnapshotDataFilesystem(),
+      }),
+    ).resolves.toMatchObject({
       directories: ["base", "base/5", "global"],
       files: [
         expect.objectContaining({ path: "base/5/16384", size: 8 }),
@@ -103,10 +104,7 @@ describe("CAS logical filesystem snapshots", () => {
     expect(copied).toHaveLength(3);
     expect(await targetStore.listBlockHashes()).toEqual(await sourceStore.listBlockHashes());
 
-    await targetStore.writeBlock(
-      "0".repeat(64),
-      new Uint8Array([1]),
-    );
+    await targetStore.writeBlock("0".repeat(64), new Uint8Array([1]));
     const gc = await gcCasBlockStore({
       casStore: targetStore,
       retainedManifests: [manifest],
@@ -118,9 +116,7 @@ describe("CAS logical filesystem snapshots", () => {
 });
 
 function createBlobStore(): MemoryBlobStore {
-  return new MemoryBlobStore((content) =>
-    createHash("sha256").update(content).digest("hex"),
-  );
+  return new MemoryBlobStore((content) => createHash("sha256").update(content).digest("hex"));
 }
 
 class MemoryCasBlockStore implements CasBlockStore {

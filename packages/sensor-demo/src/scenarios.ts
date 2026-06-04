@@ -29,12 +29,12 @@ async function api<T = unknown>(url: string, method = "GET", body?: unknown): Pr
     headers: body ? { "Content-Type": "application/json" } : {},
     body: body ? JSON.stringify(body) : undefined,
   });
-  const json = await res.json() as T;
+  const json = (await res.json()) as T;
   if (!res.ok) throw new Error(`${method} ${url} → ${res.status}: ${JSON.stringify(json)}`);
   return json;
 }
 
-const get  = <T = unknown>(url: string) => api<T>(url);
+const get = <T = unknown>(url: string) => api<T>(url);
 const post = <T = unknown>(url: string, body?: unknown) => api<T>(url, "POST", body);
 
 function assertEq<T>(label: string, actual: T, expected: T, details: string[]): boolean {
@@ -47,13 +47,22 @@ function assertEq<T>(label: string, actual: T, expected: T, details: string[]): 
 }
 
 function assertGte(label: string, actual: number, min: number, details: string[]): boolean {
-  if (actual >= min) { details.push(`  ✓ ${label}: ${actual} >= ${min}`); return true; }
+  if (actual >= min) {
+    details.push(`  ✓ ${label}: ${actual} >= ${min}`);
+    return true;
+  }
   details.push(`  ✗ ${label}: ${actual} < ${min}`);
   return false;
 }
 
 // PGlite は numeric を文字列で返す。数値として比較する。
-function assertNumEq(label: string, actual: unknown, expected: number, details: string[], errors: string[]): void {
+function assertNumEq(
+  label: string,
+  actual: unknown,
+  expected: number,
+  details: string[],
+  errors: string[],
+): void {
   const v = Number(actual);
   if (Math.abs(v - expected) < 0.001) {
     details.push(`  ✓ ${label}: ${v}`);
@@ -120,7 +129,9 @@ async function scenarioA_BasicCrud(
   const { rows } = await get<{ rows: unknown[]; count: number }>(`${jp1}/readings`);
   check(rows.length === 3, `readings count = 3 (got ${rows.length})`, details, errors);
 
-  const { stats } = await get<{ stats: { sensor_id: string; avg_reading: string; count: number }[] }>(`${jp1}/stats`);
+  const { stats } = await get<{
+    stats: { sensor_id: string; avg_reading: string; count: number }[];
+  }>(`${jp1}/stats`);
   const tokyo = stats.find((s) => s.sensor_id === "tokyo-1");
   const osaka = stats.find((s) => s.sensor_id === "osaka-1");
 
@@ -149,7 +160,9 @@ async function scenarioB_CrossNodeSync(
   details.push(`  auto catchup applied ${applied} events`);
   check(applied >= 2, `auto catchup applied >= 2 events (got ${applied})`, details, errors);
 
-  const { stats: stats2 } = await get<{ stats: { sensor_id: string; count: number }[] }>(`${jp2}/stats`);
+  const { stats: stats2 } = await get<{ stats: { sensor_id: string; count: number }[] }>(
+    `${jp2}/stats`,
+  );
   const kyoto2 = stats2.find((s) => s.sensor_id === "kyoto-1");
 
   check(!!kyoto2, "jp-node-2 has kyoto-1 from jp-node-1", details, errors);
@@ -195,7 +208,9 @@ async function scenarioH_P2PTransportSmoke(
 
     const deadline = Date.now() + 3000;
     while (Date.now() < deadline) {
-      const { stats } = await get<{ stats: { sensor_id: string; count: number }[] }>(`${p2pB.baseUrl}/stats`);
+      const { stats } = await get<{ stats: { sensor_id: string; count: number }[] }>(
+        `${p2pB.baseUrl}/stats`,
+      );
       if (stats.some((row) => row.sensor_id === "p2p-a")) {
         details.push("  ✓ p2p-node-b received p2p-node-a reading without hub");
         return;
@@ -226,8 +241,12 @@ async function scenarioC_ConcurrentWrites(
   // WebSocket 経由で伝播を待つ
   await sleep(300);
 
-  const { stats: stats1 } = await get<{ stats: { sensor_id: string; count: string }[] }>(`${jp1}/stats`);
-  const { stats: stats2 } = await get<{ stats: { sensor_id: string; count: string }[] }>(`${jp2}/stats`);
+  const { stats: stats1 } = await get<{ stats: { sensor_id: string; count: string }[] }>(
+    `${jp1}/stats`,
+  );
+  const { stats: stats2 } = await get<{ stats: { sensor_id: string; count: string }[] }>(
+    `${jp2}/stats`,
+  );
 
   // jp-node-1 は sensor-B を受け取っているはず (hub 経由)
   const sensorB_on1 = stats1.find((s) => s.sensor_id === "sensor-B");
@@ -277,7 +296,7 @@ async function scenarioD_OfflineCatchup(
 
   const { stats } = await get<{ stats: { sensor_id: string; count: number }[] }>(`${jp2}/stats`);
   const offlineTest = stats.find((s) => s.sensor_id === "offline-test");
-  const jp2local    = stats.find((s) => s.sensor_id === "jp2-local");
+  const jp2local = stats.find((s) => s.sensor_id === "jp2-local");
 
   assertNumEq("offline-test on jp-node-2 count", offlineTest?.count, 3, details, errors);
   check(!!jp2local, "jp-node-2 local offline write preserved", details, errors);
@@ -307,7 +326,12 @@ async function scenarioE_PartitionIsolation(
   );
 
   const { rows: usRows } = await get<{ rows: unknown[] }>(`${us}/readings`);
-  check(usRows.length >= 2, `us-node has >= 2 own readings (got ${usRows.length})`, details, errors);
+  check(
+    usRows.length >= 2,
+    `us-node has >= 2 own readings (got ${usRows.length})`,
+    details,
+    errors,
+  );
 }
 
 async function scenarioF_SnapshotBootstrap(
@@ -350,7 +374,9 @@ async function scenarioF_SnapshotBootstrap(
 
   // jp-node-3 が jp-node-1 からデルタイベントを catchup
   details.push("  jp-node-3 catchup delta from jp-node-1");
-  const { applied: deltaApplied } = await post<{ applied: number }>(`${jp3}/catchup`, { peerNodeId: "jp-node-1" });
+  const { applied: deltaApplied } = await post<{ applied: number }>(`${jp3}/catchup`, {
+    peerNodeId: "jp-node-1",
+  });
   details.push(`  jp-node-3 delta catchup: ${deltaApplied} events`);
 
   // jp-node-3 に post-snapshot 行が入っているはず
@@ -374,8 +400,12 @@ async function scenarioG_StatsConsistency(
   await post(`${jp2}/catchup`, { peerNodeId: "jp-node-1" });
   await post(`${jp1}/catchup`, { peerNodeId: "jp-node-2" });
 
-  const { stats: s1 } = await get<{ stats: { sensor_id: string; count: string; avg_reading: string }[] }>(`${jp1}/stats`);
-  const { stats: s2 } = await get<{ stats: { sensor_id: string; count: string; avg_reading: string }[] }>(`${jp2}/stats`);
+  const { stats: s1 } = await get<{
+    stats: { sensor_id: string; count: string; avg_reading: string }[];
+  }>(`${jp1}/stats`);
+  const { stats: s2 } = await get<{
+    stats: { sensor_id: string; count: string; avg_reading: string }[];
+  }>(`${jp2}/stats`);
 
   const key = (s: { sensor_id: string; count: string; avg_reading: string }) =>
     `${s.sensor_id}:${s.count}:${s.avg_reading}`;
@@ -385,8 +415,18 @@ async function scenarioG_StatsConsistency(
   const missingIn2 = [...keys1].filter((k) => !keys2.has(k));
   const missingIn1 = [...keys2].filter((k) => !keys1.has(k));
 
-  check(missingIn2.length === 0, `jp-node-2 has all rows from jp-node-1 (missing: ${JSON.stringify(missingIn2)})`, details, errors);
-  check(missingIn1.length === 0, `jp-node-1 has all rows from jp-node-2 (missing: ${JSON.stringify(missingIn1)})`, details, errors);
+  check(
+    missingIn2.length === 0,
+    `jp-node-2 has all rows from jp-node-1 (missing: ${JSON.stringify(missingIn2)})`,
+    details,
+    errors,
+  );
+  check(
+    missingIn1.length === 0,
+    `jp-node-1 has all rows from jp-node-2 (missing: ${JSON.stringify(missingIn1)})`,
+    details,
+    errors,
+  );
   details.push(`  sensor types in sync: ${s1.map((s) => s.sensor_id).join(", ")}`);
 }
 
@@ -394,9 +434,9 @@ async function scenarioG_StatsConsistency(
 
 async function run(): Promise<void> {
   const baseDir = await mkdtemp(join(tmpdir(), "distrb-scenarios-"));
-  const casDir  = join(baseDir, "cas");
-  const port    = await getFreePort();
-  const hubUrl  = `ws://127.0.0.1:${port}`;
+  const casDir = join(baseDir, "cas");
+  const port = await getFreePort();
+  const hubUrl = `ws://127.0.0.1:${port}`;
 
   console.log(`\n${"═".repeat(60)}`);
   console.log("  分散センサーダッシュボード — シナリオテスト");
@@ -404,7 +444,7 @@ async function run(): Promise<void> {
   console.log(`  dir: ${baseDir}`);
   console.log(`${"═".repeat(60)}`);
 
-  const hub  = new WebSocketHub({ port });
+  const hub = new WebSocketHub({ port });
   const ports = await Promise.all([1, 2, 3, 4].map(() => getFreePort()));
 
   const makeConfig = (nodeId: string, partitionId: string, p: number): EdgeServerConfig => ({
@@ -414,14 +454,16 @@ async function run(): Promise<void> {
     casDir,
     port: p,
     partitionId,
-    peerNodeIds: ["jp-node-1", "jp-node-2", "jp-node-3", "us-node"].filter((peer) => peer !== nodeId),
+    peerNodeIds: ["jp-node-1", "jp-node-2", "jp-node-3", "us-node"].filter(
+      (peer) => peer !== nodeId,
+    ),
   });
 
   const [jp1, jp2, jp3, us] = await Promise.all([
     EdgeNodeServer.create(makeConfig("jp-node-1", "tenant:jp", ports[0])),
     EdgeNodeServer.create(makeConfig("jp-node-2", "tenant:jp", ports[1])),
     EdgeNodeServer.create(makeConfig("jp-node-3", "tenant:jp", ports[2])),
-    EdgeNodeServer.create(makeConfig("us-node",   "tenant:us", ports[3])),
+    EdgeNodeServer.create(makeConfig("us-node", "tenant:us", ports[3])),
   ]);
   await Promise.all([jp1.listen(), jp2.listen(), jp3.listen(), us.listen()]);
 
@@ -432,42 +474,56 @@ async function run(): Promise<void> {
 
   const results: ScenarioResult[] = [];
 
-  results.push(await runScenario("A: Basic CRUD (jp-node-1)", (d, e) =>
-    scenarioA_BasicCrud(u1, d, e),
-  ));
+  results.push(
+    await runScenario("A: Basic CRUD (jp-node-1)", (d, e) => scenarioA_BasicCrud(u1, d, e)),
+  );
 
-  results.push(await runScenario("B: Cross-node sync via catchup (jp-node-1 → jp-node-2)", (d, e) =>
-    scenarioB_CrossNodeSync(u1, u2, d, e),
-  ));
+  results.push(
+    await runScenario("B: Cross-node sync via catchup (jp-node-1 → jp-node-2)", (d, e) =>
+      scenarioB_CrossNodeSync(u1, u2, d, e),
+    ),
+  );
 
-  results.push(await runScenario("C: Concurrent writes + WebSocket propagation", (d, e) =>
-    scenarioC_ConcurrentWrites(u1, u2, d, e),
-  ));
+  results.push(
+    await runScenario("C: Concurrent writes + WebSocket propagation", (d, e) =>
+      scenarioC_ConcurrentWrites(u1, u2, d, e),
+    ),
+  );
 
-  results.push(await runScenario("D: Offline write + catchup (jp-node-2 disconnect/reconnect)", (d, e) =>
-    scenarioD_OfflineCatchup(u1, u2, d, e),
-  ));
+  results.push(
+    await runScenario("D: Offline write + catchup (jp-node-2 disconnect/reconnect)", (d, e) =>
+      scenarioD_OfflineCatchup(u1, u2, d, e),
+    ),
+  );
 
-  results.push(await runScenario("E: Partition isolation (tenant:us invisible to jp nodes)", (d, e) =>
-    scenarioE_PartitionIsolation(u1, uu, d, e),
-  ));
+  results.push(
+    await runScenario("E: Partition isolation (tenant:us invisible to jp nodes)", (d, e) =>
+      scenarioE_PartitionIsolation(u1, uu, d, e),
+    ),
+  );
 
-  results.push(await runScenario("F: Snapshot bootstrap (jp-node-3 pulls from jp-node-1)", (d, e) =>
-    scenarioF_SnapshotBootstrap(u1, u3, casDir, d, e),
-  ));
+  results.push(
+    await runScenario("F: Snapshot bootstrap (jp-node-3 pulls from jp-node-1)", (d, e) =>
+      scenarioF_SnapshotBootstrap(u1, u3, casDir, d, e),
+    ),
+  );
 
-  results.push(await runScenario("G: Stats consistency after full bidirectional sync", (d, e) =>
-    scenarioG_StatsConsistency(u1, u2, d, e),
-  ));
+  results.push(
+    await runScenario("G: Stats consistency after full bidirectional sync", (d, e) =>
+      scenarioG_StatsConsistency(u1, u2, d, e),
+    ),
+  );
 
-  results.push(await runScenario("H: P2P transport smoke (no hub)", (d, e) =>
-    scenarioH_P2PTransportSmoke(baseDir, casDir, d, e),
-  ));
+  results.push(
+    await runScenario("H: P2P transport smoke (no hub)", (d, e) =>
+      scenarioH_P2PTransportSmoke(baseDir, casDir, d, e),
+    ),
+  );
 
   // ─── summary ─────────────────────────────────────────────────
 
   const passed = results.filter((r) => r.passed).length;
-  const total  = results.length;
+  const total = results.length;
 
   console.log(`\n${"═".repeat(60)}`);
   console.log(`  結果サマリー: ${passed}/${total} passed`);
@@ -484,11 +540,17 @@ async function run(): Promise<void> {
 
 async function getFreePort(): Promise<number> {
   const srv = createServer();
-  await new Promise<void>((r, j) => { srv.once("error", j); srv.listen(0, "127.0.0.1", r); });
+  await new Promise<void>((r, j) => {
+    srv.once("error", j);
+    srv.listen(0, "127.0.0.1", r);
+  });
   const addr = srv.address();
   await new Promise<void>((r, j) => srv.close((e) => (e ? j(e) : r())));
   if (!addr || typeof addr === "string") throw new Error("no port");
   return addr.port;
 }
 
-run().catch((err) => { console.error(err); process.exit(1); });
+run().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

@@ -40,7 +40,7 @@ export class NodeDataDirFilesystem implements SnapshotDataFilesystem {
       .filter((entry) => entry.isDirectory() || entry.isFile())
       .map((entry) => ({
         name: entry.name,
-        type: entry.isDirectory() ? "directory" as const : "file" as const,
+        type: entry.isDirectory() ? ("directory" as const) : ("file" as const),
       }))
       .sort((left, right) => left.name.localeCompare(right.name));
   }
@@ -103,11 +103,7 @@ export async function copyDataDirSnapshot(options: {
 }
 
 export function normalizeLogicalPath(path: string): string {
-  return path
-    .replaceAll("\\", "/")
-    .replace(/^\/+/, "")
-    .replace(/\/+/g, "/")
-    .replace(/\/$/, "");
+  return path.replaceAll("\\", "/").replace(/^\/+/, "").replace(/\/+/g, "/").replace(/\/$/, "");
 }
 
 async function walkFilesystem(

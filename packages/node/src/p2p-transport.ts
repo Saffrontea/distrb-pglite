@@ -104,7 +104,9 @@ class PeerSocket {
       subscriptions: new Set(),
       direction,
     };
-    this.closePromise = new Promise<void>((r) => { this.closeResolve = r; });
+    this.closePromise = new Promise<void>((r) => {
+      this.closeResolve = r;
+    });
     this.startPing();
 
     this.ws.on("message", (data) => {
@@ -210,9 +212,10 @@ class PeerSocket {
     if (!Number.isFinite(rttMs) || rttMs < 0) {
       return;
     }
-    this.rttEwmaMs = this.rttEwmaMs === undefined
-      ? rttMs
-      : this.rttEwmaMs * (1 - RTT_EWMA_ALPHA) + rttMs * RTT_EWMA_ALPHA;
+    this.rttEwmaMs =
+      this.rttEwmaMs === undefined
+        ? rttMs
+        : this.rttEwmaMs * (1 - RTT_EWMA_ALPHA) + rttMs * RTT_EWMA_ALPHA;
   }
 }
 
@@ -223,13 +226,16 @@ class P2PWebSocketConnection implements TransportConnection {
   private readonly knownUrls = new Set<string>();
   private readonly reconnecting = new Set<string>();
   private readonly localSubscriptions = new Set<PartitionId>();
-  private readonly pendingReplay = new Map<string, {
-    targetNodeId: NodeId;
-    partitionId: PartitionId;
-    resolve: (response: ReplayResponse) => void;
-    reject: (error: Error) => void;
-    timer: ReturnType<typeof setTimeout>;
-  }>();
+  private readonly pendingReplay = new Map<
+    string,
+    {
+      targetNodeId: NodeId;
+      partitionId: PartitionId;
+      resolve: (response: ReplayResponse) => void;
+      reject: (error: Error) => void;
+      timer: ReturnType<typeof setTimeout>;
+    }
+  >();
   private closed = false;
 
   private server!: WebSocketServer;
@@ -247,8 +253,8 @@ class P2PWebSocketConnection implements TransportConnection {
     assertValidWebSocketUrl(options.publicUrl, "publicUrl");
     assertWebSocketUrlArray(options.seeds, "seeds");
     this.maxAttempts = options.maxReconnectAttempts;
-    this.baseDelay   = options.reconnectBaseDelayMs;
-    this.maxDelay    = options.reconnectMaxDelayMs;
+    this.baseDelay = options.reconnectBaseDelayMs;
+    this.maxDelay = options.reconnectMaxDelayMs;
   }
 
   async start(): Promise<void> {
@@ -347,18 +353,28 @@ class P2PWebSocketConnection implements TransportConnection {
     this.rejectAllPendingReplay("p2p connection closed");
     for (const peer of this.peers.values()) peer.close();
     this.peers.clear();
-    await new Promise<void>((r, j) => this.server.close((e) => e ? j(e) : r()));
+    await new Promise<void>((r, j) => this.server.close((e) => (e ? j(e) : r())));
   }
 
   // ─── peer lifecycle ──────────────────────────────────────────────────────
 
-  private registerPeerSocket(ws: WebSocket, direction: "inbound" | "outbound", knownUrl?: string): PeerSocket {
-    const peer = new PeerSocket(ws, direction, {
-      onHello:   (p) => this.onPeerHello(p),
-      onPeers:   (p, urls) => this.onPeerPeers(p, urls),
-      onMessage: (p, msg) => this.onPeerMessage(p, msg),
-      onClose:   (p) => this.onPeerClose(p),
-    }, this.zstd, knownUrl);
+  private registerPeerSocket(
+    ws: WebSocket,
+    direction: "inbound" | "outbound",
+    knownUrl?: string,
+  ): PeerSocket {
+    const peer = new PeerSocket(
+      ws,
+      direction,
+      {
+        onHello: (p) => this.onPeerHello(p),
+        onPeers: (p, urls) => this.onPeerPeers(p, urls),
+        onMessage: (p, msg) => this.onPeerMessage(p, msg),
+        onClose: (p) => this.onPeerClose(p),
+      },
+      this.zstd,
+      knownUrl,
+    );
     return peer;
   }
 
@@ -408,10 +424,10 @@ class P2PWebSocketConnection implements TransportConnection {
       let keep: PeerSocket;
       let discard: PeerSocket;
       if (keepOutboundOf === this.nodeId) {
-        keep    = existing.record.direction === "outbound" ? existing : peer;
+        keep = existing.record.direction === "outbound" ? existing : peer;
         discard = existing.record.direction === "outbound" ? peer : existing;
       } else {
-        keep    = existing.record.direction === "inbound" ? existing : peer;
+        keep = existing.record.direction === "inbound" ? existing : peer;
         discard = existing.record.direction === "inbound" ? peer : existing;
       }
       this.peers.set(nodeId, keep);
@@ -425,7 +441,12 @@ class P2PWebSocketConnection implements TransportConnection {
     // 既知 URL を gossip
     if (peer.record.publicUrl) this.knownUrls.add(peer.record.publicUrl);
     // 送信先URL と 自分のURL を両方除外してゴシップ（自分のURLを含めると相手が重複接続を試みる）
-    peer.send({ type: "peers", urls: [...this.knownUrls].filter((u) => u !== peer.record.publicUrl && u !== this.options.publicUrl) });
+    peer.send({
+      type: "peers",
+      urls: [...this.knownUrls].filter(
+        (u) => u !== peer.record.publicUrl && u !== this.options.publicUrl,
+      ),
+    });
   }
 
   private onPeerPeers(_peer: PeerSocket, urls: string[]): void {
@@ -504,7 +525,9 @@ class P2PWebSocketConnection implements TransportConnection {
                 );
                 break;
               }
-              const mismatchedEvent = msg.events.find((event) => event.partitionId !== msg.partitionId);
+              const mismatchedEvent = msg.events.find(
+                (event) => event.partitionId !== msg.partitionId,
+              );
               if (mismatchedEvent) {
                 this.rejectPendingReplay(
                   msg.requestId,
@@ -580,7 +603,7 @@ class P2PWebSocketConnection implements TransportConnection {
     let attempt = 0;
     while (!this.closed && attempt < this.maxAttempts) {
       const jitter = 0.75 + Math.random() * 0.5;
-      const delay  = Math.min(this.baseDelay * 2 ** attempt, this.maxDelay) * jitter;
+      const delay = Math.min(this.baseDelay * 2 ** attempt, this.maxDelay) * jitter;
       await new Promise<void>((r) => setTimeout(r, delay));
       if (this.closed) return;
 
@@ -657,7 +680,9 @@ function assertKnownP2PWireMessage(message: unknown): asserts message is P2PWire
     case "replay-response":
       return;
     default:
-      throw new Error(`unknown p2p wire message type: ${String((message as { type: unknown }).type)}`);
+      throw new Error(
+        `unknown p2p wire message type: ${String((message as { type: unknown }).type)}`,
+      );
   }
 }
 

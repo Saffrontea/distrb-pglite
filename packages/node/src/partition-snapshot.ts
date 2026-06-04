@@ -141,10 +141,7 @@ export async function listEventsAfterPartitionSnapshot(
   store: PartitionStore,
   snapshot: PartitionSnapshotCursor,
 ): Promise<EventEnvelope[]> {
-  return store.listEventsAfterCursors(
-    snapshot.partitionId,
-    highWatermarkMap(snapshot),
-  );
+  return store.listEventsAfterCursors(snapshot.partitionId, highWatermarkMap(snapshot));
 }
 
 export async function restorePartitionFilesystemSnapshot(options: {
@@ -152,7 +149,9 @@ export async function restorePartitionFilesystemSnapshot(options: {
   fs: Pick<SnapshotFilesystem, "restore">;
 }): Promise<void> {
   if (options.snapshot.storageBinding.snapshotScope !== "catalog-and-data") {
-    throw new Error("only catalog-and-data partition filesystem snapshots can restore a full filesystem");
+    throw new Error(
+      "only catalog-and-data partition filesystem snapshots can restore a full filesystem",
+    );
   }
 
   await options.fs.restore(options.snapshot.manifest);
@@ -181,21 +180,20 @@ export async function restorePartitionDataOnlyCasSnapshot(options: {
   targetStorageBinding?: StoragePartitionBinding;
 }): Promise<void> {
   if (options.snapshot.storageBinding.snapshotScope !== "data-only") {
-    throw new Error("only data-only partition snapshots can restore relation files into an existing data directory");
+    throw new Error(
+      "only data-only partition snapshots can restore relation files into an existing data directory",
+    );
   }
   if (
-    options.targetStorageBinding
-    && options.targetStorageBinding.partitionId !== options.snapshot.partitionId
+    options.targetStorageBinding &&
+    options.targetStorageBinding.partitionId !== options.snapshot.partitionId
   ) {
     throw new Error(
       `target storage binding partition mismatch: ${options.targetStorageBinding.partitionId} !== ${options.snapshot.partitionId}`,
     );
   }
   if (options.targetStorageBinding) {
-    validateDataOnlyTargetBinding(
-      options.snapshot.storageBinding,
-      options.targetStorageBinding,
-    );
+    validateDataOnlyTargetBinding(options.snapshot.storageBinding, options.targetStorageBinding);
   }
 
   await restoreFromCas({
@@ -216,10 +214,7 @@ export async function replayEventsAfterPartitionSnapshot(options: {
   targetStore: PartitionStore;
   snapshot: PartitionSnapshotCursor;
 }): Promise<number> {
-  const events = await listEventsAfterPartitionSnapshot(
-    options.sourceStore,
-    options.snapshot,
-  );
+  const events = await listEventsAfterPartitionSnapshot(options.sourceStore, options.snapshot);
   validatePartitionSnapshotReplayEvents(events, options.snapshot.partitionId);
 
   await options.targetStore.registerPartition(options.snapshot.partitionId);
@@ -258,11 +253,13 @@ function validatePartitionSnapshotReplayEvents(
 
 function assertSameReplayEvent(left: EventEnvelope, right: EventEnvelope): void {
   if (
-    left.partitionId !== right.partitionId
-    || left.schemaVersion !== right.schemaVersion
-    || canonicalJson(left.payload) !== canonicalJson(right.payload)
+    left.partitionId !== right.partitionId ||
+    left.schemaVersion !== right.schemaVersion ||
+    canonicalJson(left.payload) !== canonicalJson(right.payload)
   ) {
-    throw new Error(`partition snapshot replay event id conflict: ${right.sourceNodeId}/${right.eventId}`);
+    throw new Error(
+      `partition snapshot replay event id conflict: ${right.sourceNodeId}/${right.eventId}`,
+    );
   }
 }
 
@@ -327,9 +324,9 @@ function validateDataOnlyTargetBinding(
     throw new Error("target storage binding must use data-only snapshot scope");
   }
   if (
-    sourceBinding.ddlGeneration !== undefined
-    && targetBinding.ddlGeneration !== undefined
-    && sourceBinding.ddlGeneration !== targetBinding.ddlGeneration
+    sourceBinding.ddlGeneration !== undefined &&
+    targetBinding.ddlGeneration !== undefined &&
+    sourceBinding.ddlGeneration !== targetBinding.ddlGeneration
   ) {
     throw new Error(
       `target storage binding DDL generation mismatch: ${targetBinding.ddlGeneration} !== ${sourceBinding.ddlGeneration}`,
@@ -347,8 +344,8 @@ function validateDataOnlyTargetBinding(
       throw new Error(`target storage binding is missing relation at index ${index}`);
     }
     if (
-      sourceRelation.role !== targetRelation.role
-      || sourceRelation.parentRelationOid !== targetRelation.parentRelationOid
+      sourceRelation.role !== targetRelation.role ||
+      sourceRelation.parentRelationOid !== targetRelation.parentRelationOid
     ) {
       throw new Error(`target storage binding relation metadata mismatch at index ${index}`);
     }
@@ -369,9 +366,7 @@ function relationFileStems(relation: StorageRelationLocator): string[] {
 }
 
 function relationFileStem(path: string): string {
-  return path
-    .replace(/_(fsm|vm|init)(\.\d+)?$/, "")
-    .replace(/\.\d+$/, "");
+  return path.replace(/_(fsm|vm|init)(\.\d+)?$/, "").replace(/\.\d+$/, "");
 }
 
 function remapDataOnlyManifest(
@@ -385,17 +380,16 @@ function remapDataOnlyManifest(
     directories: [],
     files: manifest.files.map((file) => ({
       ...file,
-      path: isDataComponentMetadataFile(file.path)
-        || sourceDataCatalogFileStems.has(relationFileStem(file.path))
-        ? file.path
-        : remapRelationFilePath(file.path, sourceBinding, targetBinding),
+      path:
+        isDataComponentMetadataFile(file.path) ||
+        sourceDataCatalogFileStems.has(relationFileStem(file.path))
+          ? file.path
+          : remapRelationFilePath(file.path, sourceBinding, targetBinding),
     })),
   };
 }
 
-function dataCatalogRelationFileStems(
-  binding: StoragePartitionBinding,
-): ReadonlySet<string> {
+function dataCatalogRelationFileStems(binding: StoragePartitionBinding): ReadonlySet<string> {
   const dataCatalogOids = new Set(
     binding.relations
       .filter((relation) => relation.role === "data-catalog")
@@ -403,12 +397,11 @@ function dataCatalogRelationFileStems(
   );
   return new Set(
     binding.relations
-      .filter((relation) =>
-        relation.role === "data-catalog"
-        || (
-          relation.parentRelationOid !== undefined
-          && dataCatalogOids.has(relation.parentRelationOid)
-        )
+      .filter(
+        (relation) =>
+          relation.role === "data-catalog" ||
+          (relation.parentRelationOid !== undefined &&
+            dataCatalogOids.has(relation.parentRelationOid)),
       )
       .flatMap((relation) => relationFileStems(relation)),
   );
@@ -433,7 +426,9 @@ function remapRelationFilePath(
 
     const targetStem = relationFileStems(targetRelation)[0];
     if (!targetStem) {
-      throw new Error(`target storage binding is missing a storage path for relation at index ${index}`);
+      throw new Error(
+        `target storage binding is missing a storage path for relation at index ${index}`,
+      );
     }
     return `${targetStem}${path.slice(sourceStem.length)}`;
   }
@@ -443,16 +438,16 @@ function remapRelationFilePath(
 
 function isDataComponentMetadataFile(path: string): boolean {
   return (
-    path.startsWith("pg_xact/")
-    || path.startsWith("pg_subtrans/")
-    || path.startsWith("pg_multixact/")
-    || path.startsWith("pg_commit_ts/")
-    || path.startsWith("pg_serial/")
-    || path.startsWith("pg_twophase/")
-    || path === "global/pg_filenode.map"
-    || path.endsWith("/pg_filenode.map")
-    || path === "global/pg_internal.init"
-    || path.endsWith("/pg_internal.init")
+    path.startsWith("pg_xact/") ||
+    path.startsWith("pg_subtrans/") ||
+    path.startsWith("pg_multixact/") ||
+    path.startsWith("pg_commit_ts/") ||
+    path.startsWith("pg_serial/") ||
+    path.startsWith("pg_twophase/") ||
+    path === "global/pg_filenode.map" ||
+    path.endsWith("/pg_filenode.map") ||
+    path === "global/pg_internal.init" ||
+    path.endsWith("/pg_internal.init")
   );
 }
 

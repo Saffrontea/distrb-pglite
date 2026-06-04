@@ -19,12 +19,14 @@ export type NodeDemoSummary = {
   ignoredPartitionEvents: number;
 };
 
-export async function runNodeDemo(options: {
-  baseDir?: string;
-  port?: number;
-} = {}): Promise<NodeDemoSummary> {
-  const baseDir = options.baseDir ?? await mkdtemp(join(tmpdir(), "distrb-pglite-demo-"));
-  const port = options.port ?? await getFreePort();
+export async function runNodeDemo(
+  options: {
+    baseDir?: string;
+    port?: number;
+  } = {},
+): Promise<NodeDemoSummary> {
+  const baseDir = options.baseDir ?? (await mkdtemp(join(tmpdir(), "distrb-pglite-demo-")));
+  const port = options.port ?? (await getFreePort());
   const hub = new WebSocketHub({ port });
   const url = `ws://127.0.0.1:${port}`;
 
@@ -69,9 +71,8 @@ export async function runNodeDemo(options: {
       payload: { sensor: "tokyo-1", reading: 43, mode: "offline" },
     });
 
-    const nodeBEventsBeforeCatchup = (
-      await storeB.listEventsAfterCursors("tenant:jp", new Map())
-    ).length;
+    const nodeBEventsBeforeCatchup = (await storeB.listEventsAfterCursors("tenant:jp", new Map()))
+      .length;
 
     nodeA = new SyncNode("node-a", storeA, new WebSocketTransport(url));
     await nodeA.start();
@@ -79,18 +80,15 @@ export async function runNodeDemo(options: {
     await nodeC.start();
     await nodeC.subscribe("tenant:jp");
     const nodeCApplied = await nodeC.catchUpFrom("node-a", "tenant:jp");
-    const nodeCEvents = (
-      await storeC.listEventsAfterCursors("tenant:jp", new Map())
-    ).length;
+    const nodeCEvents = (await storeC.listEventsAfterCursors("tenant:jp", new Map())).length;
 
     const nodeBApplied = await nodeB.catchUpFrom("node-a", "tenant:jp");
     if (nodeBApplied !== 1) {
       throw new Error(`expected node-b to catch up one offline event, got ${nodeBApplied}`);
     }
 
-    const nodeBEventsAfterCatchup = (
-      await storeB.listEventsAfterCursors("tenant:jp", new Map())
-    ).length;
+    const nodeBEventsAfterCatchup = (await storeB.listEventsAfterCursors("tenant:jp", new Map()))
+      .length;
 
     return {
       baseDir,
@@ -130,7 +128,7 @@ async function getFreePort(): Promise<number> {
 
   const address = server.address();
   await new Promise<void>((resolve, reject) => {
-    server.close((error) => error ? reject(error) : resolve());
+    server.close((error) => (error ? reject(error) : resolve()));
   });
 
   if (!address || typeof address === "string") {

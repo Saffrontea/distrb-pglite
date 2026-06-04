@@ -48,7 +48,7 @@ async function getFreePort(): Promise<number | undefined> {
 
   const address = server.address();
   await new Promise<void>((resolve, reject) => {
-    server.close((error) => error ? reject(error) : resolve());
+    server.close((error) => (error ? reject(error) : resolve()));
   });
 
   if (!address || typeof address === "string") {

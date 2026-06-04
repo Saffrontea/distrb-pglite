@@ -33,18 +33,16 @@ export function compareHighWatermarks(
   local: HighWatermark,
   remote: HighWatermark,
 ): SourceCursorComparison[] {
-  return [...new Set([...local.keys(), ...remote.keys()])]
-    .sort()
-    .map((sourceNodeId) => {
-      const localEventId = local.get(sourceNodeId);
-      const remoteEventId = remote.get(sourceNodeId);
-      return {
-        sourceNodeId,
-        localEventId,
-        remoteEventId,
-        comparison: compareSourceCursor(localEventId, remoteEventId),
-      };
-    });
+  return [...new Set([...local.keys(), ...remote.keys()])].sort().map((sourceNodeId) => {
+    const localEventId = local.get(sourceNodeId);
+    const remoteEventId = remote.get(sourceNodeId);
+    return {
+      sourceNodeId,
+      localEventId,
+      remoteEventId,
+      comparison: compareSourceCursor(localEventId, remoteEventId),
+    };
+  });
 }
 
 export function convergenceStatus(options: {
@@ -77,10 +75,11 @@ export function convergenceStatus(options: {
     missingSources,
     staleSources,
     aheadSources,
-    converged: options.remote !== undefined
-      && missingSources.length === 0
-      && staleSources.length === 0
-      && aheadSources.length === 0,
+    converged:
+      options.remote !== undefined &&
+      missingSources.length === 0 &&
+      staleSources.length === 0 &&
+      aheadSources.length === 0,
   };
 }
 

@@ -87,17 +87,21 @@ describe("browser CAS helpers", () => {
     });
     const restoredFs = new ChunkedMemoryDataFilesystem();
 
-    await expect(restoreBrowserFilesystemFromCas({
-      manifest: {
-        ...manifest,
-        files: [{
-          ...manifest.files[0]!,
-          sha256: await digest(new TextEncoder().encode("different")),
-        }],
-      },
-      casStore: sourceCas,
-      fs: restoredFs,
-    })).rejects.toThrow("CAS file integrity check failed: large");
+    await expect(
+      restoreBrowserFilesystemFromCas({
+        manifest: {
+          ...manifest,
+          files: [
+            {
+              ...manifest.files[0]!,
+              sha256: await digest(new TextEncoder().encode("different")),
+            },
+          ],
+        },
+        casStore: sourceCas,
+        fs: restoredFs,
+      }),
+    ).rejects.toThrow("CAS file integrity check failed: large");
   });
 
   it("rejects invalid chunking before browser snapshotting", async () => {
@@ -105,21 +109,27 @@ describe("browser CAS helpers", () => {
     await sourceFs.writeFile("payload", new TextEncoder().encode("payload"));
     const sourceCas = new MemoryCasBlockStore();
 
-    await expect(snapshotBrowserFilesystemToCas({
-      fs: sourceFs,
-      casStore: sourceCas,
-      chunkSize: 0,
-    })).rejects.toThrow("chunkSize must be a positive integer");
-    await expect(snapshotBrowserFilesystemToCas({
-      fs: sourceFs,
-      casStore: sourceCas,
-      chunking: { strategy: "page-aligned", pageSize: 0, maxChunkSize: 4096 },
-    })).rejects.toThrow("pageSize must be a positive integer");
-    await expect(snapshotBrowserFilesystemToCas({
-      fs: sourceFs,
-      casStore: sourceCas,
-      chunking: { strategy: "page-aligned", pageSize: 4096, maxChunkSize: 2048 },
-    })).rejects.toThrow("maxChunkSize must be greater than or equal to pageSize");
+    await expect(
+      snapshotBrowserFilesystemToCas({
+        fs: sourceFs,
+        casStore: sourceCas,
+        chunkSize: 0,
+      }),
+    ).rejects.toThrow("chunkSize must be a positive integer");
+    await expect(
+      snapshotBrowserFilesystemToCas({
+        fs: sourceFs,
+        casStore: sourceCas,
+        chunking: { strategy: "page-aligned", pageSize: 0, maxChunkSize: 4096 },
+      }),
+    ).rejects.toThrow("pageSize must be a positive integer");
+    await expect(
+      snapshotBrowserFilesystemToCas({
+        fs: sourceFs,
+        casStore: sourceCas,
+        chunking: { strategy: "page-aligned", pageSize: 4096, maxChunkSize: 2048 },
+      }),
+    ).rejects.toThrow("maxChunkSize must be greater than or equal to pageSize");
   });
 
   it("rejects restore manifests whose browser file paths escape the target root", async () => {
@@ -129,70 +139,84 @@ describe("browser CAS helpers", () => {
     await sourceCas.writeBlock(hash, content);
     const restoredFs = new MemoryDataFilesystem();
 
-    await expect(restoreBrowserFilesystemFromCas({
-      manifest: {
-        version: 1,
-        snapshotId: "bad-path",
-        parentSnapshotIds: [],
-        chunkSize: 64 * 1024,
-        directories: [],
-        files: [{
-          path: "../outside",
-          size: content.length,
-          sha256: hash,
-          blocks: [{ hash, size: content.length }],
-        }],
-      },
-      casStore: sourceCas,
-      fs: restoredFs,
-    })).rejects.toThrow("logical path escapes filesystem root");
+    await expect(
+      restoreBrowserFilesystemFromCas({
+        manifest: {
+          version: 1,
+          snapshotId: "bad-path",
+          parentSnapshotIds: [],
+          chunkSize: 64 * 1024,
+          directories: [],
+          files: [
+            {
+              path: "../outside",
+              size: content.length,
+              sha256: hash,
+              blocks: [{ hash, size: content.length }],
+            },
+          ],
+        },
+        casStore: sourceCas,
+        fs: restoredFs,
+      }),
+    ).rejects.toThrow("logical path escapes filesystem root");
   });
 
   it("rejects restore manifests with non-canonical browser CAS block hashes", async () => {
     const restoredFs = new MemoryDataFilesystem();
 
-    await expect(restoreBrowserFilesystemFromCas({
-      manifest: {
-        version: 1,
-        snapshotId: "bad-hash",
-        parentSnapshotIds: [],
-        chunkSize: 64 * 1024,
-        directories: [],
-        files: [{
-          path: "payload",
-          size: 0,
-          sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-          blocks: [{ hash: "../escape", size: 0 }],
-        }],
-      },
-      casStore: new MemoryCasBlockStore(),
-      fs: restoredFs,
-    })).rejects.toThrow("browser CAS manifest files[0].blocks[0].hash must be a 64-character lowercase sha256 hash");
+    await expect(
+      restoreBrowserFilesystemFromCas({
+        manifest: {
+          version: 1,
+          snapshotId: "bad-hash",
+          parentSnapshotIds: [],
+          chunkSize: 64 * 1024,
+          directories: [],
+          files: [
+            {
+              path: "payload",
+              size: 0,
+              sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              blocks: [{ hash: "../escape", size: 0 }],
+            },
+          ],
+        },
+        casStore: new MemoryCasBlockStore(),
+        fs: restoredFs,
+      }),
+    ).rejects.toThrow(
+      "browser CAS manifest files[0].blocks[0].hash must be a 64-character lowercase sha256 hash",
+    );
   });
 
   it("rejects restore manifests with invalid browser chunk sizes", async () => {
-    await expect(restoreBrowserFilesystemFromCas({
-      manifest: {
-        version: 1,
-        snapshotId: "bad-chunk-size",
-        parentSnapshotIds: [],
-        chunkSize: 0,
-        directories: [],
-        files: [],
-      },
-      casStore: new MemoryCasBlockStore(),
-      fs: new MemoryDataFilesystem(),
-    })).rejects.toThrow("browser CAS manifest chunkSize must be a positive integer");
+    await expect(
+      restoreBrowserFilesystemFromCas({
+        manifest: {
+          version: 1,
+          snapshotId: "bad-chunk-size",
+          parentSnapshotIds: [],
+          chunkSize: 0,
+          directories: [],
+          files: [],
+        },
+        casStore: new MemoryCasBlockStore(),
+        fs: new MemoryDataFilesystem(),
+      }),
+    ).rejects.toThrow("browser CAS manifest chunkSize must be a positive integer");
   });
 
   it("rejects invalid browser CAS manifests before diff, transfer, and GC", async () => {
     const valid = browserCasManifest("snapshot-1", "a".repeat(64), 1);
     const invalidHash = {
       ...valid,
-      files: [{
-        ...valid.files[0]!,
-        blocks: [{ hash: "not-a-hash", size: 1 }],
-      }],
+      files: [
+        {
+          ...valid.files[0]!,
+          blocks: [{ hash: "not-a-hash", size: 1 }],
+        },
+      ],
     };
     const invalidSnapshotId = {
       ...valid,
@@ -218,40 +242,60 @@ describe("browser CAS helpers", () => {
       directories: [valid.files[0]!.path],
     };
 
-    expect(() => validateBrowserCasManifest(invalidSnapshotId, "snapshot-1"))
-      .toThrow("browser CAS manifest snapshotId mismatch: snapshot-2 !== snapshot-1");
-    expect(() => validateBrowserCasManifest(duplicatePath))
-      .toThrow("duplicate browser CAS manifest file path");
-    expect(() => validateBrowserCasManifest(duplicateDirectory))
-      .toThrow("duplicate browser CAS manifest directory path");
-    expect(() => validateBrowserCasManifest(fileDirectoryCollision))
-      .toThrow("browser CAS manifest path is both a file and directory");
-    expect(() => diffMissingBrowserCasBlocks(invalidHash, new Set()))
-      .toThrow("browser CAS manifest files[0].blocks[0].hash must be a 64-character lowercase sha256 hash");
-    expect(() => diffMissingBrowserCasBlocks(duplicatePath, new Set()))
-      .toThrow("duplicate browser CAS manifest file path");
-    expect(() => diffMissingBrowserCasBlocks(duplicateDirectory, new Set()))
-      .toThrow("duplicate browser CAS manifest directory path");
-    expect(() => diffMissingBrowserCasBlocks(fileDirectoryCollision, new Set()))
-      .toThrow("browser CAS manifest path is both a file and directory");
-    await expect(transferMissingBrowserCasBlocks({
-      manifest: invalidHash,
-      sourceCasStore: new MemoryCasBlockStore(),
-      targetCasStore: new MemoryCasBlockStore(),
-    })).rejects.toThrow("browser CAS manifest files[0].blocks[0].hash must be a 64-character lowercase sha256 hash");
-    await expect(transferMissingBrowserCasBlocks({
-      manifest: duplicatePath,
-      sourceCasStore: new MemoryCasBlockStore(),
-      targetCasStore: new MemoryCasBlockStore(),
-    })).rejects.toThrow("duplicate browser CAS manifest file path");
-    await expect(gcBrowserCasBlocks({
-      casStore: new MemoryCasBlockStore(),
-      retainedManifests: [invalidHash],
-    })).rejects.toThrow("browser CAS manifest files[0].blocks[0].hash must be a 64-character lowercase sha256 hash");
-    await expect(gcBrowserCasBlocks({
-      casStore: new MemoryCasBlockStore(),
-      retainedManifests: [duplicatePath],
-    })).rejects.toThrow("duplicate browser CAS manifest file path");
+    expect(() => validateBrowserCasManifest(invalidSnapshotId, "snapshot-1")).toThrow(
+      "browser CAS manifest snapshotId mismatch: snapshot-2 !== snapshot-1",
+    );
+    expect(() => validateBrowserCasManifest(duplicatePath)).toThrow(
+      "duplicate browser CAS manifest file path",
+    );
+    expect(() => validateBrowserCasManifest(duplicateDirectory)).toThrow(
+      "duplicate browser CAS manifest directory path",
+    );
+    expect(() => validateBrowserCasManifest(fileDirectoryCollision)).toThrow(
+      "browser CAS manifest path is both a file and directory",
+    );
+    expect(() => diffMissingBrowserCasBlocks(invalidHash, new Set())).toThrow(
+      "browser CAS manifest files[0].blocks[0].hash must be a 64-character lowercase sha256 hash",
+    );
+    expect(() => diffMissingBrowserCasBlocks(duplicatePath, new Set())).toThrow(
+      "duplicate browser CAS manifest file path",
+    );
+    expect(() => diffMissingBrowserCasBlocks(duplicateDirectory, new Set())).toThrow(
+      "duplicate browser CAS manifest directory path",
+    );
+    expect(() => diffMissingBrowserCasBlocks(fileDirectoryCollision, new Set())).toThrow(
+      "browser CAS manifest path is both a file and directory",
+    );
+    await expect(
+      transferMissingBrowserCasBlocks({
+        manifest: invalidHash,
+        sourceCasStore: new MemoryCasBlockStore(),
+        targetCasStore: new MemoryCasBlockStore(),
+      }),
+    ).rejects.toThrow(
+      "browser CAS manifest files[0].blocks[0].hash must be a 64-character lowercase sha256 hash",
+    );
+    await expect(
+      transferMissingBrowserCasBlocks({
+        manifest: duplicatePath,
+        sourceCasStore: new MemoryCasBlockStore(),
+        targetCasStore: new MemoryCasBlockStore(),
+      }),
+    ).rejects.toThrow("duplicate browser CAS manifest file path");
+    await expect(
+      gcBrowserCasBlocks({
+        casStore: new MemoryCasBlockStore(),
+        retainedManifests: [invalidHash],
+      }),
+    ).rejects.toThrow(
+      "browser CAS manifest files[0].blocks[0].hash must be a 64-character lowercase sha256 hash",
+    );
+    await expect(
+      gcBrowserCasBlocks({
+        casStore: new MemoryCasBlockStore(),
+        retainedManifests: [duplicatePath],
+      }),
+    ).rejects.toThrow("duplicate browser CAS manifest file path");
   });
 });
 
@@ -428,11 +472,7 @@ function concat(chunks: Uint8Array[]): Uint8Array {
 }
 
 function normalize(path: string): string {
-  return path
-    .replaceAll("\\", "/")
-    .replace(/^\/+/, "")
-    .replace(/\/+/g, "/")
-    .replace(/\/$/, "");
+  return path.replaceAll("\\", "/").replace(/^\/+/, "").replace(/\/+/g, "/").replace(/\/$/, "");
 }
 
 function dirname(path: string): string {
@@ -442,9 +482,7 @@ function dirname(path: string): string {
 
 async function digest(content: Uint8Array): Promise<string> {
   const hash = await crypto.subtle.digest("SHA-256", content);
-  return [...new Uint8Array(hash)]
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
+  return [...new Uint8Array(hash)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 function browserCasManifest(snapshotId: string, hash: string, size: number): BrowserCasManifest {
@@ -454,12 +492,14 @@ function browserCasManifest(snapshotId: string, hash: string, size: number): Bro
     parentSnapshotIds: [],
     chunkSize: 64 * 1024,
     directories: [],
-    files: [{
-      path: `${snapshotId}.bin`,
-      size,
-      sha256: hash,
-      components: ["data"],
-      blocks: [{ hash, size }],
-    }],
+    files: [
+      {
+        path: `${snapshotId}.bin`,
+        size,
+        sha256: hash,
+        components: ["data"],
+        blocks: [{ hash, size }],
+      },
+    ],
   };
 }

@@ -14,11 +14,13 @@ export async function makeTempDir(prefix: string): Promise<string> {
 afterEach(async () => {
   const dirs = tempDirs.splice(0);
   await Promise.all(
-    dirs.map((dir) => rm(dir, {
-      recursive: true,
-      force: true,
-      maxRetries: 3,
-      retryDelay: 100,
-    })),
+    dirs.map((dir) =>
+      rm(dir, {
+        recursive: true,
+        force: true,
+        maxRetries: 3,
+        retryDelay: 100,
+      }),
+    ),
   );
 });
