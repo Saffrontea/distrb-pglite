@@ -66,6 +66,7 @@ export class BrowserWebSocketTransport implements Transport {
       this.url = urlOrOptions.url;
       this.reconnectOptions = urlOrOptions.reconnect;
     }
+    assertValidWebSocketUrl(this.url, "url");
   }
 
   async connect(nodeId: NodeId, handlers: TransportHandlers): Promise<TransportConnection> {
@@ -315,9 +316,11 @@ class BrowserWebSocketTransportConnection implements TransportConnection {
         break;
       }
       case "ping":
+        assertValidSentAt(message.sentAt);
         this.sendIfOpen({ type: "pong", sentAt: message.sentAt });
         break;
       case "pong":
+        assertValidSentAt(message.sentAt);
         this.recordRtt(Date.now() - message.sentAt);
         break;
       case "hello":
@@ -419,6 +422,28 @@ function clampTimeout(ms: number): number {
 function assertValidRequestId(requestId: unknown): asserts requestId is string {
   if (typeof requestId !== "string" || requestId.length === 0) {
     throw new Error("requestId must be a non-empty string");
+  }
+}
+
+function assertValidSentAt(sentAt: unknown): asserts sentAt is number {
+  if (typeof sentAt !== "number" || !Number.isFinite(sentAt) || sentAt < 0) {
+    throw new Error("sentAt must be a non-negative finite number");
+  }
+}
+
+function assertValidWebSocketUrl(value: unknown, name: string): asserts value is string {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error(`${name} must be a non-empty websocket URL`);
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new Error(`${name} must be a valid websocket URL`);
+  }
+  if (parsed.protocol !== "ws:" && parsed.protocol !== "wss:") {
+    throw new Error(`${name} must use ws or wss protocol`);
   }
 }
 

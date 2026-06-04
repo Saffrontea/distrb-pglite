@@ -42,6 +42,15 @@ describe("BrowserWebSocketTransport", () => {
     expect(FakeWebSocket.instances).toHaveLength(0);
   });
 
+  it("rejects invalid relay urls before opening a browser websocket", () => {
+    expect(() => new BrowserWebSocketTransport("http://relay.test"))
+      .toThrow("url must use ws or wss protocol");
+    expect(() => new BrowserWebSocketTransport({
+      url: "",
+    })).toThrow("url must be a non-empty websocket URL");
+    expect(FakeWebSocket.instances).toHaveLength(0);
+  });
+
   it("handles replay requests and resolves replay responses", async () => {
     const event = sampleEvent("browser-b", "02");
     const onReplayRequest = vi.fn(async () => ({
@@ -252,6 +261,27 @@ describe("BrowserWebSocketTransport", () => {
       await connected;
 
       socket.receive({ type: "mystery", value: 1 });
+      await Promise.resolve();
+
+      expect(errorSpy).toHaveBeenCalledWith(
+        "[browser-websocket] message handling error",
+        expect.any(Error),
+      );
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("captures server pong messages with invalid sentAt values", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const transport = new BrowserWebSocketTransport("ws://relay.test");
+      const connected = transport.connect("browser-a", { onEvent: vi.fn() });
+      const socket = FakeWebSocket.instances[0]!;
+      socket.open();
+      await connected;
+
+      socket.receive({ type: "pong", sentAt: "bad" });
       await Promise.resolve();
 
       expect(errorSpy).toHaveBeenCalledWith(

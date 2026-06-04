@@ -116,6 +116,8 @@ class PeerSocket {
               throw new Error(`hello already received for peer: ${this.record.nodeId}`);
             }
             assertValidNodeId(msg.nodeId);
+            assertValidWebSocketUrl(msg.publicUrl, "hello publicUrl");
+            assertPartitionArray(msg.subscriptions, "hello subscriptions");
             for (const partitionId of msg.subscriptions) {
               assertValidPartitionId(partitionId);
             }
@@ -124,10 +126,13 @@ class PeerSocket {
             for (const p of msg.subscriptions) this.record.subscriptions.add(p);
             this.callbacks.onHello(this);
           } else if (msg.type === "peers") {
+            assertWebSocketUrlArray(msg.urls, "peers urls");
             this.callbacks.onPeers(this, msg.urls);
           } else if (msg.type === "ping") {
+            assertValidSentAt(msg.sentAt);
             this.send({ type: "pong", sentAt: msg.sentAt });
           } else if (msg.type === "pong") {
+            assertValidSentAt(msg.sentAt);
             this.recordRtt(Date.now() - msg.sentAt);
           } else {
             if (!this.record.nodeId) return; // hello 未受信 → 無視
@@ -239,6 +244,8 @@ class P2PWebSocketConnection implements TransportConnection {
     private readonly handlers: TransportHandlers,
     private readonly options: Required<P2PTransportOptions>,
   ) {
+    assertValidWebSocketUrl(options.publicUrl, "publicUrl");
+    assertWebSocketUrlArray(options.seeds, "seeds");
     this.maxAttempts = options.maxReconnectAttempts;
     this.baseDelay   = options.reconnectBaseDelayMs;
     this.maxDelay    = options.reconnectMaxDelayMs;
@@ -357,6 +364,7 @@ class P2PWebSocketConnection implements TransportConnection {
 
   private connectToPeer(url: string): void {
     if (this.closed) return;
+    assertValidWebSocketUrl(url, "peer url");
     void (async () => {
       const ws = new WebSocket(url);
       // ハンドラを open より先に登録し、サーバーが即座に送る hello を取りこぼさない
@@ -603,6 +611,37 @@ function assertValidRequestId(requestId: unknown): asserts requestId is string {
   }
 }
 
+function assertPartitionArray(value: unknown, name: string): asserts value is PartitionId[] {
+  if (!Array.isArray(value)) {
+    throw new Error(`${name} must be an array`);
+  }
+}
+
+function assertWebSocketUrlArray(value: unknown, name: string): asserts value is string[] {
+  if (!Array.isArray(value)) {
+    throw new Error(`${name} must be an array`);
+  }
+  for (const [index, url] of value.entries()) {
+    assertValidWebSocketUrl(url, `${name}[${index}]`);
+  }
+}
+
+function assertValidWebSocketUrl(value: unknown, name: string): asserts value is string {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error(`${name} must be a non-empty websocket URL`);
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new Error(`${name} must be a valid websocket URL`);
+  }
+  if (parsed.protocol !== "ws:" && parsed.protocol !== "wss:") {
+    throw new Error(`${name} must use ws or wss protocol`);
+  }
+}
+
 function assertKnownP2PWireMessage(message: unknown): asserts message is P2PWireMessage {
   if (typeof message !== "object" || message === null || !("type" in message)) {
     throw new Error("p2p wire message must be an object with a type");
@@ -619,6 +658,12 @@ function assertKnownP2PWireMessage(message: unknown): asserts message is P2PWire
       return;
     default:
       throw new Error(`unknown p2p wire message type: ${String((message as { type: unknown }).type)}`);
+  }
+}
+
+function assertValidSentAt(sentAt: unknown): asserts sentAt is number {
+  if (typeof sentAt !== "number" || !Number.isFinite(sentAt) || sentAt < 0) {
+    throw new Error("sentAt must be a non-negative finite number");
   }
 }
 
@@ -642,6 +687,8 @@ export class P2PWebSocketTransport implements Transport {
       reconnectMaxDelayMs: 30_000,
       ...options,
     };
+    assertValidWebSocketUrl(this.opts.publicUrl, "publicUrl");
+    assertWebSocketUrlArray(this.opts.seeds, "seeds");
   }
 
   async connect(nodeId: NodeId, handlers: TransportHandlers): Promise<TransportConnection> {

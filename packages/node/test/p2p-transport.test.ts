@@ -54,6 +54,20 @@ describe("P2PWebSocketTransport (P2P 固有)", () => {
       .rejects.toThrow("nodeId must be a non-empty string");
   });
 
+  it("rejects invalid local peer urls before opening a server", async () => {
+    const port = await getFreePort();
+
+    expect(() => new P2PWebSocketTransport({
+      publicUrl: `http://127.0.0.1:${port}`,
+      port,
+    })).toThrow("publicUrl must use ws or wss protocol");
+    expect(() => new P2PWebSocketTransport({
+      publicUrl: `ws://127.0.0.1:${port}`,
+      port,
+      seeds: ["not-a-url"],
+    })).toThrow("seeds[0] must be a valid websocket URL");
+  });
+
   it("closes raw peers that send an empty hello node id", async () => {
     const port = await getFreePort();
     const connection = await new P2PWebSocketTransport({
@@ -105,6 +119,52 @@ describe("P2PWebSocketTransport (P2P 固有)", () => {
     }
   });
 
+  it("closes raw peers that send ping messages with invalid sentAt values", async () => {
+    const port = await getFreePort();
+    const connection = await new P2PWebSocketTransport({
+      publicUrl: `ws://127.0.0.1:${port}`,
+      port,
+    }).connect("node-a", { onEvent: () => {} });
+    const socket = await rawPeer(`ws://127.0.0.1:${port}`);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      socket.send(JSON.stringify({ type: "ping", sentAt: "bad" }));
+
+      await expect(waitForSocketClose(socket)).resolves.toBeUndefined();
+      expect(errorSpy).toHaveBeenCalledWith(
+        "[p2p] message decode error",
+        expect.any(Error),
+      );
+    } finally {
+      errorSpy.mockRestore();
+      socket.terminate();
+      await connection.close();
+    }
+  });
+
+  it("closes raw peers that send pong messages with invalid sentAt values", async () => {
+    const port = await getFreePort();
+    const connection = await new P2PWebSocketTransport({
+      publicUrl: `ws://127.0.0.1:${port}`,
+      port,
+    }).connect("node-a", { onEvent: () => {} });
+    const socket = await rawPeer(`ws://127.0.0.1:${port}`);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      socket.send(JSON.stringify({ type: "pong", sentAt: "bad" }));
+
+      await expect(waitForSocketClose(socket)).resolves.toBeUndefined();
+      expect(errorSpy).toHaveBeenCalledWith(
+        "[p2p] message decode error",
+        expect.any(Error),
+      );
+    } finally {
+      errorSpy.mockRestore();
+      socket.terminate();
+      await connection.close();
+    }
+  });
+
   it("closes raw peers that try to replace their hello identity on the same socket", async () => {
     const port = await getFreePort();
     const publicUrl = `ws://127.0.0.1:${port}`;
@@ -126,6 +186,67 @@ describe("P2PWebSocketTransport (P2P 固有)", () => {
         nodeId: "other-peer",
         publicUrl: "ws://127.0.0.1:2",
         subscriptions: [],
+      }));
+
+      await expect(waitForSocketClose(socket)).resolves.toBeUndefined();
+      expect(errorSpy).toHaveBeenCalledWith(
+        "[p2p] message decode error",
+        expect.any(Error),
+      );
+    } finally {
+      errorSpy.mockRestore();
+      socket.terminate();
+      await connection.close();
+    }
+  });
+
+  it("closes raw peers that send invalid hello public urls", async () => {
+    const port = await getFreePort();
+    const connection = await new P2PWebSocketTransport({
+      publicUrl: `ws://127.0.0.1:${port}`,
+      port,
+    }).connect("node-a", { onEvent: () => {} });
+    const socket = await rawPeer(`ws://127.0.0.1:${port}`);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      socket.send(JSON.stringify({
+        type: "hello",
+        nodeId: "raw-peer",
+        publicUrl: "http://127.0.0.1:1",
+        subscriptions: [],
+      }));
+
+      await expect(waitForSocketClose(socket)).resolves.toBeUndefined();
+      expect(errorSpy).toHaveBeenCalledWith(
+        "[p2p] message decode error",
+        expect.any(Error),
+      );
+    } finally {
+      errorSpy.mockRestore();
+      socket.terminate();
+      await connection.close();
+    }
+  });
+
+  it("closes raw peers that gossip invalid peer urls", async () => {
+    const port = await getFreePort();
+    const publicUrl = `ws://127.0.0.1:${port}`;
+    const connection = await new P2PWebSocketTransport({
+      publicUrl,
+      port,
+    }).connect("node-a", { onEvent: () => {} });
+    const socket = await rawPeer(publicUrl);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      socket.send(JSON.stringify({
+        type: "hello",
+        nodeId: "raw-peer",
+        publicUrl: "ws://127.0.0.1:1",
+        subscriptions: [],
+      }));
+      socket.send(JSON.stringify({
+        type: "peers",
+        urls: ["http://127.0.0.1:2"],
       }));
 
       await expect(waitForSocketClose(socket)).resolves.toBeUndefined();
