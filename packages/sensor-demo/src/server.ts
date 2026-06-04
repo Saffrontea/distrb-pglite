@@ -61,7 +61,15 @@ class SensorPartitionStore implements PartitionStore {
   registerPartition(id: string) { return this.inner.registerPartition(id); }
   hasPartition(id: string) { return this.inner.hasPartition(id); }
   appendLocal<T>(input: Parameters<PGlitePartitionStore["appendLocal"]>[0]) {
-    return this.inner.appendLocal<T>(input as never);
+    const sensorInput = input as Parameters<PGlitePartitionStore["appendLocal"]>[0];
+    if (sensorInput.partitionId === this.projectedPartitionId && !isSensorPayload(sensorInput.payload)) {
+      throw new Error("invalid sensor payload");
+    }
+    return this.inner.appendLocalEventTransaction<T>(sensorInput as never, async (event) => {
+      if (event.partitionId === this.projectedPartitionId) {
+        await this.projectSensorEvent(event);
+      }
+    });
   }
   listEventsAfter(...a: Parameters<PGlitePartitionStore["listEventsAfter"]>) {
     return this.inner.listEventsAfter(...a);
@@ -77,17 +85,21 @@ class SensorPartitionStore implements PartitionStore {
       return false;
     }
 
-    const applied = await this.inner.applyRemote(event);
-    if (applied && event.partitionId === this.projectedPartitionId) {
-      const p = event.payload as SensorPayload;
-      await this.db.query(
-        `INSERT INTO sensor_readings (event_id, sensor_id, reading, unit, source_node)
-         VALUES ($1, $2, $3, $4, $5)
-         ON CONFLICT (event_id) DO NOTHING`,
-        [event.eventId, p.sensorId, p.reading, p.unit ?? "C", event.sourceNodeId],
-      );
-    }
-    return applied;
+    return this.inner.applyRemoteEventTransaction(event, async (appliedEvent) => {
+      if (appliedEvent.partitionId === this.projectedPartitionId) {
+        await this.projectSensorEvent(appliedEvent);
+      }
+    });
+  }
+
+  private async projectSensorEvent(event: EventEnvelope): Promise<void> {
+    const p = event.payload as SensorPayload;
+    await this.db.query(
+      `INSERT INTO sensor_readings (event_id, sensor_id, reading, unit, source_node)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (event_id) DO NOTHING`,
+      [event.eventId, p.sensorId, p.reading, p.unit ?? "C", event.sourceNodeId],
+    );
   }
 }
 
@@ -267,22 +279,12 @@ export class EdgeNodeServer {
     if (!this.online) throw new Error("node is offline — use /readings-offline");
     const p = parseSensorPayload(body);
     const event = await this.syncNode.write({ partitionId: this.config.partitionId, schemaVersion: 1, payload: p });
-    await this.db.query(
-      `INSERT INTO sensor_readings (event_id, sensor_id, reading, unit, source_node)
-       VALUES ($1, $2, $3, $4, $5) ON CONFLICT (event_id) DO NOTHING`,
-      [event.eventId, p.sensorId, p.reading, p.unit ?? "C", this.config.nodeId],
-    );
     return { eventId: event.eventId, sensorId: p.sensorId, reading: p.reading };
   }
 
   private async postReadingOffline(body: unknown) {
     const p = parseSensorPayload(body);
-    const event = await this.inner.appendLocal({ partitionId: this.config.partitionId, schemaVersion: 1, payload: p });
-    await this.db.query(
-      `INSERT INTO sensor_readings (event_id, sensor_id, reading, unit, source_node)
-       VALUES ($1, $2, $3, $4, $5) ON CONFLICT (event_id) DO NOTHING`,
-      [event.eventId, p.sensorId, p.reading, p.unit ?? "C", this.config.nodeId],
-    );
+    const event = await this.store.appendLocal({ partitionId: this.config.partitionId, schemaVersion: 1, payload: p });
     return { eventId: event.eventId, sensorId: p.sensorId, reading: p.reading, offline: true };
   }
 

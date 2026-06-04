@@ -217,6 +217,77 @@ describe("PBT: sensor-demo EdgeNodeServer", () => {
     }
   }, 20_000);
 
+  it("rolls back local events when SQL projection fails", async () => {
+    const fixture = await startFixture();
+    try {
+      const [server] = fixture.servers;
+      await post(`${server.baseUrl}/sql`, {
+        sql: "ALTER TABLE sensor_readings ADD CONSTRAINT reject_projection_sensor CHECK (sensor_id <> 'reject-projection')",
+      });
+
+      const response = await postRaw(`${server.baseUrl}/readings`, {
+        sensorId: "reject-projection",
+        reading: 1,
+      });
+      expect(response.status).toBe(500);
+
+      const offline = await postRaw(`${server.baseUrl}/readings-offline`, {
+        sensorId: "reject-projection",
+        reading: 2,
+      });
+      expect(offline.status).toBe(500);
+
+      const status = await get<{ eventCount: number }>(`${server.baseUrl}/status`);
+      const events = await get<{ events: EventRow[] }>(`${server.baseUrl}/events?limit=1000`);
+      const readings = await get<{ rows: ReadingRow[] }>(`${server.baseUrl}/readings?limit=1000`);
+      expect(status.eventCount).toBe(0);
+      expect(events.events).toEqual([]);
+      expect(readings.rows).toEqual([]);
+    } finally {
+      await fixture.cleanup();
+    }
+  }, 20_000);
+
+  it("rolls back remote catchup events when SQL projection fails so retry can apply them", async () => {
+    const fixture = await startFixture();
+    try {
+      const [source, target] = fixture.servers;
+      await post(`${target.baseUrl}/sql`, {
+        sql: "ALTER TABLE sensor_readings ADD CONSTRAINT reject_remote_projection CHECK (sensor_id <> 'remote-reject')",
+      });
+      const sourceEvent = await post<{ eventId: string }>(`${source.baseUrl}/readings-offline`, {
+        sensorId: "remote-reject",
+        reading: 1,
+      });
+
+      const failedCatchup = await postRaw(`${target.baseUrl}/catchup`, {
+        peerNodeId: source.nodeId,
+      });
+      expect(failedCatchup.status).toBe(500);
+
+      const failedStatus = await get<{ eventCount: number }>(`${target.baseUrl}/status`);
+      const failedEvents = await get<{ events: EventRow[] }>(`${target.baseUrl}/events?limit=1000`);
+      const failedReadings = await get<{ rows: ReadingRow[] }>(`${target.baseUrl}/readings?limit=1000`);
+      expect(failedStatus.eventCount).toBe(0);
+      expect(failedEvents.events).toEqual([]);
+      expect(failedReadings.rows).toEqual([]);
+
+      await post(`${target.baseUrl}/sql`, {
+        sql: "ALTER TABLE sensor_readings DROP CONSTRAINT reject_remote_projection",
+      });
+      await expect(post<{ applied: number }>(`${target.baseUrl}/catchup`, {
+        peerNodeId: source.nodeId,
+      })).resolves.toEqual({ applied: 1 });
+
+      const retriedEvents = await get<{ events: EventRow[] }>(`${target.baseUrl}/events?limit=1000`);
+      const retriedReadings = await get<{ rows: ReadingRow[] }>(`${target.baseUrl}/readings?limit=1000`);
+      expect(retriedEvents.events.map((event) => event.eventId)).toEqual([sourceEvent.eventId]);
+      expect(readingKey(retriedReadings.rows)).toEqual([sourceEvent.eventId]);
+    } finally {
+      await fixture.cleanup();
+    }
+  }, 20_000);
+
   it("rejects malformed subscribe and catchup requests without changing local state", async () => {
     const fixture = await startFixture();
     try {
