@@ -1,4 +1,4 @@
-import { InMemoryPartitionStore } from "@distrb-pglite/core";
+import { InMemoryPartitionStore, type EventEnvelope, type PartitionStore } from "@distrb-pglite/core";
 import { PGlite } from "@electric-sql/pglite";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -134,6 +134,59 @@ describe("partition CAS snapshots", () => {
       { value: "a2" },
       { value: "b1" },
     ]);
+  });
+
+  it("rejects post-snapshot replay events for another partition before applying them", async () => {
+    const targetStore = new InMemoryPartitionStore("node-target");
+    await targetStore.registerPartition("tenant:jp");
+    await targetStore.registerPartition("tenant:us");
+    const foreignEvent = {
+      eventId: "018bcfe5-6800-7001-8000-000000000001",
+      sourceNodeId: "node-source",
+      partitionId: "tenant:us",
+      schemaVersion: 1,
+      payload: { value: "leak" },
+    };
+
+    await expect(replayEventsAfterPartitionSnapshot({
+      sourceStore: sourceStoreReturning([foreignEvent]),
+      targetStore,
+      snapshot: {
+        partitionId: "tenant:jp",
+        highWatermark: [],
+      },
+    })).rejects.toThrow("partition snapshot replay event partition mismatch");
+    await expect(targetStore.listEventsAfterCursors("tenant:us", new Map())).resolves.toHaveLength(0);
+  });
+
+  it("rejects conflicting duplicate post-snapshot replay events before applying them", async () => {
+    const targetStore = new InMemoryPartitionStore("node-target");
+    await targetStore.registerPartition("tenant:jp");
+
+    await expect(replayEventsAfterPartitionSnapshot({
+      sourceStore: sourceStoreReturning([
+        {
+          eventId: "018bcfe5-6800-7001-8000-000000000001",
+          sourceNodeId: "node-source",
+          partitionId: "tenant:jp",
+          schemaVersion: 1,
+          payload: { value: "first" },
+        },
+        {
+          eventId: "018bcfe5-6800-7001-8000-000000000001",
+          sourceNodeId: "node-source",
+          partitionId: "tenant:jp",
+          schemaVersion: 1,
+          payload: { value: "conflict" },
+        },
+      ]),
+      targetStore,
+      snapshot: {
+        partitionId: "tenant:jp",
+        highWatermark: [],
+      },
+    })).rejects.toThrow("partition snapshot replay event id conflict");
+    await expect(targetStore.listEventsAfterCursors("tenant:jp", new Map())).resolves.toHaveLength(0);
   });
 
   it("uses data-only storage bindings to snapshot matching relation files", async () => {
@@ -405,6 +458,78 @@ describe("partition CAS snapshots", () => {
     await sourceDb.close();
   }, 120_000);
 
+  it("does not re-apply events already present in a restored snapshot even if the high-watermark is stale", async () => {
+    const root = await makeTempDir("partition-pull-stale-high-watermark");
+    const sourceDir = join(root, "source");
+    const casDir = join(root, "cas");
+    const targetDir = join(root, "target");
+
+    let sourceDb = new PGlite(sourceDir, { relaxedDurability: false });
+    let sourceStore = new PGlitePartitionStore("node-a", sourceDb);
+    await sourceStore.migrate();
+    await sourceDb.exec(`
+      CREATE TABLE sensor_readings (
+        tenant_id text NOT NULL,
+        sensor_id text NOT NULL,
+        reading integer NOT NULL
+      );
+    `);
+    await sourceDb.query(
+      "INSERT INTO sensor_readings (tenant_id, sensor_id, reading) VALUES ($1, $2, $3)",
+      ["tenant:jp", "during-snapshot", 44],
+    );
+
+    const binding = await discoverStoragePartitionBinding({
+      db: sourceDb,
+      partitionId: "tenant:jp",
+      rootRelation: "public.sensor_readings",
+      snapshotScope: "catalog-and-data",
+    });
+    let includedEvent: Awaited<ReturnType<PGlitePartitionStore["appendLocal"]>> | undefined;
+    const snapshot = await createPartitionCasSnapshot({
+      store: sourceStore,
+      partitionId: "tenant:jp",
+      storageBinding: binding,
+      dataDir: sourceDir,
+      casDir,
+      beforeStorageSnapshot: async () => {
+        includedEvent = await sourceStore.appendLocal({
+          partitionId: "tenant:jp",
+          schemaVersion: 1,
+          payload: { sensorId: "during-snapshot", reading: 44 },
+        });
+        await sourceDb.close();
+      },
+    });
+    expect(snapshot.highWatermark).toEqual([]);
+    expect(includedEvent).toBeDefined();
+
+    await restorePartitionCasSnapshot({ snapshot, casDir, targetDir });
+    const targetDb = new PGlite(targetDir, { relaxedDurability: false });
+    const targetStore = new PGlitePartitionStore("node-target", targetDb);
+    await targetStore.migrate();
+    await expect(targetStore.listEventsAfterCursors("tenant:jp", new Map())).resolves.toMatchObject([
+      {
+        eventId: includedEvent!.eventId,
+        partitionId: "tenant:jp",
+        payload: { sensorId: "during-snapshot", reading: 44 },
+      },
+    ]);
+
+    sourceDb = new PGlite(sourceDir);
+    sourceStore = new PGlitePartitionStore("node-a", sourceDb);
+    await sourceStore.migrate();
+    await expect(replayEventsAfterPartitionSnapshot({
+      sourceStore,
+      targetStore,
+      snapshot,
+    })).resolves.toBe(0);
+
+    await expect(targetStore.listEventsAfterCursors("tenant:jp", new Map())).resolves.toHaveLength(1);
+    await targetDb.close();
+    await sourceDb.close();
+  }, 120_000);
+
   it("applies a data-only snapshot to a catalog-compatible PGlite data directory", async () => {
     const root = await makeTempDir("partition-data-only-pull");
     const sourceDir = join(root, "source");
@@ -574,6 +699,28 @@ function dataOnlySnapshot(storageBinding: ReturnType<typeof storageBinding>) {
         components: ["data" as const],
         blocks: [],
       }],
+    },
+  };
+}
+
+function sourceStoreReturning(events: EventEnvelope[]): PartitionStore {
+  const unused = async () => {
+    throw new Error("unexpected source store call");
+  };
+  return {
+    registerPartition: unused,
+    hasPartition: async () => {
+      throw new Error("unexpected source store call");
+    },
+    appendLocal: unused,
+    applyRemote: unused,
+    listEventsAfter: unused,
+    listEventsAfterCursors: async () => events,
+    getHighWatermark: async () => {
+      throw new Error("unexpected source store call");
+    },
+    createSnapshotMetadata: async () => {
+      throw new Error("unexpected source store call");
     },
   };
 }

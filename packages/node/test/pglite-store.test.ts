@@ -44,6 +44,24 @@ describe("PGlitePartitionStore", () => {
     );
   });
 
+  it("does not re-apply an existing event when the applied marker is missing", async () => {
+    const db = new PGlite();
+    const store = new PGlitePartitionStore("node-a", db);
+    await store.migrate();
+
+    const local = await store.appendLocal({
+      partitionId: "tenant:jp",
+      schemaVersion: 1,
+      payload: { title: "already-present" },
+    });
+    let projections = 0;
+
+    await expect(store.applyRemoteEventTransaction(local, async () => {
+      projections += 1;
+    })).resolves.toBe(false);
+    expect(projections).toBe(0);
+  });
+
   it("does not apply remote events for unregistered partitions", async () => {
     const db = new PGlite();
     const store = new PGlitePartitionStore("node-a", db);
@@ -142,6 +160,27 @@ describe("PGlitePartitionStore", () => {
       payload: { source: "conflict" },
     })).rejects.toThrow("event id conflict");
     await expect(store.listEventsAfterCursors("tenant:us", new Map())).resolves.toHaveLength(0);
+  });
+
+  it("rejects conflicting duplicate event ids even when the conflicting partition is not registered", async () => {
+    const db = new PGlite();
+    const store = new PGlitePartitionStore("node-a", db);
+    await store.migrate();
+    await store.registerPartition("tenant:jp");
+    const event = {
+      eventId: "018bcfe5-6800-7001-8000-000000000001",
+      sourceNodeId: "node-b",
+      partitionId: "tenant:jp",
+      schemaVersion: 1,
+      payload: { source: "original" },
+    };
+
+    await expect(store.applyRemote(event)).resolves.toBe(true);
+    await expect(store.applyRemote({
+      ...event,
+      partitionId: "tenant:missing",
+      payload: { source: "conflict" },
+    })).rejects.toThrow("event id conflict");
   });
 
   it("rejects local appends when the generated event id already exists", async () => {

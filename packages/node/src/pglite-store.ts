@@ -131,6 +131,7 @@ export class PGlitePartitionStore implements PartitionStore {
   ): Promise<boolean> {
     assertValidEventEnvelope(event);
     if (!(await this.hasPartition(event.partitionId))) {
+      await this.assertExistingEventMatchesIfPresent(event);
       return false;
     }
 
@@ -254,6 +255,13 @@ export class PGlitePartitionStore implements PartitionStore {
   }
 
   private async assertExistingEventMatches(event: EventEnvelope): Promise<void> {
+    const matched = await this.assertExistingEventMatchesIfPresent(event);
+    if (!matched) {
+      throw new Error(`event id conflict without stored event: ${event.sourceNodeId}/${event.eventId}`);
+    }
+  }
+
+  private async assertExistingEventMatchesIfPresent(event: EventEnvelope): Promise<boolean> {
     const existing = await this.db.query<EventRow>(
       `
         SELECT
@@ -270,7 +278,7 @@ export class PGlitePartitionStore implements PartitionStore {
     );
     const row = existing.rows[0];
     if (!row) {
-      throw new Error(`event id conflict without stored event: ${event.sourceNodeId}/${event.eventId}`);
+      return false;
     }
 
     if (
@@ -280,6 +288,7 @@ export class PGlitePartitionStore implements PartitionStore {
     ) {
       throw new Error(`event id conflict: ${event.sourceNodeId}/${event.eventId}`);
     }
+    return true;
   }
 
   private async loadPartitionEvents(partitionId: PartitionId): Promise<EventRow[]> {

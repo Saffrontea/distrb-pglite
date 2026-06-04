@@ -197,6 +197,25 @@ describe("SyncNode", () => {
     })).rejects.toThrow("event id conflict");
   });
 
+  it("rejects conflicting duplicate event ids even when the conflicting partition is not registered", async () => {
+    const store = new InMemoryPartitionStore("node-b");
+    await store.registerPartition("tenant:jp");
+    const event = {
+      eventId: "018bcfe5-6800-7001-8000-000000000001",
+      sourceNodeId: "node-a",
+      partitionId: "tenant:jp",
+      schemaVersion: 1,
+      payload: { title: "once" },
+    };
+
+    await expect(store.applyRemote(event)).resolves.toBe(true);
+    await expect(store.applyRemote({
+      ...event,
+      partitionId: "tenant:missing",
+      payload: { title: "conflict" },
+    })).rejects.toThrow("event id conflict");
+  });
+
   it("treats duplicate JSON payloads with different object key order as the same event", async () => {
     const store = new InMemoryPartitionStore("node-b");
     await store.registerPartition("tenant:jp");
@@ -505,6 +524,41 @@ describe("SyncNode", () => {
       "replay event partition mismatch",
     );
     await expect(store.listEventsAfterCursors("tenant:us", new Map())).resolves.toHaveLength(0);
+  });
+
+  it("rejects conflicting duplicate events inside a replay response before applying any of them", async () => {
+    const store = new InMemoryPartitionStore("target");
+    const node = new SyncNode(
+      "target",
+      store,
+      new ReplayResponseTransport({
+        partitionId: "tenant:jp",
+        events: [
+          {
+            eventId: "018bcfe5-6800-7001-8000-000000000001",
+            sourceNodeId: "source",
+            partitionId: "tenant:jp",
+            schemaVersion: 1,
+            payload: { value: "first" },
+          },
+          {
+            eventId: "018bcfe5-6800-7001-8000-000000000001",
+            sourceNodeId: "source",
+            partitionId: "tenant:jp",
+            schemaVersion: 1,
+            payload: { value: "conflict" },
+          },
+        ],
+      }),
+    );
+
+    await node.start();
+    await node.subscribe("tenant:jp");
+
+    await expect(node.catchUpFrom("source", "tenant:jp")).rejects.toThrow(
+      "replay response event id conflict",
+    );
+    await expect(store.listEventsAfterCursors("tenant:jp", new Map())).resolves.toHaveLength(0);
   });
 
   it("does not apply remote events for unregistered partitions", async () => {

@@ -1,4 +1,5 @@
 import {
+  assertValidEventEnvelope,
   assertValidNodeId,
   assertValidPartitionId,
   isEventTransactionalPartitionStore,
@@ -128,13 +129,7 @@ export class SyncNode {
       );
     }
 
-    for (const event of response.events) {
-      if (event.partitionId !== partitionId) {
-        throw new Error(
-          `replay event partition mismatch: requested=${partitionId} event=${event.partitionId}`,
-        );
-      }
-    }
+    validateReplayEvents(response.events, partitionId);
 
     let applied = 0;
     for (const event of response.events) {
@@ -183,4 +178,52 @@ export class SyncNode {
 
     return this.connection;
   }
+}
+
+function validateReplayEvents(events: readonly EventEnvelope[], partitionId: PartitionId): void {
+  const seen = new Map<string, EventEnvelope>();
+  for (const event of events) {
+    assertValidEventEnvelope(event);
+    if (event.partitionId !== partitionId) {
+      throw new Error(
+        `replay event partition mismatch: requested=${partitionId} event=${event.partitionId}`,
+      );
+    }
+
+    const key = `${event.sourceNodeId}/${event.eventId}`;
+    const existing = seen.get(key);
+    if (existing) {
+      assertSameReplayEvent(existing, event);
+      continue;
+    }
+    seen.set(key, event);
+  }
+}
+
+function assertSameReplayEvent(left: EventEnvelope, right: EventEnvelope): void {
+  if (
+    left.partitionId !== right.partitionId
+    || left.schemaVersion !== right.schemaVersion
+    || canonicalJson(left.payload) !== canonicalJson(right.payload)
+  ) {
+    throw new Error(`replay response event id conflict: ${right.sourceNodeId}/${right.eventId}`);
+  }
+}
+
+function canonicalJson(value: unknown): string {
+  return JSON.stringify(canonicalize(value));
+}
+
+function canonicalize(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(canonicalize);
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, child]) => [key, canonicalize(child)]),
+    );
+  }
+  return value;
 }

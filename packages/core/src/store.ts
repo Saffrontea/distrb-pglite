@@ -85,6 +85,11 @@ export class InMemoryPartitionStore implements PartitionStore {
 
   async applyRemote(event: EventEnvelope): Promise<boolean> {
     assertValidEventEnvelope(event);
+    const existing = this.applied.get(appliedKey(event.sourceNodeId, event.eventId));
+    if (existing) {
+      assertSameEvent(existing, event);
+      return false;
+    }
     if (!(await this.hasPartition(event.partitionId))) {
       return false;
     }
