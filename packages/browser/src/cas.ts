@@ -274,15 +274,30 @@ export function validateBrowserCasManifest(manifest: unknown, expectedSnapshotId
   if (!Array.isArray(manifest.directories)) {
     throw new Error("browser CAS manifest directories must be an array");
   }
+  const directoryPaths = new Set<string>();
   for (const [index, directory] of manifest.directories.entries()) {
     assertNonEmptyString(directory, `browser CAS manifest directories[${index}]`);
+    const path = validateBrowserLogicalPath(directory);
+    if (directoryPaths.has(path)) {
+      throw new Error(`duplicate browser CAS manifest directory path: ${path}`);
+    }
+    directoryPaths.add(path);
   }
 
   if (!Array.isArray(manifest.files)) {
     throw new Error("browser CAS manifest files must be an array");
   }
+  const filePaths = new Set<string>();
   for (const [index, file] of manifest.files.entries()) {
     validateBrowserCasFileManifest(file, index);
+    const path = validateBrowserLogicalPath((file as { path: string }).path);
+    if (filePaths.has(path)) {
+      throw new Error(`duplicate browser CAS manifest file path: ${path}`);
+    }
+    if (directoryPaths.has(path)) {
+      throw new Error(`browser CAS manifest path is both a file and directory: ${path}`);
+    }
+    filePaths.add(path);
   }
 
   if (manifest.chunking !== undefined) {

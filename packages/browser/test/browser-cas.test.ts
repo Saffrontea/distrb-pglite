@@ -198,20 +198,60 @@ describe("browser CAS helpers", () => {
       ...valid,
       snapshotId: "snapshot-2",
     };
+    const duplicatePath = {
+      ...valid,
+      files: [
+        valid.files[0]!,
+        {
+          ...valid.files[0]!,
+          sha256: "b".repeat(64),
+          blocks: [{ hash: "b".repeat(64), size: 1 }],
+        },
+      ],
+    };
+    const duplicateDirectory = {
+      ...valid,
+      directories: ["base", "base"],
+    };
+    const fileDirectoryCollision = {
+      ...valid,
+      directories: [valid.files[0]!.path],
+    };
 
     expect(() => validateBrowserCasManifest(invalidSnapshotId, "snapshot-1"))
       .toThrow("browser CAS manifest snapshotId mismatch: snapshot-2 !== snapshot-1");
+    expect(() => validateBrowserCasManifest(duplicatePath))
+      .toThrow("duplicate browser CAS manifest file path");
+    expect(() => validateBrowserCasManifest(duplicateDirectory))
+      .toThrow("duplicate browser CAS manifest directory path");
+    expect(() => validateBrowserCasManifest(fileDirectoryCollision))
+      .toThrow("browser CAS manifest path is both a file and directory");
     expect(() => diffMissingBrowserCasBlocks(invalidHash, new Set()))
       .toThrow("browser CAS manifest files[0].blocks[0].hash must be a 64-character lowercase sha256 hash");
+    expect(() => diffMissingBrowserCasBlocks(duplicatePath, new Set()))
+      .toThrow("duplicate browser CAS manifest file path");
+    expect(() => diffMissingBrowserCasBlocks(duplicateDirectory, new Set()))
+      .toThrow("duplicate browser CAS manifest directory path");
+    expect(() => diffMissingBrowserCasBlocks(fileDirectoryCollision, new Set()))
+      .toThrow("browser CAS manifest path is both a file and directory");
     await expect(transferMissingBrowserCasBlocks({
       manifest: invalidHash,
       sourceCasStore: new MemoryCasBlockStore(),
       targetCasStore: new MemoryCasBlockStore(),
     })).rejects.toThrow("browser CAS manifest files[0].blocks[0].hash must be a 64-character lowercase sha256 hash");
+    await expect(transferMissingBrowserCasBlocks({
+      manifest: duplicatePath,
+      sourceCasStore: new MemoryCasBlockStore(),
+      targetCasStore: new MemoryCasBlockStore(),
+    })).rejects.toThrow("duplicate browser CAS manifest file path");
     await expect(gcBrowserCasBlocks({
       casStore: new MemoryCasBlockStore(),
       retainedManifests: [invalidHash],
     })).rejects.toThrow("browser CAS manifest files[0].blocks[0].hash must be a 64-character lowercase sha256 hash");
+    await expect(gcBrowserCasBlocks({
+      casStore: new MemoryCasBlockStore(),
+      retainedManifests: [duplicatePath],
+    })).rejects.toThrow("duplicate browser CAS manifest file path");
   });
 });
 
