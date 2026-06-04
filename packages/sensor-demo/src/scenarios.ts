@@ -27,7 +27,7 @@ async function api<T = unknown>(url: string, method = "GET", body?: unknown): Pr
   const res = await fetch(url, {
     method,
     headers: body ? { "Content-Type": "application/json" } : {},
-    body: body ? JSON.stringify(body) : undefined,
+    ...(body ? { body: JSON.stringify(body) } : {}),
   });
   const json = (await res.json()) as T;
   if (!res.ok) throw new Error(`${method} ${url} → ${res.status}: ${JSON.stringify(json)}`);

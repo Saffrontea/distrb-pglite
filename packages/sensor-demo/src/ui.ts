@@ -164,9 +164,8 @@ async function handleAction(nodeId: string, action: string, body: unknown): Prom
       return snap;
     }
     case "pull-snapshot": {
-      const { sourceNodeId, requirement = "bootstrap" } = body as {
+      const { sourceNodeId } = body as {
         sourceNodeId: string;
-        requirement?: "bootstrap" | "catalog-refresh" | "data-refresh";
       };
       if (sourceNodeId === nodeId) {
         throw new Error("source and target must be different");

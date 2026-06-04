@@ -737,7 +737,7 @@ function addLog(kind: LogEntry["kind"], message: string): void {
   logs.splice(80);
 }
 
-function render(includeSqlResult = true): void {
+function render(_includeSqlResult = true): void {
   const nodeList = [...nodes.values()];
   const fleet = fleetStats(nodeList);
   appRoot.innerHTML = `

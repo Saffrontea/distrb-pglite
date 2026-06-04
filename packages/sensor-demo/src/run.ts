@@ -29,9 +29,7 @@ import {
   createStorageBindingGroup,
   listStorageSnapshotCatalogEntries,
   loadStorageCatalogManifest,
-  loadStoragePartitionBinding,
   pullPartitionCasSnapshot,
-  replayEventsAfterPartitionSnapshot,
   type CasManifest,
 } from "@distrb-pglite/node";
 
@@ -141,21 +139,6 @@ async function setupBindings(db: PGlite): Promise<void> {
     relations: ["sensor_readings_jp"],
     snapshotScope: "catalog-and-data",
   });
-}
-
-async function waitForEvents(
-  store: PGlitePartitionStore,
-  partitionId: string,
-  count: number,
-  timeoutMs = 3000,
-): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const events = await store.listEventsAfterCursors(partitionId, new Map());
-    if (events.length >= count) return;
-    await new Promise((r) => setTimeout(r, 30));
-  }
-  throw new Error(`timeout: expected ${count} events in ${partitionId}`);
 }
 
 async function getFreePort(): Promise<number> {

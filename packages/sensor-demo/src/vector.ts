@@ -20,7 +20,6 @@ import {
   createManagedPartitionCasSnapshot,
   createStorageBindingGroup,
   listStorageSnapshotCatalogEntries,
-  loadStorageCatalogManifest,
   loadStoragePartitionBinding,
   PGlitePartitionStore,
   pullPartitionCasSnapshot,
