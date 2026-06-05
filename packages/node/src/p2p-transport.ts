@@ -474,6 +474,12 @@ class P2PWebSocketConnection implements TransportConnection {
   private onPeerMessage(peer: PeerSocket, msg: P2PWireMessage): void {
     void (async () => {
       try {
+        const nodeId = peer.record.nodeId;
+        if (nodeId && this.peers.get(nodeId) !== peer) {
+          peer.close();
+          return;
+        }
+
         switch (msg.type) {
           case "subscribe":
             assertValidPartitionId(msg.partitionId);

@@ -575,6 +575,211 @@ describe("WebSocketTransport (Hub 固有)", () => {
     }
   });
 
+  it("keeps pending replay routed to the latest connection when an older duplicate socket closes", async () => {
+    const port = await getFreePort();
+    if (port === undefined) return;
+
+    const hub = new WebSocketHub({ port });
+    hubs.push(hub);
+    const url = `ws://127.0.0.1:${port}`;
+
+    const requester = await rawClient(url, "requester");
+    const oldTarget = await rawClient(url, "target");
+    const oldTargetClose = waitForSocketCloseCode(oldTarget);
+    const newTarget = await rawClient(url, "target");
+
+    try {
+      requester.send(
+        JSON.stringify({
+          type: "replay-request",
+          requestId: "pending-after-old-close",
+          requesterNodeId: "requester",
+          targetNodeId: "target",
+          partitionId: "tenant:jp",
+          cursors: [],
+        }),
+      );
+      await expect(nextRawMessage(newTarget)).resolves.toMatchObject({
+        type: "replay-request",
+        requestId: "pending-after-old-close",
+      });
+      await expect(withTimeout(oldTargetClose, "old target close", 1_000)).resolves.toBe(1008);
+
+      newTarget.send(
+        JSON.stringify({
+          type: "replay-response",
+          requestId: "pending-after-old-close",
+          requesterNodeId: "requester",
+          partitionId: "tenant:jp",
+          events: [],
+        }),
+      );
+
+      await expect(nextRawMessage(requester)).resolves.toMatchObject({
+        type: "replay-response",
+        requestId: "pending-after-old-close",
+      });
+    } finally {
+      requester.terminate();
+      oldTarget.terminate();
+      newTarget.terminate();
+    }
+  });
+
+  it("does not deliver an old requester pending replay response to a replacement requester", async () => {
+    const port = await getFreePort();
+    if (port === undefined) return;
+
+    const hub = new WebSocketHub({ port });
+    hubs.push(hub);
+    const url = `ws://127.0.0.1:${port}`;
+
+    const oldRequester = await rawClient(url, "requester");
+    const target = await rawClient(url, "target");
+    const oldRequesterClose = waitForSocketCloseCode(oldRequester);
+
+    try {
+      oldRequester.send(
+        JSON.stringify({
+          type: "replay-request",
+          requestId: "old-requester-pending",
+          requesterNodeId: "requester",
+          targetNodeId: "target",
+          partitionId: "tenant:jp",
+          cursors: [],
+        }),
+      );
+      await expect(nextRawMessage(target)).resolves.toMatchObject({
+        type: "replay-request",
+        requestId: "old-requester-pending",
+      });
+
+      const newRequester = await rawClient(url, "requester");
+      try {
+        await expect(withTimeout(oldRequesterClose, "old requester close", 1_000)).resolves.toBe(
+          1008,
+        );
+
+        target.send(
+          JSON.stringify({
+            type: "replay-response",
+            requestId: "old-requester-pending",
+            requesterNodeId: "requester",
+            partitionId: "tenant:jp",
+            events: [],
+          }),
+        );
+
+        await expect(waitForSocketCloseCode(target)).resolves.toBe(1003);
+        await expect(nextRawMessage(newRequester, 100)).rejects.toThrow(
+          "timed out waiting for message",
+        );
+      } finally {
+        newRequester.terminate();
+      }
+    } finally {
+      oldRequester.terminate();
+      target.terminate();
+    }
+  });
+
+  it("does not accept a replay response from a replacement target socket", async () => {
+    const port = await getFreePort();
+    if (port === undefined) return;
+
+    const hub = new WebSocketHub({ port });
+    hubs.push(hub);
+    const url = `ws://127.0.0.1:${port}`;
+
+    const requester = await rawClient(url, "requester");
+    const oldTarget = await rawClient(url, "target");
+    const oldTargetClose = waitForSocketCloseCode(oldTarget);
+
+    try {
+      requester.send(
+        JSON.stringify({
+          type: "replay-request",
+          requestId: "old-target-pending",
+          requesterNodeId: "requester",
+          targetNodeId: "target",
+          partitionId: "tenant:jp",
+          cursors: [],
+        }),
+      );
+      await expect(nextRawMessage(oldTarget)).resolves.toMatchObject({
+        type: "replay-request",
+        requestId: "old-target-pending",
+      });
+
+      const newTarget = await rawClient(url, "target");
+      try {
+        await expect(withTimeout(oldTargetClose, "old target close", 1_000)).resolves.toBe(1008);
+
+        newTarget.send(
+          JSON.stringify({
+            type: "replay-response",
+            requestId: "old-target-pending",
+            requesterNodeId: "requester",
+            partitionId: "tenant:jp",
+            events: [],
+          }),
+        );
+
+        await expect(waitForSocketCloseCode(newTarget)).resolves.toBe(1003);
+        await expect(nextRawMessage(requester, 100)).rejects.toThrow(
+          "timed out waiting for message",
+        );
+      } finally {
+        newTarget.terminate();
+      }
+    } finally {
+      requester.terminate();
+      oldTarget.terminate();
+    }
+  });
+
+  it("closes older duplicate node id sockets and ignores stale publishes", async () => {
+    const port = await getFreePort();
+    if (port === undefined) return;
+
+    const hub = new WebSocketHub({ port });
+    hubs.push(hub);
+    const url = `ws://127.0.0.1:${port}`;
+
+    const oldSource = await rawClient(url, "source");
+    const observer = await rawClient(url, "observer");
+    observer.send(JSON.stringify({ type: "subscribe", partitionId: "tenant:jp" }));
+    const oldClose = waitForSocketCloseCode(oldSource);
+    const newSource = await rawClient(url, "source");
+
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      if (oldSource.readyState === WebSocket.OPEN) {
+        oldSource.send(
+          JSON.stringify({
+            type: "event",
+            event: {
+              eventId: "018bcfe5-6800-7001-8000-000000000001",
+              sourceNodeId: "source",
+              partitionId: "tenant:jp",
+              schemaVersion: 1,
+              payload: { stale: true },
+            },
+          }),
+        );
+      }
+
+      await expect(withTimeout(oldClose, "old duplicate websocket close", 1_000)).resolves.toBe(
+        1008,
+      );
+      await expect(nextRawMessage(observer, 100)).rejects.toThrow("timed out waiting for message");
+    } finally {
+      oldSource.terminate();
+      newSource.terminate();
+      observer.terminate();
+    }
+  });
+
   it("closes raw clients that try to replace their hello identity on the same socket", async () => {
     const port = await getFreePort();
     if (port === undefined) return;

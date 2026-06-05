@@ -185,6 +185,9 @@ class BrowserWebSocketTransportConnection implements TransportConnection {
     socket.addEventListener("message", (event) => {
       void (async () => {
         try {
+          if (socket !== this.socket) {
+            return;
+          }
           await this.handleMessage(decodeMessage(event.data));
         } catch (error) {
           console.error("[browser-websocket] message handling error", error);
@@ -192,6 +195,9 @@ class BrowserWebSocketTransportConnection implements TransportConnection {
       })();
     });
     socket.addEventListener("close", () => {
+      if (socket !== this.socket) {
+        return;
+      }
       this.rejectAllPendingReplay("websocket connection closed");
       if (!this.closed && this.reconnectOptions && this.url) {
         void this.attemptReconnect();

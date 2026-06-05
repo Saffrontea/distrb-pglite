@@ -871,6 +871,62 @@ describe("P2PWebSocketTransport (P2P 固有)", () => {
     }
   });
 
+  it("closes older duplicate peers and ignores stale publishes", async () => {
+    const port = await getFreePort();
+    const publicUrl = `ws://127.0.0.1:${port}`;
+    const onEvent = vi.fn();
+    const connection = await new P2PWebSocketTransport({
+      publicUrl,
+      port,
+    }).connect("node-a", { onEvent });
+    const oldPeer = await rawPeer(publicUrl);
+    const newPeer = await rawPeer(publicUrl);
+
+    try {
+      oldPeer.send(
+        JSON.stringify({
+          type: "hello",
+          nodeId: "node-b",
+          publicUrl: "ws://127.0.0.1:1",
+          subscriptions: [],
+        }),
+      );
+      const oldClose = waitForSocketClose(oldPeer);
+      newPeer.send(
+        JSON.stringify({
+          type: "hello",
+          nodeId: "node-b",
+          publicUrl: "ws://127.0.0.1:2",
+          subscriptions: [],
+        }),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      if (oldPeer.readyState === WebSocket.OPEN) {
+        oldPeer.send(
+          JSON.stringify({
+            type: "event",
+            event: {
+              eventId: "018bcfe5-6800-7001-8000-000000000001",
+              sourceNodeId: "node-b",
+              partitionId: "tenant:jp",
+              schemaVersion: 1,
+              payload: { stale: true },
+            },
+          }),
+        );
+      }
+
+      await expect(withTimeout(oldClose, "old duplicate peer close", 1_000)).resolves
+        .toBeUndefined();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(onEvent).not.toHaveBeenCalled();
+    } finally {
+      oldPeer.terminate();
+      newPeer.terminate();
+      await connection.close();
+    }
+  });
+
   it("zstd 圧縮を有効にしてもP2Pイベントが届く", async () => {
     const portA = await getFreePort();
     const portB = await getFreePort();

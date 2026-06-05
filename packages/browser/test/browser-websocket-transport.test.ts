@@ -337,6 +337,36 @@ describe("BrowserWebSocketTransport", () => {
     expect(onReconnect).toHaveBeenCalledWith(new Set(["tenant:jp"]));
   });
 
+  it("ignores messages and duplicate close events from stale browser sockets after reconnect", async () => {
+    const onEvent = vi.fn();
+    const transport = new BrowserWebSocketTransport({
+      url: "ws://relay.test",
+      reconnect: { maxAttempts: 1, baseDelayMs: 10, maxDelayMs: 10 },
+    });
+    const connected = transport.connect("browser-a", { onEvent });
+    const first = FakeWebSocket.instances[0]!;
+    first.open();
+    const connection = await connected;
+
+    const response = connection.requestReplay("browser-b", "tenant:jp", new Map());
+    const rejected = expect(response).rejects.toThrow("websocket connection closed");
+    first.closeFromServer();
+    await vi.advanceTimersByTimeAsync(10);
+    const second = FakeWebSocket.instances[1]!;
+    second.open();
+    await Promise.resolve();
+
+    first.receive({
+      type: "event",
+      event: sampleEvent("browser-b", "02"),
+    });
+    first.closeFromServer();
+
+    await rejected;
+    expect(onEvent).not.toHaveBeenCalled();
+    await expect(connection.subscribe("tenant:jp")).resolves.toBeUndefined();
+  });
+
   it("rejects replay requests after the browser connection is closed", async () => {
     const transport = new BrowserWebSocketTransport("ws://relay.test");
     const connected = transport.connect("browser-a", { onEvent: vi.fn() });

@@ -46,7 +46,9 @@ type ClientRecord = {
 
 type PendingHubReplay = {
   requesterNodeId: NodeId;
+  requesterSocket: WebSocket;
   targetNodeId: NodeId;
+  targetSocket: WebSocket;
   partitionId: PartitionId;
   timer: ReturnType<typeof setTimeout>;
 };
@@ -117,6 +119,11 @@ export class WebSocketHub {
               socket,
               subscriptions: new Set(),
             };
+            const previous = this.clients.get(message.nodeId);
+            if (previous && previous.socket !== socket) {
+              this.deletePendingReplayForSocket(previous.socket);
+              previous.socket.close(1008, "duplicate node id connection replaced");
+            }
             this.clients.set(message.nodeId, record);
             return;
           }
@@ -136,19 +143,21 @@ export class WebSocketHub {
 
     socket.on("close", () => {
       if (record) {
-        if (this.clients.get(record.nodeId)?.socket === socket) {
-          this.clients.delete(record.nodeId);
+        this.deletePendingReplayForSocket(socket);
+        if (this.clients.get(record.nodeId)?.socket !== socket) {
+          return;
         }
-        for (const [requestId, pending] of this.pendingReplay) {
-          if (pending.requesterNodeId === record.nodeId || pending.targetNodeId === record.nodeId) {
-            this.deletePendingReplay(requestId);
-          }
-        }
+        this.clients.delete(record.nodeId);
       }
     });
   }
 
   private handleMessage(source: ClientRecord, message: WireMessage): void {
+    if (this.clients.get(source.nodeId)?.socket !== source.socket) {
+      source.socket.close(1008, "stale connection replaced");
+      return;
+    }
+
     switch (message.type) {
       case "subscribe":
         assertValidPartitionId(message.partitionId);
@@ -170,7 +179,7 @@ export class WebSocketHub {
         assertValidPartitionId(message.partitionId);
         assertNodeMatches("replay requester", source.nodeId, message.requesterNodeId);
         validateEventCursorEntries(message.cursors);
-        this.forwardReplayRequest(message);
+        this.forwardReplayRequest(source, message);
         break;
       case "replay-response":
         assertValidRequestId(message.requestId);
@@ -200,7 +209,10 @@ export class WebSocketHub {
     }
   }
 
-  private forwardReplayRequest(message: Extract<WireMessage, { type: "replay-request" }>): void {
+  private forwardReplayRequest(
+    source: ClientRecord,
+    message: Extract<WireMessage, { type: "replay-request" }>,
+  ): void {
     if (this.pendingReplay.has(message.requestId)) {
       throw new Error(`duplicate replay request id: ${message.requestId}`);
     }
@@ -225,7 +237,9 @@ export class WebSocketHub {
     timer.unref?.();
     this.pendingReplay.set(message.requestId, {
       requesterNodeId: message.requesterNodeId,
+      requesterSocket: source.socket,
       targetNodeId: message.targetNodeId,
+      targetSocket: target.socket,
       partitionId: message.partitionId,
       timer,
     });
@@ -242,16 +256,14 @@ export class WebSocketHub {
     }
     if (
       source.nodeId !== pending.targetNodeId ||
+      source.socket !== pending.targetSocket ||
       message.requesterNodeId !== pending.requesterNodeId ||
       message.partitionId !== pending.partitionId
     ) {
       throw new Error(`replay response mismatch: ${message.requestId}`);
     }
     this.deletePendingReplay(message.requestId);
-    const requester = this.clients.get(message.requesterNodeId);
-    if (requester) {
-      void this.encode(requester.socket, message);
-    }
+    void this.encode(pending.requesterSocket, message);
   }
 
   private deletePendingReplay(requestId: string): void {
@@ -266,6 +278,14 @@ export class WebSocketHub {
   private clearPendingReplay(): void {
     for (const requestId of this.pendingReplay.keys()) {
       this.deletePendingReplay(requestId);
+    }
+  }
+
+  private deletePendingReplayForSocket(socket: WebSocket): void {
+    for (const [requestId, pending] of this.pendingReplay) {
+      if (pending.requesterSocket === socket || pending.targetSocket === socket) {
+        this.deletePendingReplay(requestId);
+      }
     }
   }
 
@@ -378,6 +398,9 @@ class WebSocketTransportConnection implements TransportConnection {
     socket.on("message", (data) => {
       void (async () => {
         try {
+          if (socket !== this.socket) {
+            return;
+          }
           await this.handleMessage(this.decode(data as Buffer));
         } catch (error) {
           console.error("[websocket] message handling error", error);
@@ -385,6 +408,9 @@ class WebSocketTransportConnection implements TransportConnection {
       })();
     });
     socket.on("close", () => {
+      if (socket !== this.socket) {
+        return;
+      }
       this.rejectAllPendingReplay("websocket connection closed");
       if (!this.closed && this.reconnectOptions && this.url) {
         void this.attemptReconnect();
