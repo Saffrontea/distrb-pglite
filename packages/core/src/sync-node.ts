@@ -43,6 +43,9 @@ export class SyncNode {
   }
 
   async start(options?: SyncNodeStartOptions): Promise<void> {
+    if (this.connection) {
+      throw new Error(`SyncNode ${this.nodeId} has already been started`);
+    }
     this.connection = await this.transport.connect(this.nodeId, {
       onEvent: async (event) => {
         await this.store.applyRemote(event);

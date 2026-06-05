@@ -145,6 +145,21 @@ describe("SyncNode", () => {
     await expect(store.listEventsAfterCursors("tenant:jp", new Map())).resolves.toHaveLength(0);
   });
 
+  it("rejects a second start without opening another transport connection", async () => {
+    const transport = new CountingTransport();
+    const node = new SyncNode("node-a", new InMemoryPartitionStore("node-a"), transport);
+
+    await node.start();
+    await expect(node.start()).rejects.toThrow("SyncNode node-a has already been started");
+
+    expect(transport.connects).toBe(1);
+    expect(transport.connections).toHaveLength(1);
+    expect(transport.connections[0]?.closed).toBe(false);
+
+    await node.stop();
+    expect(transport.connections[0]?.closed).toBe(true);
+  });
+
   it("does not register partitions when subscribe is attempted before start", async () => {
     const store = new InMemoryPartitionStore("node-a");
     const node = new SyncNode("node-a", store, new MemoryTransport());
@@ -1105,6 +1120,31 @@ class SubscribeEventTransport implements Transport {
       requestReplay: async () => ({ partitionId: this.event.partitionId, events: [] }),
       close: async () => {},
     };
+  }
+}
+
+class CountingTransport implements Transport {
+  connects = 0;
+  readonly connections: CountingConnection[] = [];
+
+  async connect(_nodeId: string, _handlers: TransportHandlers): Promise<TransportConnection> {
+    this.connects += 1;
+    const connection = new CountingConnection();
+    this.connections.push(connection);
+    return connection;
+  }
+}
+
+class CountingConnection implements TransportConnection {
+  closed = false;
+
+  async subscribe(): Promise<void> {}
+  async publish(): Promise<void> {}
+  async requestReplay(): Promise<ReplayResponse> {
+    return { partitionId: "tenant:jp", events: [] };
+  }
+  async close(): Promise<void> {
+    this.closed = true;
   }
 }
 

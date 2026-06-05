@@ -291,6 +291,35 @@ describe("PBT: sensor-demo EdgeNodeServer", () => {
     }
   }, 20_000);
 
+  it("treats connect on an already-online p2p node as an idempotent no-op", async () => {
+    const root = await makeTempDir("sensor-demo-p2p-connect");
+    const p2pPort = await getFreePort();
+    const server = await EdgeNodeServer.create({
+      nodeId: "p2p-edge-0",
+      transport: "p2p",
+      p2pPublicUrl: `ws://127.0.0.1:${p2pPort}`,
+      p2pPort,
+      dataDir: join(root, "data"),
+      casDir: join(root, "cas"),
+      port: await getFreePort(),
+      partitionId: "tenant:jp",
+    });
+    servers.push(server);
+    await server.listen();
+
+    const first = await post<{ ok: boolean; online: boolean; applied: number }>(
+      `${server.baseUrl}/connect`,
+      {},
+    );
+    const second = await post<{ ok: boolean; online: boolean; applied: number }>(
+      `${server.baseUrl}/connect`,
+      {},
+    );
+
+    expect(first).toMatchObject({ ok: true, online: true, applied: 0 });
+    expect(second).toMatchObject({ ok: true, online: true, applied: 0 });
+  }, 10_000);
+
   it("rolls back local events when SQL projection fails", async () => {
     const fixture = await startFixture();
     try {

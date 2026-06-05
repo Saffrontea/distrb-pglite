@@ -405,6 +405,15 @@ export class EdgeNodeServer {
   }
 
   private async postConnect() {
+    if (this.online) {
+      return {
+        ok: true,
+        online: true,
+        catchup: [],
+        applied: 0,
+      };
+    }
+
     this.syncNode = this.createSyncNode();
     await this.syncNode.start();
     await this.syncNode.subscribe(this.config.partitionId);
