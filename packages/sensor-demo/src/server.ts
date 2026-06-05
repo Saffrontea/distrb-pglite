@@ -557,7 +557,31 @@ async function readJson(req: IncomingMessage): Promise<unknown> {
 }
 
 function returnsRows(sql: string): boolean {
-  return /^(select|with|values|show|explain|pragma)\b/i.test(sql.trim());
+  return /^(select|with|values|show|explain|pragma)\b/i.test(stripLeadingSqlTrivia(sql));
+}
+
+function stripLeadingSqlTrivia(sql: string): string {
+  let index = 0;
+  while (index < sql.length) {
+    while (index < sql.length && /\s/.test(sql[index]!)) {
+      index += 1;
+    }
+    if (sql.startsWith("--", index)) {
+      const newline = sql.indexOf("\n", index + 2);
+      index = newline === -1 ? sql.length : newline + 1;
+      continue;
+    }
+    if (sql.startsWith("/*", index)) {
+      const end = sql.indexOf("*/", index + 2);
+      if (end === -1) {
+        return sql.slice(index);
+      }
+      index = end + 2;
+      continue;
+    }
+    break;
+  }
+  return sql.slice(index);
 }
 
 function parseSensorPayload(body: unknown): SensorPayload {
