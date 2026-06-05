@@ -236,6 +236,7 @@ class P2PWebSocketConnection implements TransportConnection {
     string,
     {
       targetNodeId: NodeId;
+      targetPeer: PeerSocket;
       partitionId: PartitionId;
       resolve: (response: ReplayResponse) => void;
       reject: (error: Error) => void;
@@ -337,7 +338,14 @@ class P2PWebSocketConnection implements TransportConnection {
           reject(new Error(`replay request timed out after ${timeoutMs}ms`));
         }
       }, timeoutMs);
-      this.pendingReplay.set(requestId, { targetNodeId, partitionId, resolve, reject, timer });
+      this.pendingReplay.set(requestId, {
+        targetNodeId,
+        targetPeer: peer,
+        partitionId,
+        resolve,
+        reject,
+        timer,
+      });
     });
     const sent = peer.send({
       type: "replay-request",
@@ -444,6 +452,7 @@ class P2PWebSocketConnection implements TransportConnection {
         discard = existing.record.direction === "inbound" ? peer : existing;
       }
       this.peers.set(nodeId, keep);
+      this.rejectPendingReplayForPeer(discard, `p2p peer replaced: ${nodeId}`);
       discard.close();
       // keep がすでに peers に登録済みなら追加処理不要
       if (keep === existing) return;
@@ -534,7 +543,7 @@ class P2PWebSocketConnection implements TransportConnection {
             }
             const pending = this.pendingReplay.get(msg.requestId);
             if (pending) {
-              if (peer.record.nodeId !== pending.targetNodeId) {
+              if (peer !== pending.targetPeer || peer.record.nodeId !== pending.targetNodeId) {
                 throw new Error(`replay response source mismatch: ${msg.requestId}`);
               }
               if (msg.requesterNodeId !== this.nodeId || msg.partitionId !== pending.partitionId) {
@@ -574,8 +583,8 @@ class P2PWebSocketConnection implements TransportConnection {
     if (nodeId) {
       if (this.peers.get(nodeId) === peer) {
         this.peers.delete(nodeId);
-        this.rejectPendingReplayForPeer(nodeId, `p2p peer disconnected: ${nodeId}`);
       }
+      this.rejectPendingReplayForPeer(peer, `p2p peer disconnected: ${nodeId}`);
     }
     const url = peer.record.publicUrl;
     // dedup で別方向を残して close した場合は再接続しない
@@ -583,9 +592,9 @@ class P2PWebSocketConnection implements TransportConnection {
     if (url && !this.closed && !hasLiveConnection) this.scheduleReconnect(url);
   }
 
-  private rejectPendingReplayForPeer(nodeId: NodeId, reason: string): void {
+  private rejectPendingReplayForPeer(peer: PeerSocket, reason: string): void {
     for (const [requestId, pending] of this.pendingReplay) {
-      if (pending.targetNodeId !== nodeId) continue;
+      if (pending.targetPeer !== peer) continue;
       this.pendingReplay.delete(requestId);
       clearTimeout(pending.timer);
       pending.reject(new Error(reason));

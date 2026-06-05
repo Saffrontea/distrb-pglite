@@ -697,6 +697,63 @@ describe("P2PWebSocketTransport (P2P 固有)", () => {
     }
   });
 
+  it("rejects pending replay when the target peer socket is replaced", async () => {
+    const port = await getFreePort();
+    const publicUrl = `ws://127.0.0.1:${port}`;
+    const connection = await new P2PWebSocketTransport({
+      publicUrl,
+      port,
+    }).connect("node-a", { onEvent: () => {} });
+    const oldPeer = await rawPeer(publicUrl);
+
+    try {
+      oldPeer.send(
+        JSON.stringify({
+          type: "hello",
+          nodeId: "node-b",
+          publicUrl: "ws://127.0.0.1:1",
+          subscriptions: [],
+        }),
+      );
+      await new Promise((resolve) => setTimeout(resolve, meshSettleMs));
+
+      const response = connection.requestReplay("node-b", "tenant:jp", new Map());
+      const request = await nextRawPeerMessage(oldPeer, "replay-request");
+      const oldClose = waitForSocketClose(oldPeer);
+
+      const newPeer = await rawPeer(publicUrl);
+      try {
+        newPeer.send(
+          JSON.stringify({
+            type: "hello",
+            nodeId: "node-b",
+            publicUrl: "ws://127.0.0.1:2",
+            subscriptions: [],
+          }),
+        );
+
+        await expect(response).rejects.toThrow("p2p peer replaced: node-b");
+        await expect(withTimeout(oldClose, "old p2p peer close", 1_000)).resolves.toBeUndefined();
+
+        newPeer.send(
+          JSON.stringify({
+            type: "replay-response",
+            requestId: request.requestId,
+            requesterNodeId: "node-a",
+            partitionId: "tenant:jp",
+            events: [],
+          }),
+        );
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      } finally {
+        newPeer.terminate();
+      }
+    } finally {
+      oldPeer.terminate();
+      await connection.close();
+    }
+  });
+
   it("publish は connection close 後に失敗する", async () => {
     const port = await getFreePort();
     const connection = await new P2PWebSocketTransport({
