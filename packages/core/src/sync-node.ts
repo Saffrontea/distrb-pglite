@@ -69,11 +69,12 @@ export class SyncNode {
 
   async subscribe(partitionId: PartitionId, options?: SubscribeOptions): Promise<void> {
     assertValidPartitionId(partitionId);
+    const connection = this.requireConnection();
     if (options?.recoverFrom) {
       this.recoverFrom.set(partitionId, options.recoverFrom);
     }
     await this.store.registerPartition(partitionId);
-    await this.requireConnection().subscribe(partitionId);
+    await connection.subscribe(partitionId);
   }
 
   async write<TPayload>(input: LocalEventInput<TPayload>): Promise<EventEnvelope<TPayload>> {

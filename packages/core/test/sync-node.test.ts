@@ -145,6 +145,16 @@ describe("SyncNode", () => {
     await expect(store.listEventsAfterCursors("tenant:jp", new Map())).resolves.toHaveLength(0);
   });
 
+  it("does not register partitions when subscribe is attempted before start", async () => {
+    const store = new InMemoryPartitionStore("node-a");
+    const node = new SyncNode("node-a", store, new MemoryTransport());
+
+    await expect(node.subscribe("tenant:jp")).rejects.toThrow(
+      "SyncNode node-a has not been started",
+    );
+    await expect(store.hasPartition("tenant:jp")).resolves.toBe(false);
+  });
+
   it("does not run transactional writes when writeEvent is attempted before start", async () => {
     const store = new TransactionalMemoryStore("node-a");
     const node = new SyncNode("node-a", store, new MemoryTransport());
