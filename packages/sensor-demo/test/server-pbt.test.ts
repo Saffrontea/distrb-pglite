@@ -291,6 +291,29 @@ describe("PBT: sensor-demo EdgeNodeServer", () => {
     }
   }, 20_000);
 
+  it("returns an error response for malformed JSON request bodies", async () => {
+    const fixture = await startFixture();
+    try {
+      const [server] = fixture.servers;
+      const response = await withTimeout(
+        fetch(`${server.baseUrl}/readings`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: "{",
+        }),
+        "malformed JSON response",
+        1_000,
+      );
+
+      expect(response.status).toBe(500);
+      await expect(response.json()).resolves.toMatchObject({
+        error: expect.stringContaining("SyntaxError"),
+      });
+    } finally {
+      await fixture.cleanup();
+    }
+  }, 10_000);
+
   it("treats connect on an already-online p2p node as an idempotent no-op", async () => {
     const root = await makeTempDir("sensor-demo-p2p-connect");
     const p2pPort = await getFreePort();
@@ -921,6 +944,22 @@ async function parseJsonResponse<T>(response: Response): Promise<T> {
     throw new Error(`HTTP ${response.status}: ${JSON.stringify(json)}`);
   }
   return json as T;
+}
+
+async function withTimeout<T>(promise: Promise<T>, label: string, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`timed out: ${label}`)), ms);
+      }),
+    ]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
 }
 
 async function getFreePort(): Promise<number> {

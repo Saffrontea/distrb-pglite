@@ -254,34 +254,35 @@ export class EdgeNodeServer {
     const url = new URL(req.url ?? "/", "http://localhost");
     const path = url.pathname;
     const meth = req.method ?? "GET";
-    const body = meth !== "GET" ? await readJson(req) : {};
-
-    const routes: Record<string, () => Promise<unknown>> = {
-      "GET /status": () => this.getStatus(),
-      "POST /subscribe": () => this.postSubscribe(body),
-      "POST /readings": () => this.postReading(body),
-      "POST /readings-offline": () => this.postReadingOffline(body),
-      "GET /readings": () => this.getReadings(url.searchParams),
-      "GET /stats": () => this.getStats(),
-      "GET /events": () => this.getEvents(url.searchParams),
-      "POST /sql": () => this.postSql(body),
-      "POST /catchup": () => this.postCatchup(body),
-      "POST /disconnect": () => this.postDisconnect(),
-      "POST /connect": () => this.postConnect(),
-      "POST /create-snapshot": () => this.postCreateSnapshot(),
-      "GET /catalog": () => this.getCatalog(),
-      "GET /snapshot-entries": () => this.getSnapshotEntries(),
-      "POST /pull-snapshot": () => this.postPullSnapshot(body),
-    };
-
-    const handler = routes[`${meth} ${path}`];
-    if (!handler) {
-      res.writeHead(404, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "not found", path }));
-      return;
-    }
 
     try {
+      const body = meth !== "GET" ? await readJson(req) : {};
+
+      const routes: Record<string, () => Promise<unknown>> = {
+        "GET /status": () => this.getStatus(),
+        "POST /subscribe": () => this.postSubscribe(body),
+        "POST /readings": () => this.postReading(body),
+        "POST /readings-offline": () => this.postReadingOffline(body),
+        "GET /readings": () => this.getReadings(url.searchParams),
+        "GET /stats": () => this.getStats(),
+        "GET /events": () => this.getEvents(url.searchParams),
+        "POST /sql": () => this.postSql(body),
+        "POST /catchup": () => this.postCatchup(body),
+        "POST /disconnect": () => this.postDisconnect(),
+        "POST /connect": () => this.postConnect(),
+        "POST /create-snapshot": () => this.postCreateSnapshot(),
+        "GET /catalog": () => this.getCatalog(),
+        "GET /snapshot-entries": () => this.getSnapshotEntries(),
+        "POST /pull-snapshot": () => this.postPullSnapshot(body),
+      };
+
+      const handler = routes[`${meth} ${path}`];
+      if (!handler) {
+        res.writeHead(404, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "not found", path }));
+        return;
+      }
+
       const result = await handler();
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(result));
