@@ -1,10 +1,11 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:net";
 import * as fc from "fast-check";
 import { afterEach, describe, expect, it } from "vitest";
 import { WebSocketHub } from "@distrb-pglite/node";
+import { PGlite } from "@electric-sql/pglite";
 import { EdgeNodeServer, type SensorPayload } from "../src/server.js";
 
 type DemoOp =
@@ -323,6 +324,96 @@ describe("PBT: sensor-demo EdgeNodeServer", () => {
     }
   }, 20_000);
 
+  it("migrates old event-id-only projection keys to source-scoped event identity", async () => {
+    const hubPort = await getFreePort();
+    const hub = new WebSocketHub({ port: hubPort });
+    hubs.push(hub);
+    const root = await makeTempDir("sensor-demo-old-projection-key");
+    const dataDir = join(root, "edge-0", "data");
+    await mkdir(dataDir, { recursive: true });
+    const oldDb = new PGlite(dataDir, { relaxedDurability: false });
+    await oldDb.exec(`
+      CREATE TABLE sensor_groups (id serial PRIMARY KEY);
+      CREATE TABLE sensor_readings (
+        event_id text PRIMARY KEY,
+        sensor_id text NOT NULL,
+        reading numeric NOT NULL,
+        unit text NOT NULL DEFAULT 'C',
+        recorded_at timestamptz NOT NULL DEFAULT now(),
+        source_node text NOT NULL
+      );
+    `);
+    await oldDb.close();
+
+    const server = await EdgeNodeServer.create({
+      nodeId: "edge-0",
+      hubUrl: `ws://127.0.0.1:${hubPort}`,
+      dataDir,
+      casDir: join(root, "edge-0", "cas"),
+      port: await getFreePort(),
+      partitionId: "tenant:jp",
+      peerNodeIds: [],
+    });
+    servers.push(server);
+    await server.listen();
+
+    const eventId = "018bcfe5-6800-7001-8000-000000000001";
+    await post(`${server.baseUrl}/sql`, {
+      sql: `
+        INSERT INTO sensor_readings (event_id, sensor_id, reading, source_node)
+        VALUES
+          (${sqlString(eventId)}, 'same-id-a', 1, 'edge-a'),
+          (${sqlString(eventId)}, 'same-id-b', 2, 'edge-b')
+      `,
+    });
+
+    const result = await post<{ rows: Array<{ count: number }> }>(`${server.baseUrl}/sql`, {
+      sql: "SELECT count(*)::int AS count FROM sensor_readings",
+    });
+    expect(result.rows).toEqual([{ count: 2 }]);
+  }, 20_000);
+
+  it("projects same event ids from different source nodes independently", async () => {
+    const fixture = await startThreeNodeFixture();
+    try {
+      const [sourceA, sourceB, target] = fixture.servers;
+      const eventId = "018bcfe5-6800-7001-8000-000000000001";
+      await seedStoredEvent(sourceA, {
+        sourceNodeId: sourceA.nodeId,
+        eventId,
+        payload: { sensorId: "same-id-a", reading: 1 },
+      });
+      await seedStoredEvent(sourceB, {
+        sourceNodeId: sourceB.nodeId,
+        eventId,
+        payload: { sensorId: "same-id-b", reading: 2 },
+      });
+
+      await expect(
+        post<{ applied: number }>(`${target.baseUrl}/catchup`, { peerNodeId: sourceA.nodeId }),
+      ).resolves.toEqual({ applied: 1 });
+      await expect(
+        post<{ applied: number }>(`${target.baseUrl}/catchup`, { peerNodeId: sourceB.nodeId }),
+      ).resolves.toEqual({ applied: 1 });
+
+      const events = await get<{ events: EventRow[] }>(`${target.baseUrl}/events?limit=1000`);
+      const readings = await get<{ rows: ReadingRow[] }>(
+        `${target.baseUrl}/readings?limit=1000`,
+      );
+
+      expect(sourceEventKey(events.events)).toEqual([
+        `${sourceA.nodeId}/${eventId}`,
+        `${sourceB.nodeId}/${eventId}`,
+      ]);
+      expect(readingSourceEventKey(readings.rows)).toEqual([
+        `${sourceA.nodeId}/${eventId}`,
+        `${sourceB.nodeId}/${eventId}`,
+      ]);
+    } finally {
+      await fixture.cleanup();
+    }
+  }, 20_000);
+
   it("rejects malformed subscribe and catchup requests without changing local state", async () => {
     const fixture = await startFixture();
     try {
@@ -493,10 +584,52 @@ describe("PBT: sensor-demo EdgeNodeServer", () => {
     };
   }
 
+  async function startThreeNodeFixture(): Promise<{
+    servers: [EdgeNodeServer, EdgeNodeServer, EdgeNodeServer];
+    cleanup: () => Promise<void>;
+  }> {
+    const hubPort = await getFreePort();
+    const hub = new WebSocketHub({ port: hubPort });
+    hubs.push(hub);
+
+    const root = await makeTempDir("sensor-demo-three-node");
+    const sourceA = await createEdgeServer({
+      root,
+      hubPort,
+      index: 0,
+      peerNodeIds: ["edge-1", "edge-2"],
+    });
+    const sourceB = await createEdgeServer({
+      root,
+      hubPort,
+      index: 1,
+      peerNodeIds: ["edge-0", "edge-2"],
+    });
+    const target = await createEdgeServer({
+      root,
+      hubPort,
+      index: 2,
+      peerNodeIds: ["edge-0", "edge-1"],
+    });
+    servers.push(sourceA, sourceB, target);
+    await sourceA.listen();
+    await sourceB.listen();
+    await target.listen();
+
+    return {
+      servers: [sourceA, sourceB, target],
+      cleanup: async () => {
+        await Promise.all([sourceA, sourceB, target].map((server) => server.close().catch(() => {})));
+        await hub.close().catch(() => {});
+        await rm(root, { recursive: true, force: true });
+      },
+    };
+  }
+
   async function createEdgeServer(input: {
     root: string;
     hubPort: number;
-    index: 0 | 1;
+    index: number;
     partitionId?: string;
     peerNodeIds: string[];
   }): Promise<EdgeNodeServer> {
@@ -508,6 +641,30 @@ describe("PBT: sensor-demo EdgeNodeServer", () => {
       port: await getFreePort(),
       partitionId: input.partitionId ?? "tenant:jp",
       peerNodeIds: input.peerNodeIds,
+    });
+  }
+
+  async function seedStoredEvent(
+    server: EdgeNodeServer,
+    event: { sourceNodeId: string; eventId: string; payload: SensorPayload },
+  ): Promise<void> {
+    await post(`${server.baseUrl}/sql`, {
+      sql: `
+        INSERT INTO distrb_events (
+          source_node_id,
+          event_id,
+          partition_id,
+          schema_version,
+          payload
+        )
+        VALUES (
+          ${sqlString(event.sourceNodeId)},
+          ${sqlString(event.eventId)}::uuid,
+          'tenant:jp',
+          1,
+          ${sqlString(JSON.stringify(event.payload))}::jsonb
+        );
+      `,
     });
   }
 });
@@ -531,6 +688,18 @@ function eventKey(events: EventRow[]): string[] {
 
 function readingKey(rows: ReadingRow[]): string[] {
   return rows.map((row) => row.event_id).sort();
+}
+
+function sourceEventKey(events: EventRow[]): string[] {
+  return events.map((event) => `${event.sourceNodeId}/${event.eventId}`).sort();
+}
+
+function readingSourceEventKey(rows: ReadingRow[]): string[] {
+  return rows.map((row) => `${row.source_node}/${row.event_id}`).sort();
+}
+
+function sqlString(value: string): string {
+  return `'${value.replaceAll("'", "''")}'`;
 }
 
 function projectRowsByEvent(rows: ReadingRow[]): Record<string, unknown> {

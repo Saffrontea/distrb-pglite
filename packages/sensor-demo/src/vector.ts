@@ -7,7 +7,8 @@
 
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { StorageSnapshotScope } from "@distrb-pglite/core";
 import {
   MemoryTransport,
@@ -27,6 +28,7 @@ import {
 } from "@distrb-pglite/node";
 import { PGlite } from "@electric-sql/pglite";
 import { vector } from "@electric-sql/pglite/vector";
+import { quoteIdentifier, sameColumns, tableConstraints } from "./schema-utils.js";
 
 const SCHEMA_VERSION = 1;
 const VECTOR_GROUP_ID = "sensor-vectors";
@@ -40,24 +42,26 @@ const SCHEMA = `
 
   CREATE TABLE IF NOT EXISTS sensor_profiles_jp (
     sensor_id text NOT NULL,
-    event_id text NOT NULL UNIQUE,
+    event_id text NOT NULL,
     label text NOT NULL,
     embedding vector(3) NOT NULL,
     source_node text NOT NULL,
-    PRIMARY KEY (sensor_id)
+    PRIMARY KEY (sensor_id),
+    UNIQUE (source_node, event_id)
   );
 
   CREATE TABLE IF NOT EXISTS sensor_profiles_eu (
     sensor_id text NOT NULL,
-    event_id text NOT NULL UNIQUE,
+    event_id text NOT NULL,
     label text NOT NULL,
     embedding vector(3) NOT NULL,
     source_node text NOT NULL,
-    PRIMARY KEY (sensor_id)
+    PRIMARY KEY (sensor_id),
+    UNIQUE (source_node, event_id)
   );
 `;
 
-type VectorPayload = {
+export type VectorPayload = {
   tenantId: TenantId;
   sensorId: string;
   label: string;
@@ -76,7 +80,6 @@ type SearchRow = {
 type ExplainRow = {
   "QUERY PLAN": string;
 };
-
 class VectorPartitionStore implements PartitionStore {
   constructor(
     readonly inner: PGlitePartitionStore,
@@ -90,7 +93,9 @@ class VectorPartitionStore implements PartitionStore {
     return this.inner.hasPartition(id);
   }
   appendLocal<T>(input: Parameters<PGlitePartitionStore["appendLocal"]>[0]) {
-    return this.inner.appendLocal<T>(input as never);
+    return this.inner.appendLocalEventTransaction<T>(input as never, async (event) => {
+      await upsertVectorPayload(this.db, event);
+    });
   }
   listEventsAfter(...args: Parameters<PGlitePartitionStore["listEventsAfter"]>) {
     return this.inner.listEventsAfter(...args);
@@ -106,15 +111,13 @@ class VectorPartitionStore implements PartitionStore {
   }
 
   async applyRemote(event: EventEnvelope): Promise<boolean> {
-    const applied = await this.inner.applyRemote(event);
-    if (applied) {
-      await upsertVectorPayload(this.db, event);
-    }
-    return applied;
+    return await this.inner.applyRemoteEventTransaction(event, async (appliedEvent) => {
+      await upsertVectorPayload(this.db, appliedEvent);
+    });
   }
 }
 
-class VectorNode {
+export class VectorNode {
   private constructor(
     readonly nodeId: string,
     readonly dataDir: string,
@@ -135,6 +138,7 @@ class VectorNode {
       relaxedDurability: false,
     });
     await db.exec(SCHEMA);
+    await migrateVectorEventIdentity(db, tenants);
     await createTenantIvfIndexes(db, tenants);
 
     const inner = new PGlitePartitionStore(nodeId, db);
@@ -151,12 +155,11 @@ class VectorNode {
   }
 
   async writeProfile(payload: VectorPayload): Promise<void> {
-    const event = await this.syncNode.write<VectorPayload>({
+    await this.syncNode.write<VectorPayload>({
       partitionId: partitionForTenant(payload.tenantId),
       schemaVersion: SCHEMA_VERSION,
       payload,
     });
-    await upsertVectorPayload(this.db, event);
   }
 
   async subscribeTenant(tenantId: TenantId): Promise<void> {
@@ -229,17 +232,36 @@ class VectorNode {
   }
 }
 
+/*
+ * Local and remote vector projections are intentionally run through
+ * PGlitePartitionStore's event transaction. This keeps the event log and
+ * tenant-local vector tables from diverging when SQL projection fails.
+ */
 async function upsertVectorPayload(db: PGlite, event: EventEnvelope): Promise<void> {
-  const payload = event.payload as VectorPayload;
+  assertVectorPayload(event.payload);
+  const payload = event.payload;
+  if (event.partitionId !== partitionForTenant(payload.tenantId)) {
+    throw new Error(
+      `vector payload tenant mismatch: partition=${event.partitionId} payload=${payload.tenantId}`,
+    );
+  }
+
+  const tableName = tableForTenant(payload.tenantId);
   await db.query(
     `
-      INSERT INTO ${tableForTenant(payload.tenantId)} (sensor_id, event_id, label, embedding, source_node)
+      INSERT INTO ${tableName} (sensor_id, event_id, label, embedding, source_node)
       VALUES ($1, $2, $3, $4::vector, $5)
       ON CONFLICT (sensor_id) DO UPDATE SET
         event_id = excluded.event_id,
         label = excluded.label,
         embedding = excluded.embedding,
         source_node = excluded.source_node
+      WHERE
+        excluded.event_id > ${tableName}.event_id
+        OR (
+          excluded.event_id = ${tableName}.event_id
+          AND excluded.source_node > ${tableName}.source_node
+        )
     `,
     [
       payload.sensorId,
@@ -249,6 +271,33 @@ async function upsertVectorPayload(db: PGlite, event: EventEnvelope): Promise<vo
       event.sourceNodeId,
     ],
   );
+}
+
+function assertVectorPayload(value: unknown): asserts value is VectorPayload {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("invalid vector payload");
+  }
+  const payload = value as Record<string, unknown>;
+  if (!isTenantId(payload.tenantId)) {
+    throw new Error("invalid vector payload tenantId");
+  }
+  if (typeof payload.sensorId !== "string" || payload.sensorId.length === 0) {
+    throw new Error("invalid vector payload sensorId");
+  }
+  if (typeof payload.label !== "string" || payload.label.length === 0) {
+    throw new Error("invalid vector payload label");
+  }
+  if (
+    !Array.isArray(payload.embedding) ||
+    payload.embedding.length !== 3 ||
+    !payload.embedding.every((value) => typeof value === "number" && Number.isFinite(value))
+  ) {
+    throw new Error("invalid vector payload embedding");
+  }
+}
+
+function isTenantId(value: unknown): value is TenantId {
+  return TENANTS.includes(value as TenantId);
 }
 
 function formatVector(values: readonly number[]): string {
@@ -277,6 +326,34 @@ async function createTenantIvfIndexes(db: PGlite, tenants: readonly TenantId[]):
 
       ANALYZE ${tableForTenant(tenantId)};
     `);
+  }
+}
+
+async function migrateVectorEventIdentity(
+  db: PGlite,
+  tenants: readonly TenantId[],
+): Promise<void> {
+  for (const tenantId of tenants) {
+    const tableName = tableForTenant(tenantId);
+    const constraints = await tableConstraints(db, tableName);
+    for (const constraint of constraints) {
+      if (constraint.constraint_type === "u" && sameColumns(constraint.columns, ["event_id"])) {
+        await db.exec(
+          `ALTER TABLE ${quoteIdentifier(tableName)} DROP CONSTRAINT ${quoteIdentifier(constraint.constraint_name)}`,
+        );
+      }
+    }
+
+    const hasCompositeUnique = (await tableConstraints(db, tableName)).some(
+      (constraint) =>
+        constraint.constraint_type === "u" &&
+        sameColumns(constraint.columns, ["source_node", "event_id"]),
+    );
+    if (!hasCompositeUnique) {
+      await db.exec(
+        `ALTER TABLE ${quoteIdentifier(tableName)} ADD UNIQUE (source_node, event_id)`,
+      );
+    }
   }
 }
 
@@ -823,4 +900,6 @@ async function main(): Promise<void> {
   }
 }
 
-await main();
+if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
+  await main();
+}

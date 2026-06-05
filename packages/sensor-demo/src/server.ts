@@ -19,18 +19,20 @@ import {
   pullPartitionCasSnapshot,
   type CasManifest,
 } from "@distrb-pglite/node";
+import { quoteIdentifier, sameColumns, tableConstraints } from "./schema-utils.js";
 
 // ─── application schema ───────────────────────────────────────────────────────
 
 const SCHEMA = `
   CREATE TABLE IF NOT EXISTS sensor_groups (id serial PRIMARY KEY);
   CREATE TABLE IF NOT EXISTS sensor_readings (
-    event_id    text PRIMARY KEY,
+    event_id    text NOT NULL,
     sensor_id   text NOT NULL,
     reading     numeric NOT NULL,
     unit        text NOT NULL DEFAULT 'C',
     recorded_at timestamptz NOT NULL DEFAULT now(),
-    source_node text NOT NULL
+    source_node text NOT NULL,
+    PRIMARY KEY (source_node, event_id)
   );
 `;
 
@@ -104,7 +106,7 @@ class SensorPartitionStore implements PartitionStore {
     await this.db.query(
       `INSERT INTO sensor_readings (event_id, sensor_id, reading, unit, source_node)
        VALUES ($1, $2, $3, $4, $5)
-       ON CONFLICT (event_id) DO NOTHING`,
+       ON CONFLICT (source_node, event_id) DO NOTHING`,
       [event.eventId, p.sensorId, p.reading, p.unit ?? "C", event.sourceNodeId],
     );
   }
@@ -152,7 +154,6 @@ type SqlResponse = {
   affectedRows?: number;
   durationMs: number;
 };
-
 export class EdgeNodeServer {
   private db!: PGlite;
   private inner!: PGlitePartitionStore;
@@ -197,6 +198,7 @@ export class EdgeNodeServer {
     await mkdir(this.config.casDir, { recursive: true });
     this.db = new PGlite(this.config.dataDir, { relaxedDurability: false });
     await this.db.exec(SCHEMA);
+    await migrateSensorReadingsEventIdentity(this.db);
     this.inner = new PGlitePartitionStore(this.config.nodeId, this.db);
     await this.inner.migrate();
     this.store = new SensorPartitionStore(this.inner, this.db, this.config.partitionId);
@@ -610,6 +612,28 @@ function normalizeValue(value: unknown): unknown {
     return value.toISOString();
   }
   return value;
+}
+
+async function migrateSensorReadingsEventIdentity(db: PGlite): Promise<void> {
+  const constraints = await tableConstraints(db, "sensor_readings");
+  const singleEventIdPrimaryKey = constraints.find(
+    (constraint) =>
+      constraint.constraint_type === "p" && sameColumns(constraint.columns, ["event_id"]),
+  );
+  if (singleEventIdPrimaryKey) {
+    await db.exec(
+      `ALTER TABLE sensor_readings DROP CONSTRAINT ${quoteIdentifier(singleEventIdPrimaryKey.constraint_name)}`,
+    );
+  }
+
+  const hasCompositePrimaryKey = (await tableConstraints(db, "sensor_readings")).some(
+    (constraint) =>
+      constraint.constraint_type === "p" &&
+      sameColumns(constraint.columns, ["source_node", "event_id"]),
+  );
+  if (!hasCompositePrimaryKey) {
+    await db.exec("ALTER TABLE sensor_readings ADD PRIMARY KEY (source_node, event_id)");
+  }
 }
 
 function columnsForRows(rows: Record<string, unknown>[]): string[] {
