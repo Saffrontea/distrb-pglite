@@ -30,6 +30,19 @@ describe("PGliteCasFilesystem", () => {
     fs.close(fd);
   });
 
+  it("normalizes dot segments in filesystem paths", () => {
+    const fs = createFs();
+    fs.writeFile("/base/pgdata/file", "hello");
+
+    expect(fs.readdir("/base/pgdata/../pgdata")).toEqual(["file"]);
+
+    const fd = fs.open("/base/pgdata/./file", "r");
+    const output = new Uint8Array(5);
+    expect(fs.read(fd, output, 0, output.length, 0)).toBe(5);
+    expect(new TextDecoder().decode(output)).toBe("hello");
+    fs.close(fd);
+  });
+
   it("snapshots and restores adapter state through CAS blobs", async () => {
     const blobs = createBlobStore();
     const source = new PGliteCasFilesystem(blobs, 4);

@@ -56,6 +56,20 @@ describe("BrowserWebSocketTransport", () => {
     expect(FakeWebSocket.instances).toHaveLength(0);
   });
 
+  it("rejects browser websocket connections that close before opening", async () => {
+    const transport = new BrowserWebSocketTransport("ws://relay.test");
+    const connected = transport.connect("browser-a", { onEvent: vi.fn() });
+    const socket = FakeWebSocket.instances[0]!;
+
+    const rejected = expect(
+      withTimeout(connected, "browser websocket close before open", 100),
+    ).rejects.toThrow("websocket connection closed before open");
+    socket.closeFromServer();
+    await vi.advanceTimersByTimeAsync(100);
+
+    await rejected;
+  });
+
   it("handles replay requests and resolves replay responses", async () => {
     const event = sampleEvent("browser-b", "02");
     const onReplayRequest = vi.fn(async () => ({
@@ -337,6 +351,19 @@ describe("BrowserWebSocketTransport", () => {
     );
   });
 
+  it("rejects pending replay requests when the browser socket closes", async () => {
+    const transport = new BrowserWebSocketTransport("ws://relay.test");
+    const connected = transport.connect("browser-a", { onEvent: vi.fn() });
+    const socket = FakeWebSocket.instances[0]!;
+    socket.open();
+    const connection = await connected;
+
+    const response = connection.requestReplay("browser-b", "tenant:jp", new Map());
+    socket.closeFromServer();
+
+    await expect(response).rejects.toThrow("websocket connection closed");
+  });
+
   it("rejects subscriptions after the browser connection is closed", async () => {
     const transport = new BrowserWebSocketTransport("ws://relay.test");
     const connected = transport.connect("browser-a", { onEvent: vi.fn() });
@@ -429,6 +456,22 @@ function sampleEventId(suffix: string): string {
 
 function parse(data: string): unknown {
   return JSON.parse(data);
+}
+
+async function withTimeout<T>(promise: Promise<T>, label: string, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`timed out: ${label}`)), ms);
+      }),
+    ]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
 }
 
 type Listener = (event: unknown) => void;

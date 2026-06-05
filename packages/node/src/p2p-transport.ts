@@ -155,7 +155,9 @@ class PeerSocket {
     });
 
     this.ws.on("error", (err) => {
-      console.error("[p2p] socket error", err.message);
+      if (!this.closed) {
+        console.error("[p2p] socket error", err.message);
+      }
     });
   }
 
@@ -170,7 +172,10 @@ class PeerSocket {
   }
 
   close(): void {
-    if (!this.closed) this.ws.terminate();
+    if (!this.closed) {
+      this.closed = true;
+      this.ws.terminate();
+    }
   }
 
   replayRequestTimeoutMs(): number {
@@ -223,6 +228,7 @@ class PeerSocket {
 
 class P2PWebSocketConnection implements TransportConnection {
   private readonly peers = new Map<NodeId, PeerSocket>();
+  private readonly peerSockets = new Set<PeerSocket>();
   private readonly knownUrls = new Set<string>();
   private readonly reconnecting = new Set<string>();
   private readonly localSubscriptions = new Set<PartitionId>();
@@ -269,6 +275,10 @@ class P2PWebSocketConnection implements TransportConnection {
     });
 
     this.server.on("connection", (ws) => {
+      if (this.closed) {
+        ws.terminate();
+        return;
+      }
       const peer = this.registerPeerSocket(ws, "inbound");
       this.sendHello(peer);
     });
@@ -351,8 +361,10 @@ class P2PWebSocketConnection implements TransportConnection {
   async close(): Promise<void> {
     this.closed = true;
     this.rejectAllPendingReplay("p2p connection closed");
-    for (const peer of this.peers.values()) peer.close();
+    for (const peer of this.peerSockets) peer.close();
+    for (const socket of this.server.clients) socket.terminate();
     this.peers.clear();
+    this.peerSockets.clear();
     await new Promise<void>((r, j) => this.server.close((e) => (e ? j(e) : r())));
   }
 
@@ -375,6 +387,7 @@ class P2PWebSocketConnection implements TransportConnection {
       this.zstd,
       knownUrl,
     );
+    this.peerSockets.add(peer);
     return peer;
   }
 
@@ -550,6 +563,7 @@ class P2PWebSocketConnection implements TransportConnection {
   }
 
   private onPeerClose(peer: PeerSocket): void {
+    this.peerSockets.delete(peer);
     const nodeId = peer.record.nodeId;
     if (nodeId) {
       if (this.peers.get(nodeId) === peer) {

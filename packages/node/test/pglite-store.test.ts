@@ -1,5 +1,6 @@
 import { UuidV7Factory } from "@distrb-pglite/core";
 import { PGlite } from "@electric-sql/pglite";
+import * as fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import { PGlitePartitionStore } from "../src/index.js";
 
@@ -263,6 +264,32 @@ describe("PGlitePartitionStore", () => {
     ).rejects.toThrow("payload.value must be JSON-serializable");
     await expect(store.listEventsAfterCursors("tenant:jp", new Map())).resolves.toHaveLength(0);
   });
+
+  it("persists arbitrary JSON payloads without changing their round-trip shape", async () => {
+    await fc.assert(
+      fc.asyncProperty(fc.jsonValue(), async (payload) => {
+        const expectedPayload = JSON.parse(JSON.stringify(payload)) as typeof payload;
+        const db = new PGlite();
+        try {
+          const store = new PGlitePartitionStore("node-a", db);
+          await store.migrate();
+
+          const event = await store.appendLocal({
+            partitionId: "tenant:jp",
+            schemaVersion: 1,
+            payload,
+          });
+          const [stored] = await store.listEventsAfterCursors("tenant:jp", new Map());
+
+          expect(stored?.eventId).toBe(event.eventId);
+          expect(stored?.payload).toEqual(expectedPayload);
+        } finally {
+          await db.close();
+        }
+      }),
+      { numRuns: 10 },
+    );
+  }, 30_000);
 
   it("rejects registered remote events with invalid envelope fields", async () => {
     const db = new PGlite();

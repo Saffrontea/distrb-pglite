@@ -65,6 +65,7 @@ export class WebSocketHub {
   private readonly clients = new Map<NodeId, ClientRecord>();
   private readonly pendingReplay = new Map<string, PendingHubReplay>();
   private readonly compress: boolean;
+  private closing = false;
 
   constructor(options: { port: number; compress?: boolean }) {
     this.compress = options.compress ?? false;
@@ -73,9 +74,13 @@ export class WebSocketHub {
   }
 
   async close(): Promise<void> {
+    this.closing = true;
     this.clearPendingReplay();
     for (const client of this.clients.values()) {
       client.socket.terminate();
+    }
+    for (const socket of this.server.clients) {
+      socket.terminate();
     }
     this.clients.clear();
 
@@ -91,6 +96,11 @@ export class WebSocketHub {
   }
 
   private handleConnection(socket: WebSocket): void {
+    if (this.closing) {
+      socket.terminate();
+      return;
+    }
+
     let record: ClientRecord | undefined;
 
     socket.on("message", (data) => {

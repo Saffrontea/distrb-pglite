@@ -25,7 +25,7 @@ describeTransportContract("WebSocketHub+WebSocketTransport", async () => {
     },
     teardown: async () => {
       await Promise.all(nodes.splice(0).map((n) => n.stop().catch(() => {})));
-      await hub.close();
+      await withTimeout(hub.close(), "close old hub", 2_000);
     },
   };
   return setup;
@@ -325,6 +325,60 @@ describe("WebSocketTransport (Hub 固有)", () => {
       "websocket connection is closed",
     );
   });
+
+  it("recovers subscribed partitions after hub restart and catches up locally committed outage writes", async () => {
+    const port = await getFreePort();
+    if (port === undefined) return;
+
+    let hub = new WebSocketHub({ port });
+    hubs.push(hub);
+    const url = `ws://127.0.0.1:${port}`;
+    const reconnect = { maxAttempts: 20, baseDelayMs: 10, maxDelayMs: 50 };
+    const storeA = new InMemoryPartitionStore("node-a");
+    const storeB = new InMemoryPartitionStore("node-b");
+    const nodeA = new SyncNode("node-a", storeA, new WebSocketTransport({ url, reconnect }));
+    const nodeB = new SyncNode("node-b", storeB, new WebSocketTransport({ url, reconnect }));
+
+    try {
+      await withTimeout(nodeA.start(), "node-a start", 2_000);
+      await withTimeout(nodeA.subscribe("tenant:jp"), "node-a subscribe", 2_000);
+      await withTimeout(nodeB.start({ autoRecoverSubscriptions: true }), "node-b start", 2_000);
+      await withTimeout(
+        nodeB.subscribe("tenant:jp", { recoverFrom: "node-a" }),
+        "node-b subscribe",
+        2_000,
+      );
+
+      await withTimeout(hub.close(), "close old hub", 2_000);
+      hubs.splice(hubs.indexOf(hub), 1);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      await withTimeout(
+        expect(
+          nodeA.write({
+            partitionId: "tenant:jp",
+            schemaVersion: 1,
+            payload: { during: "outage" },
+          }),
+        ).rejects.toThrow("websocket connection is not open"),
+        "outage write rejection",
+        2_000,
+      );
+      await expect(storeA.listEventsAfterCursors("tenant:jp", new Map())).resolves.toHaveLength(1);
+
+      hub = new WebSocketHub({ port });
+      hubs.push(hub);
+
+      await waitFor(async () => {
+        const events = await storeB.listEventsAfterCursors("tenant:jp", new Map());
+        expect(events).toHaveLength(1);
+        expect(events[0]?.payload).toEqual({ during: "outage" });
+      }, 5000);
+    } finally {
+      await nodeA.stop().catch(() => {});
+      await nodeB.stop().catch(() => {});
+    }
+  }, 10_000);
 
   it("replay-response is routed only to the requester", async () => {
     const port = await getFreePort();
@@ -949,6 +1003,22 @@ async function waitFor(fn: () => Promise<void>, ms = 2000): Promise<void> {
     await new Promise((r) => setTimeout(r, 20));
   }
   throw last;
+}
+
+async function withTimeout<T>(promise: Promise<T>, label: string, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`timed out: ${label}`)), ms);
+      }),
+    ]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
 }
 
 async function rawClient(url: string, nodeId: string): Promise<WebSocket> {

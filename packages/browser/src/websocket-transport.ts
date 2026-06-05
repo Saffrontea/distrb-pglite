@@ -402,12 +402,18 @@ function waitForOpen(socket: WebSocket): Promise<void> {
       cleanup();
       reject(new Error("websocket connection failed"));
     };
+    const onClose = () => {
+      cleanup();
+      reject(new Error("websocket connection closed before open"));
+    };
     const cleanup = () => {
       socket.removeEventListener("open", onOpen);
       socket.removeEventListener("error", onError);
+      socket.removeEventListener("close", onClose);
     };
     socket.addEventListener("open", onOpen);
     socket.addEventListener("error", onError);
+    socket.addEventListener("close", onClose);
   });
 }
 

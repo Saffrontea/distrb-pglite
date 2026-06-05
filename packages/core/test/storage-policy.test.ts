@@ -1,3 +1,4 @@
+import * as fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import {
   canSatisfyStoragePull,
@@ -12,7 +13,9 @@ import {
 import type {
   StorageBindingGroup,
   StoragePartitionBinding,
+  StoragePullRequirement,
   StorageSnapshotCatalogEntry,
+  StorageSnapshotComponent,
 } from "../src/index.js";
 
 describe("storage snapshot policy", () => {
@@ -119,6 +122,22 @@ describe("storage snapshot policy", () => {
       "newer-ddl-stale-storage",
     );
   });
+
+  it("selects the max generation/snapshot id tuple among arbitrary satisfying entries", () => {
+    fc.assert(
+      fc.property(
+        fc.array(snapshotEntryArb, { minLength: 0, maxLength: 30 }),
+        fc.constantFrom<StoragePullRequirement>("bootstrap", "catalog-refresh", "data-refresh"),
+        (entries, requirement) => {
+          const selected = selectStorageSnapshotCatalogEntryForPull(entries, requirement);
+          const expected = expectedPullSelection(entries, requirement);
+
+          expect(selected?.snapshotId).toBe(expected?.snapshotId);
+        },
+      ),
+      { numRuns: 300 },
+    );
+  });
 });
 
 describe("storage GC policy", () => {
@@ -204,4 +223,64 @@ function snapshotEntry(
     manifestKind: "cas",
     manifest: {},
   };
+}
+
+const snapshotComponentsArb = fc
+  .uniqueArray(fc.constantFrom<StorageSnapshotComponent>("catalog", "data"), {
+    minLength: 0,
+    maxLength: 2,
+  })
+  .map((components) => components.toSorted());
+
+const snapshotEntryArb: fc.Arbitrary<StorageSnapshotCatalogEntry> = fc.record({
+  groupId: fc.constant("sensor_readings"),
+  partitionId: fc.constant("tenant:jp"),
+  snapshotId: fc
+    .tuple(fc.integer({ min: 0, max: 999 }), fc.string({ minLength: 1, maxLength: 8 }))
+    .map(([index, suffix]) => `snapshot-${index.toString().padStart(3, "0")}-${suffix}`),
+  components: snapshotComponentsArb,
+  highWatermark: fc.constant([]),
+  ddlGeneration: fc.integer({ min: 0, max: 10 }),
+  storageGeneration: fc.option(fc.integer({ min: 0, max: 10 }), { nil: undefined }),
+  manifestKind: fc.constant("cas"),
+  manifest: fc.constant({}),
+});
+
+function expectedPullSelection(
+  entries: readonly StorageSnapshotCatalogEntry[],
+  requirement: StoragePullRequirement,
+): StorageSnapshotCatalogEntry | undefined {
+  return entries
+    .filter((entry) => satisfiesRequirement(entry.components, requirement))
+    .reduce<StorageSnapshotCatalogEntry | undefined>(
+      (best, entry) => (best && compareSnapshotEntries(best, entry) >= 0 ? best : entry),
+      undefined,
+    );
+}
+
+function satisfiesRequirement(
+  components: readonly StorageSnapshotComponent[],
+  requirement: StoragePullRequirement,
+): boolean {
+  const available = new Set(components);
+  switch (requirement) {
+    case "bootstrap":
+      return available.has("catalog") && available.has("data");
+    case "catalog-refresh":
+      return available.has("catalog");
+    case "data-refresh":
+      return available.has("data");
+  }
+}
+
+function compareSnapshotEntries(
+  left: StorageSnapshotCatalogEntry,
+  right: StorageSnapshotCatalogEntry,
+): number {
+  return (
+    left.ddlGeneration - right.ddlGeneration ||
+    (left.storageGeneration ?? left.ddlGeneration) -
+      (right.storageGeneration ?? right.ddlGeneration) ||
+    left.snapshotId.localeCompare(right.snapshotId)
+  );
 }

@@ -323,6 +323,19 @@ describe("BrowserPGliteCasFilesystem", () => {
     expect(restored.lstat("/base/pgdata/file").size).toBe(input.length);
   });
 
+  it("normalizes dot segments in filesystem paths", () => {
+    const fs = new BrowserPGliteCasFilesystem(new BrowserSha256BlobStore(), 4);
+    fs.writeFile("/base/pgdata/file", "hello");
+
+    expect(fs.readdir("/base/pgdata/../pgdata")).toEqual(["file"]);
+
+    const fd = fs.open("/base/pgdata/./file", "r");
+    const output = new Uint8Array(5);
+    expect(fs.read(fd, output, 0, output.length, 0)).toBe(5);
+    expect(new TextDecoder().decode(output)).toBe("hello");
+    fs.close(fd);
+  });
+
   it("runs PGlite and restores a readable database from a browser CAS filesystem snapshot", async () => {
     const blobs = new BrowserSha256BlobStore();
     const sourceFs = new BrowserPGliteCasFilesystem(blobs, 16 * 1024);

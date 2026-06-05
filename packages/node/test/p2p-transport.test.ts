@@ -1,6 +1,6 @@
 import { InMemoryPartitionStore, SyncNode } from "@distrb-pglite/core";
 import { describe, expect, it, vi } from "vitest";
-import WebSocket from "ws";
+import WebSocket, { WebSocketServer } from "ws";
 import { P2PWebSocketTransport } from "../src/index.js";
 import {
   describeTransportContract,
@@ -803,6 +803,74 @@ describe("P2PWebSocketTransport (P2P 固有)", () => {
     );
   });
 
+  it("closes even when a raw peer is connected before hello", async () => {
+    const port = await getFreePort();
+    const connection = await new P2PWebSocketTransport({
+      publicUrl: `ws://127.0.0.1:${port}`,
+      port,
+    }).connect("node-a", { onEvent: () => {} });
+    const socket = await rawPeer(`ws://127.0.0.1:${port}`);
+
+    try {
+      await expect(withTimeout(connection.close(), "p2p close with pre-hello peer", 1_000)).resolves
+        .toBeUndefined();
+      await expect(waitForSocketClose(socket)).resolves.toBeUndefined();
+    } finally {
+      socket.terminate();
+    }
+  });
+
+  it("closes while an outbound seed connection is still failing", async () => {
+    const port = await getFreePort();
+    const missingSeedPort = await getFreePort();
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const connection = await new P2PWebSocketTransport({
+      publicUrl: `ws://127.0.0.1:${port}`,
+      port,
+      seeds: [`ws://127.0.0.1:${missingSeedPort}`],
+      maxReconnectAttempts: 20,
+      reconnectBaseDelayMs: 10,
+      reconnectMaxDelayMs: 50,
+    }).connect("node-a", { onEvent: () => {} });
+
+    try {
+      await expect(withTimeout(connection.close(), "p2p close with failing seed", 1_000)).resolves
+        .toBeUndefined();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(errorSpy).not.toHaveBeenCalled();
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("closes outbound seed sockets that connect but never send hello", async () => {
+    const port = await getFreePort();
+    const seedPort = await getFreePort();
+    const seedServer = new WebSocketServer({ port: seedPort });
+    const accepted = new Promise<WebSocket>((resolve) => seedServer.once("connection", resolve));
+    const connection = await new P2PWebSocketTransport({
+      publicUrl: `ws://127.0.0.1:${port}`,
+      port,
+      seeds: [`ws://127.0.0.1:${seedPort}`],
+      maxReconnectAttempts: 1,
+      reconnectBaseDelayMs: 10,
+      reconnectMaxDelayMs: 10,
+    }).connect("node-a", { onEvent: () => {} });
+
+    const seedSocket = await accepted;
+    try {
+      await expect(withTimeout(connection.close(), "p2p close with pre-hello seed", 1_000)).resolves
+        .toBeUndefined();
+      await expect(withTimeout(waitForSocketClose(seedSocket), "pre-hello seed socket close", 1_000))
+        .resolves.toBeUndefined();
+    } finally {
+      seedSocket.terminate();
+      await new Promise<void>((resolve, reject) => {
+        seedServer.close((error) => (error ? reject(error) : resolve()));
+      });
+    }
+  });
+
   it("zstd 圧縮を有効にしてもP2Pイベントが届く", async () => {
     const portA = await getFreePort();
     const portB = await getFreePort();
@@ -937,4 +1005,20 @@ async function waitForSocketClose(socket: WebSocket): Promise<void> {
     return;
   }
   await new Promise<void>((resolve) => socket.once("close", resolve));
+}
+
+async function withTimeout<T>(promise: Promise<T>, label: string, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`timed out: ${label}`)), ms);
+      }),
+    ]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
 }

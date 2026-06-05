@@ -335,8 +335,18 @@ function joinPath(dir: string, name: string): string {
 }
 
 function normalizePath(path: string): string {
-  const normalized = path.replaceAll("\\", "/").replace(/\/+/g, "/");
-  return normalized.startsWith("/") ? normalized : `/${normalized}`;
+  const parts: string[] = [];
+  for (const part of path.replaceAll("\\", "/").split("/")) {
+    if (!part || part === ".") {
+      continue;
+    }
+    if (part === "..") {
+      parts.pop();
+      continue;
+    }
+    parts.push(part);
+  }
+  return parts.length === 0 ? "/" : `/${parts.join("/")}`;
 }
 
 function statsFor(node: Node): FsStats {

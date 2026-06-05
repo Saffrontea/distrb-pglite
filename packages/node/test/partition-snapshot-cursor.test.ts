@@ -1,4 +1,5 @@
 import { InMemoryPartitionStore } from "@distrb-pglite/core";
+import * as fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import {
   highWatermarkMap,
@@ -94,6 +95,84 @@ describe("partition snapshot cursors", () => {
     );
   });
 
+  it("replays exactly the post-snapshot delta for arbitrary source high-watermarks", async () => {
+    const sourceArb = fc.array(
+      fc.record({
+        snapshotCount: fc.integer({ min: 0, max: 5 }),
+        deltaCount: fc.integer({ min: 0, max: 5 }),
+      }),
+      { minLength: 1, maxLength: 5 },
+    );
+
+    await fc.assert(
+      fc.asyncProperty(sourceArb, async (sources) => {
+        const partitionId = "tenant:jp";
+        const sourceStore = new InMemoryPartitionStore("source");
+        const targetStore = new InMemoryPartitionStore("target");
+        await sourceStore.registerPartition(partitionId);
+        await sourceStore.registerPartition("tenant:us");
+
+        const highWatermark: PartitionSnapshotCursor["highWatermark"] = [];
+        const expectedDeltaKeys: string[] = [];
+
+        for (const [sourceIndex, source] of sources.entries()) {
+          const sourceNodeId = `node-${sourceIndex}`;
+          const totalCount = source.snapshotCount + source.deltaCount;
+
+          for (let seq = 0; seq < totalCount; seq++) {
+            const event = {
+              eventId: eventId(sourceIndex, seq),
+              sourceNodeId,
+              partitionId,
+              schemaVersion: 1,
+              payload: { sourceIndex, seq },
+            };
+            await sourceStore.applyRemote(event);
+
+            if (seq >= source.snapshotCount) {
+              expectedDeltaKeys.push(eventKey(event));
+            }
+          }
+
+          await sourceStore.applyRemote({
+            eventId: eventId(sourceIndex, 10_000 + sourceIndex),
+            sourceNodeId,
+            partitionId: "tenant:us",
+            schemaVersion: 1,
+            payload: { sourceIndex, foreign: true },
+          });
+
+          if (source.snapshotCount > 0) {
+            highWatermark.push([sourceNodeId, eventId(sourceIndex, source.snapshotCount - 1)]);
+          }
+        }
+
+        const snapshot: PartitionSnapshotCursor = { partitionId, highWatermark };
+
+        await expect(
+          listEventsAfterPartitionSnapshot(sourceStore, snapshot).then((events) =>
+            events.map(eventKey),
+          ),
+        ).resolves.toEqual(expectedDeltaKeys.sort());
+        await expect(
+          replayEventsAfterPartitionSnapshot({ sourceStore, targetStore, snapshot }),
+        ).resolves.toBe(expectedDeltaKeys.length);
+        await expect(
+          replayEventsAfterPartitionSnapshot({ sourceStore, targetStore, snapshot }),
+        ).resolves.toBe(0);
+        await expect(
+          targetStore.listEventsAfterCursors(partitionId, new Map()).then((events) =>
+            events.map(eventKey),
+          ),
+        ).resolves.toEqual(expectedDeltaKeys.sort());
+        await expect(
+          targetStore.listEventsAfterCursors("tenant:us", new Map()),
+        ).resolves.toHaveLength(0);
+      }),
+      { numRuns: 100 },
+    );
+  });
+
   it("exposes snapshot high-watermarks as a source-node cursor map", () => {
     const snapshot: PartitionSnapshotCursor = {
       partitionId: "tenant:jp",
@@ -176,4 +255,14 @@ function file(path: string) {
     size: 1,
     sha256: "0".repeat(64),
   };
+}
+
+function eventId(sourceIndex: number, seq: number): string {
+  const timestamp = (1_700_000_000_000 + seq).toString(16).padStart(12, "0");
+  const random = (sourceIndex * 100_000 + seq).toString(16).padStart(16, "0");
+  return `${timestamp.slice(0, 8)}-${timestamp.slice(8, 12)}-7${random.slice(0, 3)}-8${random.slice(3, 6)}-${random.slice(6, 18).padStart(12, "0")}`;
+}
+
+function eventKey(event: { sourceNodeId: string; eventId: string }): string {
+  return `${event.sourceNodeId}/${event.eventId}`;
 }

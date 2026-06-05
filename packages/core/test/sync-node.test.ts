@@ -1,3 +1,4 @@
+import * as fc from "fast-check";
 import { describe, expect, it, vi } from "vitest";
 import type {
   EventEnvelope,
@@ -37,14 +38,59 @@ describe("UuidV7Factory", () => {
   it("keeps UUID v7 ids unique and ordered when one millisecond overflows the sequence", () => {
     const ids = new UuidV7Factory(
       () => 1_700_000_000_000,
-      (length) => new Uint8Array(length).fill(0),
+      (length) => new Uint8Array(length).fill(0xff),
     );
 
-    const generated = Array.from({ length: 4_097 }, () => ids.next());
+    const generated = Array.from({ length: 3 }, () => ids.next());
 
     expect(new Set(generated).size).toBe(generated.length);
     expect(generated.toSorted()).toEqual(generated);
-    expect(generated[4_096]!.slice(0, 13)).toBe(generated[0]!.slice(0, 13));
+    expect(generated[1]! > generated[0]!).toBe(true);
+    expect(generated[2]! > generated[1]!).toBe(true);
+  });
+
+  it("does not cap UUID v7 generation at the 12-bit rand_a boundary", () => {
+    const ids = new UuidV7Factory(
+      () => 1_700_000_000_000,
+      (length) => new Uint8Array(length).fill(1),
+    );
+
+    const generated = Array.from({ length: 5_000 }, () => ids.next());
+
+    expect(new Set(generated).size).toBe(generated.length);
+    expect(generated.toSorted()).toEqual(generated);
+  });
+
+  it("keeps UUID v7 ids unique and ordered for arbitrary local clock movement", () => {
+    fc.assert(
+      fc.property(
+        fc.array(fc.integer({ min: -2, max: 3 }), { minLength: 1, maxLength: 200 }),
+        fc.uint8Array({ minLength: 4, maxLength: 4 }),
+        (deltas, seedBytes) => {
+          let now = 1_700_000_000_000;
+          const ids = new UuidV7Factory(
+            () => now,
+            (length) => {
+              const bytes = new Uint8Array(length);
+              bytes.set(seedBytes.slice(0, Math.min(seedBytes.length, length)));
+              return bytes;
+            },
+          );
+
+          const generated = deltas.map((delta) => {
+            now += delta;
+            return ids.next();
+          });
+
+          expect(new Set(generated).size).toBe(generated.length);
+          expect(generated.toSorted()).toEqual(generated);
+          for (const id of generated) {
+            expect(isUuidV7(id)).toBe(true);
+          }
+        },
+      ),
+      { numRuns: 200 },
+    );
   });
 });
 
@@ -270,6 +316,24 @@ describe("SyncNode", () => {
       }),
     ).rejects.toThrow("payload.value must be JSON-serializable");
     await expect(store.listEventsAfterCursors("tenant:jp", new Map())).resolves.toHaveLength(0);
+  });
+
+  it("accepts arbitrary JSON payloads without changing their round-trip shape", async () => {
+    await fc.assert(
+      fc.asyncProperty(fc.jsonValue(), async (payload) => {
+        const store = new InMemoryPartitionStore("node-a");
+        const event = await store.appendLocal({
+          partitionId: "tenant:jp",
+          schemaVersion: 1,
+          payload,
+        });
+        const [stored] = await store.listEventsAfterCursors("tenant:jp", new Map());
+
+        expect(stored?.eventId).toBe(event.eventId);
+        expect(stored?.payload).toEqual(payload);
+      }),
+      { numRuns: 200 },
+    );
   });
 
   it("rejects registered remote events with invalid envelope fields", async () => {
