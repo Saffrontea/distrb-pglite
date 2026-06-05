@@ -196,12 +196,7 @@ export class EdgeNodeServer {
   private async initDb(): Promise<void> {
     await mkdir(this.config.dataDir, { recursive: true });
     await mkdir(this.config.casDir, { recursive: true });
-    this.db = new PGlite(this.config.dataDir, { relaxedDurability: false });
-    await this.db.exec(SCHEMA);
-    await migrateSensorReadingsEventIdentity(this.db);
-    this.inner = new PGlitePartitionStore(this.config.nodeId, this.db);
-    await this.inner.migrate();
-    this.store = new SensorPartitionStore(this.inner, this.db, this.config.partitionId);
+    await this.openDb();
   }
 
   private async initSync(): Promise<void> {
@@ -246,6 +241,26 @@ export class EdgeNodeServer {
       relations: ["sensor_readings"],
       snapshotScope: this.config.snapshotScope ?? "catalog-and-data",
     });
+  }
+
+  private async openDb(): Promise<void> {
+    this.db = new PGlite(this.config.dataDir, { relaxedDurability: false });
+    await this.db.exec(SCHEMA);
+    await migrateSensorReadingsEventIdentity(this.db);
+    this.inner = new PGlitePartitionStore(this.config.nodeId, this.db);
+    await this.inner.migrate();
+    this.store = new SensorPartitionStore(this.inner, this.db, this.config.partitionId);
+  }
+
+  private async reopenDbAndSync(wasOnline: boolean): Promise<void> {
+    await this.openDb();
+    await this.setupBindings();
+    this.syncNode = this.createSyncNode();
+    if (wasOnline) {
+      await this.syncNode.start();
+      await this.syncNode.subscribe(this.config.partitionId);
+      this.online = true;
+    }
   }
 
   // ─── HTTP dispatch ────────────────────────────────────────────
@@ -496,32 +511,25 @@ export class EdgeNodeServer {
     }
     await this.db.close();
 
-    const pulled = await pullPartitionCasSnapshot({
-      snapshotEntries,
-      groupId: GROUP_ID,
-      partitionId: this.config.partitionId,
-      requirement,
-      sourceCasDir,
-      targetCasDir: this.config.casDir,
-      targetDir: this.config.dataDir,
-      storageBinding,
-    });
+    let pulled: Awaited<ReturnType<typeof pullPartitionCasSnapshot>>;
+    try {
+      pulled = await pullPartitionCasSnapshot({
+        snapshotEntries,
+        groupId: GROUP_ID,
+        partitionId: this.config.partitionId,
+        requirement,
+        sourceCasDir,
+        targetCasDir: this.config.casDir,
+        targetDir: this.config.dataDir,
+        storageBinding,
+      });
+    } catch (error) {
+      await this.reopenDbAndSync(wasOnline);
+      throw error;
+    }
 
     // PGlite を復元済みデータディレクトリで再起動
-    this.db = new PGlite(this.config.dataDir, { relaxedDurability: false });
-    await this.db.exec(SCHEMA);
-    await migrateSensorReadingsEventIdentity(this.db);
-    this.inner = new PGlitePartitionStore(this.config.nodeId, this.db);
-    await this.inner.migrate();
-    this.store = new SensorPartitionStore(this.inner, this.db, this.config.partitionId);
-    await this.setupBindings();
-
-    if (wasOnline) {
-      this.syncNode = this.createSyncNode();
-      await this.syncNode.start();
-      await this.syncNode.subscribe(this.config.partitionId);
-      this.online = true;
-    }
+    await this.reopenDbAndSync(wasOnline);
 
     return {
       ok: true,

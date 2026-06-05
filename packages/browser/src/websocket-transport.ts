@@ -185,7 +185,7 @@ class BrowserWebSocketTransportConnection implements TransportConnection {
     socket.addEventListener("message", (event) => {
       void (async () => {
         try {
-          if (socket !== this.socket) {
+          if (this.closed || socket !== this.socket) {
             return;
           }
           await this.handleMessage(decodeMessage(event.data));

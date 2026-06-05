@@ -398,7 +398,7 @@ class WebSocketTransportConnection implements TransportConnection {
     socket.on("message", (data) => {
       void (async () => {
         try {
-          if (socket !== this.socket) {
+          if (this.closed || socket !== this.socket) {
             return;
           }
           await this.handleMessage(this.decode(data as Buffer));

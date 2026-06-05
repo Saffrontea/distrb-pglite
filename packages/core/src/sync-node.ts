@@ -32,6 +32,9 @@ export type SubscribeOptions = {
 
 export class SyncNode {
   private connection?: TransportConnection;
+  private connectionEpoch = 0;
+  private activeHandlers = 0;
+  private readonly handlerIdleWaiters = new Set<() => void>();
   private readonly recoverFrom = new Map<PartitionId, NodeId>();
 
   constructor(
@@ -46,25 +49,36 @@ export class SyncNode {
     if (this.connection) {
       throw new Error(`SyncNode ${this.nodeId} has already been started`);
     }
+    const epoch = ++this.connectionEpoch;
     this.connection = await this.transport.connect(this.nodeId, {
       onEvent: async (event) => {
-        await this.store.applyRemote(event);
+        await this.runConnectionHandler(epoch, undefined, async () => {
+          await this.store.applyRemote(event);
+        });
       },
       onReplayRequest: async (request): Promise<ReplayResponse> => {
-        const events = await this.store.listEventsAfterCursors(
-          request.partitionId,
-          request.cursors,
+        return await this.runConnectionHandler(
+          epoch,
+          { partitionId: request.partitionId, events: [] },
+          async () => {
+            const events = await this.store.listEventsAfterCursors(
+              request.partitionId,
+              request.cursors,
+            );
+            return { partitionId: request.partitionId, events };
+          },
         );
-        return { partitionId: request.partitionId, events };
       },
       onReconnect: options?.autoRecoverSubscriptions
         ? async (partitionIds) => {
-            for (const partitionId of partitionIds) {
-              const peer = this.recoverFrom.get(partitionId);
-              if (peer) {
-                await this.catchUpFrom(peer, partitionId);
+            await this.runConnectionHandler(epoch, undefined, async () => {
+              for (const partitionId of partitionIds) {
+                const peer = this.recoverFrom.get(partitionId);
+                if (peer) {
+                  await this.catchUpFrom(peer, partitionId);
+                }
               }
-            }
+            });
           }
         : undefined,
     });
@@ -165,8 +179,11 @@ export class SyncNode {
   }
 
   async stop(): Promise<void> {
-    await this.connection?.close();
+    this.connectionEpoch += 1;
+    const connection = this.connection;
     this.connection = undefined;
+    await connection?.close();
+    await this.waitForConnectionHandlers();
   }
 
   private requireConnection(): TransportConnection {
@@ -175,6 +192,37 @@ export class SyncNode {
     }
 
     return this.connection;
+  }
+
+  private async runConnectionHandler<T>(
+    epoch: number,
+    staleValue: T,
+    run: () => Promise<T>,
+  ): Promise<T> {
+    this.activeHandlers += 1;
+    try {
+      if (epoch !== this.connectionEpoch) {
+        return staleValue;
+      }
+      return await run();
+    } finally {
+      this.activeHandlers -= 1;
+      if (this.activeHandlers === 0) {
+        for (const resolve of this.handlerIdleWaiters) {
+          resolve();
+        }
+        this.handlerIdleWaiters.clear();
+      }
+    }
+  }
+
+  private async waitForConnectionHandlers(): Promise<void> {
+    if (this.activeHandlers === 0) {
+      return;
+    }
+    await new Promise<void>((resolve) => {
+      this.handlerIdleWaiters.add(resolve);
+    });
   }
 }
 

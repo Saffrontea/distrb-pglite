@@ -160,6 +160,25 @@ describe("SyncNode", () => {
     expect(transport.connections[0]?.closed).toBe(true);
   });
 
+  it("ignores events delivered by an old transport handler after stop", async () => {
+    const transport = new CapturingTransport();
+    const store = new InMemoryPartitionStore("node-a");
+    const node = new SyncNode("node-a", store, transport);
+
+    await node.start();
+    await node.subscribe("tenant:jp");
+    await node.stop();
+    await transport.handlers?.onEvent({
+      eventId: "018bcfe5-6800-7001-8000-000000000001",
+      sourceNodeId: "node-b",
+      partitionId: "tenant:jp",
+      schemaVersion: 1,
+      payload: { stale: true },
+    });
+
+    await expect(store.listEventsAfterCursors("tenant:jp", new Map())).resolves.toHaveLength(0);
+  });
+
   it("does not register partitions when subscribe is attempted before start", async () => {
     const store = new InMemoryPartitionStore("node-a");
     const node = new SyncNode("node-a", store, new MemoryTransport());
@@ -1145,6 +1164,20 @@ class CountingConnection implements TransportConnection {
   }
   async close(): Promise<void> {
     this.closed = true;
+  }
+}
+
+class CapturingTransport implements Transport {
+  handlers: TransportHandlers | undefined;
+
+  async connect(_nodeId: string, handlers: TransportHandlers): Promise<TransportConnection> {
+    this.handlers = handlers;
+    return {
+      subscribe: async () => {},
+      publish: async () => {},
+      requestReplay: async (_targetNodeId, partitionId) => ({ partitionId, events: [] }),
+      close: async () => {},
+    };
   }
 }
 

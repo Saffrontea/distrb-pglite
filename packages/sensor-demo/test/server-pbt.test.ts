@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:net";
 import * as fc from "fast-check";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebSocketHub } from "@distrb-pglite/node";
 import { PGlite } from "@electric-sql/pglite";
 import { EdgeNodeServer, type SensorPayload } from "../src/server.js";
@@ -240,6 +240,36 @@ describe("PBT: sensor-demo EdgeNodeServer", () => {
       await fixture.cleanup();
     }
   }, 30_000);
+
+  it("keeps the server usable when snapshot pull validation fails", async () => {
+    const fixture = await startFixture();
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const [server] = fixture.servers;
+      await post(`${server.baseUrl}/readings`, { sensorId: "before-failed-pull", reading: 1 });
+      const catalogManifest = await get(`${server.baseUrl}/catalog`);
+      const response = await postRaw(`${server.baseUrl}/pull-snapshot`, {
+        catalogManifest,
+        snapshotEntries: [],
+        sourceCasDir: await makeTempDir("sensor-demo-missing-cas"),
+        requirement: "bootstrap",
+      });
+
+      expect(response.status).toBe(500);
+      const status = await get<{ online: boolean; eventCount: number }>(`${server.baseUrl}/status`);
+      expect(status).toMatchObject({ online: true, eventCount: 1 });
+      await expect(
+        post<{ eventId: string }>(`${server.baseUrl}/readings`, {
+          sensorId: "after-failed-pull",
+          reading: 2,
+        }),
+      ).resolves.toMatchObject({ sensorId: "after-failed-pull", reading: 2 });
+      expect(errorSpy).not.toHaveBeenCalled();
+    } finally {
+      errorSpy.mockRestore();
+      await fixture.cleanup();
+    }
+  }, 20_000);
 
   it("does not project explicitly subscribed foreign partitions into the configured sensor table", async () => {
     const fixture = await startPartitionFixture();
