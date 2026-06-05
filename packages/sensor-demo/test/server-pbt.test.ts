@@ -195,6 +195,52 @@ describe("PBT: sensor-demo EdgeNodeServer", () => {
     }
   }, 30_000);
 
+  it("migrates old snapshot projection keys after pull before applying catchup", async () => {
+    const fixture = await startSnapshotFixture();
+    try {
+      const source = fixture.source;
+      await post(`${source.baseUrl}/readings`, { sensorId: "snapshot-old-key", reading: 10 });
+      const sourceEvents = await get<{ events: EventRow[] }>(`${source.baseUrl}/events?limit=1000`);
+      const [snapshotEvent] = sourceEvents.events;
+      expect(snapshotEvent).toBeDefined();
+
+      await downgradeSensorReadingsPrimaryKey(source);
+      const snapshot = await post<{ snapshotId: string }>(`${source.baseUrl}/create-snapshot`, {});
+
+      const target = await fixture.createTarget();
+      const catalogManifest = await get(`${source.baseUrl}/catalog`);
+      const { entries } = await get<{ entries: unknown[] }>(`${source.baseUrl}/snapshot-entries`);
+      await post(`${target.baseUrl}/pull-snapshot`, {
+        catalogManifest,
+        snapshotEntries: entries,
+        sourceCasDir: fixture.sourceCasDir,
+        requirement: "bootstrap",
+      });
+
+      const peer = await fixture.createPeer(2);
+      await seedStoredEvent(peer, {
+        sourceNodeId: peer.nodeId,
+        eventId: snapshotEvent!.eventId,
+        payload: { sensorId: "same-id-new-source", reading: 20 },
+      });
+
+      await expect(
+        post<{ applied: number }>(`${target.baseUrl}/catchup`, { peerNodeId: peer.nodeId }),
+      ).resolves.toEqual({ applied: 1 });
+
+      const readings = await get<{ rows: ReadingRow[] }>(`${target.baseUrl}/readings?limit=1000`);
+      expect(readingSourceEventKey(readings.rows)).toContain(
+        `${source.nodeId}/${snapshotEvent!.eventId}`,
+      );
+      expect(readingSourceEventKey(readings.rows)).toContain(
+        `${peer.nodeId}/${snapshotEvent!.eventId}`,
+      );
+      expect(snapshot.snapshotId).toContain("tenant:jp");
+    } finally {
+      await fixture.cleanup();
+    }
+  }, 30_000);
+
   it("does not project explicitly subscribed foreign partitions into the configured sensor table", async () => {
     const fixture = await startPartitionFixture();
     try {
@@ -499,6 +545,7 @@ describe("PBT: sensor-demo EdgeNodeServer", () => {
     source: EdgeNodeServer;
     sourceCasDir: string;
     createTarget: () => Promise<EdgeNodeServer>;
+    createPeer: (index: number) => Promise<EdgeNodeServer>;
     cleanup: () => Promise<void>;
   }> {
     const hubPort = await getFreePort();
@@ -516,6 +563,7 @@ describe("PBT: sensor-demo EdgeNodeServer", () => {
     await source.listen();
 
     let target: EdgeNodeServer | undefined;
+    const peers: EdgeNodeServer[] = [];
     return {
       source,
       sourceCasDir: join(root, "edge-0", "cas"),
@@ -533,9 +581,21 @@ describe("PBT: sensor-demo EdgeNodeServer", () => {
         await target.listen();
         return target;
       },
+      createPeer: async (index) => {
+        const peer = await createEdgeServer({
+          root,
+          hubPort,
+          index,
+          peerNodeIds: ["edge-0", "edge-1"],
+        });
+        peers.push(peer);
+        servers.push(peer);
+        await peer.listen();
+        return peer;
+      },
       cleanup: async () => {
         await Promise.all(
-          [target, source]
+          [...peers, target, source]
             .filter((server): server is EdgeNodeServer => !!server)
             .map((server) => server.close().catch(() => {})),
         );
@@ -667,6 +727,30 @@ describe("PBT: sensor-demo EdgeNodeServer", () => {
       `,
     });
   }
+
+  async function downgradeSensorReadingsPrimaryKey(server: EdgeNodeServer): Promise<void> {
+    const primaryKey = await post<{
+      rows: Array<{ constraint_name: string }>;
+    }>(`${server.baseUrl}/sql`, {
+      sql: `
+        SELECT constraint_name
+        FROM information_schema.table_constraints
+        WHERE table_name = 'sensor_readings'
+          AND constraint_type = 'PRIMARY KEY'
+      `,
+    });
+    const constraintName = primaryKey.rows[0]?.constraint_name;
+    if (!constraintName) {
+      throw new Error("sensor_readings primary key not found");
+    }
+
+    await post(`${server.baseUrl}/sql`, {
+      sql: `
+        ALTER TABLE sensor_readings DROP CONSTRAINT ${quoteSqlIdentifier(constraintName)};
+        ALTER TABLE sensor_readings ADD PRIMARY KEY (event_id);
+      `,
+    });
+  }
 });
 
 const operationArb: fc.Arbitrary<DemoOp> = fc.oneof(
@@ -700,6 +784,10 @@ function readingSourceEventKey(rows: ReadingRow[]): string[] {
 
 function sqlString(value: string): string {
   return `'${value.replaceAll("'", "''")}'`;
+}
+
+function quoteSqlIdentifier(value: string): string {
+  return `"${value.replaceAll('"', '""')}"`;
 }
 
 function projectRowsByEvent(rows: ReadingRow[]): Record<string, unknown> {

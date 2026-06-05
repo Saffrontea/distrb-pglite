@@ -499,9 +499,12 @@ export class EdgeNodeServer {
 
     // PGlite を復元済みデータディレクトリで再起動
     this.db = new PGlite(this.config.dataDir, { relaxedDurability: false });
+    await this.db.exec(SCHEMA);
+    await migrateSensorReadingsEventIdentity(this.db);
     this.inner = new PGlitePartitionStore(this.config.nodeId, this.db);
     await this.inner.migrate();
     this.store = new SensorPartitionStore(this.inner, this.db, this.config.partitionId);
+    await this.setupBindings();
 
     if (wasOnline) {
       this.syncNode = this.createSyncNode();
