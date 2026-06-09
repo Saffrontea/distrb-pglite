@@ -104,7 +104,7 @@ let casRelayEnabled = false;
 let pgliteFsBundlePromise: Promise<Blob> | undefined;
 let pgliteWasmModulePromise: Promise<WebAssembly.Module> | undefined;
 let simulationRunning = true;
-let simulationBusy = false;
+let automationBusy = false;
 let simulationTimer: ReturnType<typeof setInterval> | undefined;
 let incidentTimer: ReturnType<typeof setInterval> | undefined;
 let sqlText = defaultSql();
@@ -336,10 +336,10 @@ function startSimulation(): void {
   stopSimulationTimers();
   simulationRunning = true;
   simulationTimer = setInterval(() => {
-    void simulationStep();
+    void runAutomationStep("shift", simulationStep);
   }, 1_800);
   incidentTimer = setInterval(() => {
-    void incidentStep();
+    void runAutomationStep("incident", incidentStep);
   }, 6_500);
 }
 
@@ -365,28 +365,23 @@ function stopSimulationTimers(): void {
 }
 
 async function simulationStep(): Promise<void> {
-  if (!simulationRunning || simulationBusy || nodes.size === 0) return;
-  simulationBusy = true;
-  try {
-    const nodeList = [...nodes.values()];
-    const producer = pick(nodeList);
-    await writeFactoryEvent(producer.id);
+  if (!simulationRunning || nodes.size === 0) return;
+  const nodeList = [...nodes.values()];
+  const producer = pick(nodeList);
+  await writeFactoryEvent(producer.id);
 
-    if (Math.random() > 0.72) {
-      const target = nodeList.find((node) => node.id === "plant-control") ?? pick(nodeList);
-      const peer = pick(nodeList.filter((node) => node.id !== target.id));
-      const partitions = peer ? sharedPartitions(target, peer) : [];
-      if (target.handle.isOnline && peer && partitions.length > 0) {
-        const applied = await catchUpNodeFromPeer(target, peer);
-        addLog(
-          "sync",
-          `${target.id} auto catchup from ${peer.id} on ${partitions.join(", ")}: +${applied}`,
-        );
-        render(false);
-      }
+  if (Math.random() > 0.72) {
+    const target = nodeList.find((node) => node.id === "plant-control") ?? pick(nodeList);
+    const peer = pick(nodeList.filter((node) => node.id !== target.id));
+    const partitions = peer ? sharedPartitions(target, peer) : [];
+    if (target.handle.isOnline && peer && partitions.length > 0) {
+      const applied = await catchUpNodeFromPeer(target, peer);
+      addLog(
+        "sync",
+        `${target.id} auto catchup from ${peer.id} on ${partitions.join(", ")}: +${applied}`,
+      );
+      render(false);
     }
-  } finally {
-    simulationBusy = false;
   }
 }
 
@@ -434,6 +429,19 @@ async function incidentStep(): Promise<void> {
 
   const maintenance = nodeList.find((node) => node.role === "maintenance") ?? pick(nodeList);
   await writeFactoryEvent(maintenance.id, "downtime");
+}
+
+async function runAutomationStep(label: string, run: () => Promise<void>): Promise<void> {
+  if (!simulationRunning || automationBusy) return;
+  automationBusy = true;
+  try {
+    await run();
+  } catch (error) {
+    addLog("system", `${label} automation failed: ${String(error)}`);
+    render(false);
+  } finally {
+    automationBusy = false;
+  }
 }
 
 async function createSnapshot(): Promise<void> {
@@ -923,9 +931,9 @@ function createFactoryPayload(
       workOrder,
       sku,
       quantity: 0,
-      defectCode: hasDefect
-        ? pick(["scratch", "torque-low", "vision-fail", "label-miss"])
-        : undefined,
+      ...(hasDefect
+        ? { defectCode: pick(["scratch", "torque-low", "vision-fail", "label-miss"]) }
+        : {}),
       severity: hasDefect ? pick(["warn", "critical"]) : "info",
       status: hasDefect ? "open" : "closed",
       reading: Math.round((96 + Math.random() * 3.5) * 10) / 10,
@@ -956,10 +964,9 @@ function createFactoryPayload(
     workOrder,
     sku,
     quantity: 0,
-    defectCode:
-      preferredType === "downtime"
-        ? pick(["jam", "overheat", "air-pressure", "changeover"])
-        : undefined,
+    ...(preferredType === "downtime"
+      ? { defectCode: pick(["jam", "overheat", "air-pressure", "changeover"]) }
+      : {}),
     severity: preferredType === "downtime" ? pick(["warn", "critical"]) : "warn",
     status: "open",
     reading: Math.floor(6 + Math.random() * 24),
