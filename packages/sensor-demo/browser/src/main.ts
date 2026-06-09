@@ -10,7 +10,6 @@ import {
   diffMissingBrowserCasBlocks,
   gcBrowserCasBlocks,
   inventoryBrowserFilesystem,
-  snapshotBrowserFilesystemToCas,
   type BrowserCasBlockStore,
   type BrowserCasManifest,
 } from "@distrb-pglite/browser";
@@ -142,7 +141,7 @@ async function openBrowserNode(
     onAppliedRemote: async () => {
       const node = nodes.get(id);
       if (node) {
-        node.stats = await readNodeStats(node.handle.db);
+        node.stats = await readNodeStats(node.handle);
         node.eventCount = node.stats.events;
         addLog("sync", `${id} applied remote event`);
         render(false);
@@ -202,7 +201,7 @@ async function addNode(
   partitions = partitionsForRole(role, lineId),
 ): Promise<void> {
   const handle = await openBrowserNode(id, partitions);
-  const stats = await readNodeStats(handle.db);
+  const stats = await readNodeStats(handle);
   nodes.set(id, {
     id,
     role,
@@ -225,7 +224,7 @@ async function resetNode(id: string): Promise<void> {
   const existing = requireNode(id);
   await existing.handle.close();
   const handle = await openBrowserNode(id, existing.partitions);
-  const stats = await readNodeStats(handle.db);
+  const stats = await readNodeStats(handle);
   nodes.set(id, {
     id,
     role: existing.role,
@@ -280,7 +279,7 @@ async function writeFactoryEvent(
     });
     addLog("write", `${nodeId} recorded offline ${eventSummary(payload)}`);
   }
-  node.stats = await readNodeStats(node.handle.db);
+  node.stats = await readNodeStats(node.handle);
   node.eventCount = node.stats.events;
   render();
 }
@@ -313,7 +312,7 @@ async function catchUpNodeFromPeer(target: BrowserNode, peer: BrowserNode): Prom
   for (const partitionId of partitions) {
     applied += await target.handle.catchUpFrom(peer.id, partitionId);
   }
-  target.stats = await readNodeStats(target.handle.db);
+  target.stats = await readNodeStats(target.handle);
   target.eventCount = target.stats.events;
   return applied;
 }
@@ -439,14 +438,13 @@ async function incidentStep(): Promise<void> {
 
 async function createSnapshot(): Promise<void> {
   const source = requireNode(sourceNodeId);
-  lastManifest = await snapshotBrowserFilesystemToCas({
-    fs: source.handle.fs.asSnapshotDataFilesystem(),
+  lastManifest = await source.handle.createSnapshot({
     casStore: sourceCasStore,
     chunkSize: 16 * 1024,
     snapshotId: `browser-${Date.now()}`,
   });
   const inventory = await inventoryBrowserFilesystem({
-    fs: source.handle.fs.asSnapshotDataFilesystem(),
+    fs: source.handle.internals.fs.asSnapshotDataFilesystem(),
   });
   const matches = browserManifestFilesEqualInventory(lastManifest, inventory);
   addLog(
@@ -462,13 +460,13 @@ async function restoreSnapshot(): Promise<void> {
   }
   const manifest = lastManifest!;
   const target = requireNode(targetNodeId);
-  const restored = await target.handle.restoreFromCasSnapshot({
+  const restored = await target.handle.restoreSnapshot({
     manifest,
     sourceCasStore,
     targetCasStore,
   });
   const handle = restored.handle;
-  const stats = await readNodeStats(handle.db);
+  const stats = await readNodeStats(handle);
   nodes.set(target.id, {
     id: target.id,
     role: target.role,
@@ -520,7 +518,7 @@ async function runSql(): Promise<void> {
   sqlText = input.value;
   const started = performance.now();
   try {
-    const result = await node.handle.db.query<QueryRow>(sqlText);
+    const result = await node.handle.query<QueryRow>(sqlText);
     const duration = Math.round(performance.now() - started);
     sqlMetaText = `${node.id}: ${result.rows.length} rows in ${duration}ms`;
     sqlResultHtml = renderTable(result.rows);
@@ -533,7 +531,14 @@ async function runSql(): Promise<void> {
   render(false);
 }
 
-async function readNodeStats(db: PGlite): Promise<NodeStats> {
+type QueryClient = {
+  query<T = Record<string, unknown>>(
+    sql: string,
+    params?: unknown[],
+  ): Promise<{ rows: T[]; affectedRows?: number }>;
+};
+
+async function readNodeStats(db: QueryClient): Promise<NodeStats> {
   const result = await db.query<{
     events: string;
     units: string;

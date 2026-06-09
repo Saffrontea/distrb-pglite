@@ -78,11 +78,11 @@ export class VectorNode {
   ) {}
 
   get db(): PGlite {
-    return this.handle.db;
+    return this.handle.internals.db;
   }
 
   get store() {
-    return this.handle.store;
+    return this.handle.internals.store;
   }
 
   static async create(
@@ -410,7 +410,7 @@ async function openVectorHandle(
 }
 
 async function queryNearest(
-  db: PGlite,
+  db: PGliteClient,
   tenantId: TenantId,
   embedding: [number, number, number],
   limit = 3,
@@ -434,7 +434,7 @@ async function queryNearest(
 }
 
 async function explainNearestIvfForDb(
-  db: PGlite,
+  db: PGliteClient,
   tenantId: TenantId,
   embedding: [number, number, number],
   limit = 3,
@@ -479,7 +479,7 @@ async function seedBootstrapProfiles(node: VectorNode): Promise<void> {
 }
 
 async function assertNearestSensor(
-  db: PGlite,
+  db: PGliteClient,
   tenantId: TenantId,
   embedding: [number, number, number],
   expectedSensorId: string,
@@ -493,7 +493,7 @@ async function assertNearestSensor(
 }
 
 async function assertSensorExists(
-  db: PGlite,
+  db: PGliteClient,
   tenantId: TenantId,
   sensorId: string,
   label: string,
@@ -579,13 +579,13 @@ async function verifyDataOnlySnapshotDistribution(
       const restoredHandle = await openVectorHandle(targetDir);
       try {
         await assertSensorExists(
-          restoredHandle.db,
+          restoredHandle,
           "jp",
           "data-only-delta-temperature",
           "data-only snapshot restore",
         );
-        const nearest = await queryNearest(restoredHandle.db, "jp", [0.87, 0.2, 0.1], 3);
-        const explain = await explainNearestIvfForDb(restoredHandle.db, "jp", [0.87, 0.2, 0.1], 2);
+        const nearest = await queryNearest(restoredHandle, "jp", [0.87, 0.2, 0.1], 3);
+        const explain = await explainNearestIvfForDb(restoredHandle, "jp", [0.87, 0.2, 0.1], 2);
         if (!explain.join("\n").includes(ivfIndexName("jp"))) {
           throw new Error(
             `data-only snapshot did not preserve IVFFlat EXPLAIN path:\n${explain.join("\n")}`,
@@ -654,13 +654,13 @@ async function verifyCatalogAndDataSnapshotDistribution(
     const restoredHandle = await openVectorHandle(targetDir);
     try {
       const nearest = await assertNearestSensor(
-        restoredHandle.db,
+        restoredHandle,
         "jp",
         [0.9, 0.1, 0.1],
         "bootstrap-temperature",
         "catalog-and-data snapshot restore",
       );
-      const explain = await explainNearestIvfForDb(restoredHandle.db, "jp", [0.9, 0.1, 0.1], 2);
+      const explain = await explainNearestIvfForDb(restoredHandle, "jp", [0.9, 0.1, 0.1], 2);
       if (!explain.join("\n").includes(ivfIndexName("jp"))) {
         throw new Error(
           `catalog-and-data snapshot did not preserve IVFFlat EXPLAIN path:\n${explain.join("\n")}`,

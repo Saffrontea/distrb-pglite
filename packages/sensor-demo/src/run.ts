@@ -208,16 +208,14 @@ async function run(): Promise<void> {
     const caughtInitial = await dash.node.catchUpFrom("jp-edge", "tenant:jp");
     console.log(`\n  初回catchup: ${caughtInitial} 件取得`);
 
-    const dashJpCount = (await dash.node.store.listEventsAfterCursors("tenant:jp", new Map()))
-      .length;
-    const dashUsCount = (await dash.node.store.listEventsAfterCursors("tenant:us", new Map()))
-      .length;
+    const dashJpCount = (await dash.node.listEventsAfterCursors("tenant:jp", new Map())).length;
+    const dashUsCount = (await dash.node.listEventsAfterCursors("tenant:us", new Map())).length;
     console.log(
       `\n  dashboard tenant:jp イベント数: ${dashJpCount}  (expected: ${jpReadings.length})`,
     );
     console.log(`  dashboard tenant:us イベント数: ${dashUsCount}  (expected: 0, isolation OK)`);
 
-    await printAggregation(dash.node.db, "sensor_readings_jp", "dashboard");
+    await printAggregation(dash.node, "sensor_readings_jp", "dashboard");
 
     // ── 4. JP edge オフライン → ローカル書き込み ─────────────
     section("4. JP edge がオフラインになりローカルに書き込む");
@@ -235,8 +233,7 @@ async function run(): Promise<void> {
       });
     }
 
-    const beforeCatchup = (await dash.node.store.listEventsAfterCursors("tenant:jp", new Map()))
-      .length;
+    const beforeCatchup = (await dash.node.listEventsAfterCursors("tenant:jp", new Map())).length;
     console.log(`\n  catchup前 dashboard イベント数: ${beforeCatchup}`);
 
     // ── 5. JP edge 再接続 → dashboard が catch up ────────────
@@ -247,13 +244,12 @@ async function run(): Promise<void> {
     const caught = await dash.node.catchUpFrom("jp-edge", "tenant:jp");
     console.log(`\n  catchup完了: ${caught} イベント取得`);
 
-    const afterCatchup = (await dash.node.store.listEventsAfterCursors("tenant:jp", new Map()))
-      .length;
+    const afterCatchup = (await dash.node.listEventsAfterCursors("tenant:jp", new Map())).length;
     console.log(
       `  catchup後 dashboard イベント数: ${afterCatchup}  (expected: ${jpReadings.length + offlineReadings.length})`,
     );
 
-    await printAggregation(dash.node.db, "sensor_readings_jp", "dashboard (updated)");
+    await printAggregation(dash.node, "sensor_readings_jp", "dashboard (updated)");
 
     // ── 6. CAS snapshot + new replica ────────────────────────
     section("6. jp-replica が CASスナップショット+デルタリプレイで参加する");
@@ -281,7 +277,7 @@ async function run(): Promise<void> {
 
     // デルタイベント収集 (jp db を閉じる前に)
     const snapshotWatermark = new Map<string, string>(managed.snapshot.highWatermark);
-    const deltaEvents = await jp.node.store.listEventsAfterCursors("tenant:jp", snapshotWatermark);
+    const deltaEvents = await jp.node.listEventsAfterCursors("tenant:jp", snapshotWatermark);
     console.log(`  デルタイベント: ${deltaEvents.length} 件`);
 
     // カタログマニフェストとスナップショットエントリを保存
@@ -312,20 +308,19 @@ async function run(): Promise<void> {
     // デルタイベントをリプレイ (facade の projection で SQL にも書き込まれる)
     let replayCount = 0;
     for (const event of deltaEvents) {
-      if (await replica.node.store.applyRemote(event)) replayCount++;
+      if (await replica.node.applyEvent(event)) replayCount++;
     }
     console.log(`  デルタリプレイ: ${replayCount} 件`);
 
-    await printAggregation(replica.node.db, "sensor_readings_jp", "jp-replica");
+    await printAggregation(replica.node, "sensor_readings_jp", "jp-replica");
 
     // ── 検証: jp-edge と jp-replica の集計が一致するか ───────
     section("7. 検証: jp-edge と jp-replica のSQL集計が一致する");
 
     // jp-edge のデータを直接確認 (db は閉じているのでイベントから再集計)
     const totalExpectedReadings = jpReadings.length + offlineReadings.length + 1; // +1 post-snapshot
-    const replicaTotalEvents = (
-      await replica.node.store.listEventsAfterCursors("tenant:jp", new Map())
-    ).length;
+    const replicaTotalEvents = (await replica.node.listEventsAfterCursors("tenant:jp", new Map()))
+      .length;
     console.log(`\n  jp-edge 総書き込み: ${totalExpectedReadings} 件`);
     console.log(
       `  jp-replica 総イベント: ${replicaTotalEvents} 件  (expected: ${totalExpectedReadings})`,
@@ -336,7 +331,7 @@ async function run(): Promise<void> {
     );
     console.log(`  jp-replica 総行数: ${finalRows.rows[0]?.count}`);
 
-    await printAggregation(replica.node.db, "sensor_readings_jp", "jp-replica (final)");
+    await printAggregation(replica.node, "sensor_readings_jp", "jp-replica (final)");
 
     const ok = replicaTotalEvents === totalExpectedReadings;
     console.log(`\n  ${"═".repeat(60)}`);

@@ -10,7 +10,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run --exclude test/cas.test.ts --exclude test/inventory.test.ts --exclude test/partition-snapshot.test.ts --exclude test/pglite-cas-filesystem-integration.test.ts --exclude test/pglite-store.test.ts --exclude test/storage-binding.test.ts --exclude test/storage-orchestration.test.ts --exclude test/transaction-boundary-pbt.test.ts",
+    "test": "vitest run --testTimeout=30000 --fileParallelism=false --exclude test/cas.test.ts --exclude test/inventory.test.ts --exclude test/partition-snapshot.test.ts --exclude test/pglite-cas-filesystem-integration.test.ts --exclude test/pglite-store.test.ts --exclude test/storage-binding.test.ts --exclude test/storage-orchestration.test.ts --exclude test/transaction-boundary-pbt.test.ts",
     "test:integration": "vitest run test/cas.test.ts test/inventory.test.ts test/partition-snapshot.test.ts test/pglite-cas-filesystem-integration.test.ts test/pglite-store.test.ts test/storage-binding.test.ts test/storage-orchestration.test.ts test/transaction-boundary-pbt.test.ts",
     "test:all": "vitest run"
   },

@@ -1,8 +1,10 @@
 import { PGlite, type PGliteOptions } from "@electric-sql/pglite";
 import {
-  InMemoryPartitionStore,
+  SqlPartitionStore,
   SyncNode,
   assertValidPartitionId,
+  type EventCursor,
+  type EventProjection,
   type EventEnvelope,
   type EventId,
   type LocalEventInput,
@@ -14,9 +16,11 @@ import {
 import { BrowserSha256BlobStore } from "./blob-store.js";
 import {
   restoreBrowserFilesystemFromCas,
+  snapshotBrowserFilesystemToCas,
   transferMissingBrowserCasBlocks,
   type BrowserCasBlock,
   type BrowserCasBlockStore,
+  type BrowserCasChunking,
   type BrowserCasManifest,
 } from "./cas.js";
 import { BrowserPGliteCasFilesystem } from "./pglite-cas-filesystem.js";
@@ -71,19 +75,36 @@ export type DistributedBrowserPGliteRestoreOptions = {
   autoStart?: boolean;
 };
 
+export type DistributedBrowserPGliteSnapshotOptions = {
+  casStore: BrowserCasBlockStore;
+  snapshotId?: string;
+  parentSnapshotIds?: string[];
+  chunkSize?: number;
+  chunking?: BrowserCasChunking;
+};
+
 export type DistributedBrowserPGliteRestoreResult = {
   handle: DistributedBrowserPGlite;
   transferredBlocks: BrowserCasBlock[];
+};
+
+export type DistributedBrowserPGliteInternals = {
+  readonly db: PGlite;
+  readonly fs: BrowserPGliteCasFilesystem;
+  readonly blobs: BrowserSha256BlobStore;
+  readonly eventStore: SqlPartitionStore;
+  readonly store: PartitionStore;
+  readonly syncNode: SyncNode;
 };
 
 type OpenPartition = Required<Pick<DistributedBrowserPGlitePartitionOptions, "schemaVersion">> &
   Omit<DistributedBrowserPGlitePartitionOptions, "schemaVersion">;
 
 export class DistributedBrowserPGlite {
-  readonly blobs: BrowserSha256BlobStore;
-  readonly fs: BrowserPGliteCasFilesystem;
-  readonly db: PGlite;
-  private readonly baseStore: InMemoryPartitionStore;
+  private readonly blobs: BrowserSha256BlobStore;
+  private readonly fs: BrowserPGliteCasFilesystem;
+  private readonly db: PGlite;
+  private readonly baseStore: SqlPartitionStore;
   private readonly projectedStore: ProjectingBrowserStore;
   private readonly syncNode: SyncNode;
   private online = false;
@@ -98,7 +119,7 @@ export class DistributedBrowserPGlite {
     this.db = db;
     this.fs = fs;
     this.blobs = blobs;
-    this.baseStore = new InMemoryPartitionStore(options.nodeId);
+    this.baseStore = new SqlPartitionStore(options.nodeId, this.db);
     this.projectedStore = new ProjectingBrowserStore(
       this.baseStore,
       this.db,
@@ -135,18 +156,22 @@ export class DistributedBrowserPGlite {
     await options.migrate?.(db);
 
     const handle = new DistributedBrowserPGlite(options, db, fs, blobs);
+    await handle.baseStore.migrate();
     if (options.autoStart ?? true) {
       await handle.start();
     }
     return handle;
   }
 
-  get store(): PartitionStore {
-    return this.projectedStore;
-  }
-
-  get eventStore(): InMemoryPartitionStore {
-    return this.baseStore;
+  get internals(): DistributedBrowserPGliteInternals {
+    return {
+      db: this.db,
+      fs: this.fs,
+      blobs: this.blobs,
+      eventStore: this.baseStore,
+      store: this.projectedStore,
+      syncNode: this.syncNode,
+    };
   }
 
   get isOnline(): boolean {
@@ -190,6 +215,18 @@ export class DistributedBrowserPGlite {
     await this.db.close();
   }
 
+  createSnapshot(options: DistributedBrowserPGliteSnapshotOptions): Promise<BrowserCasManifest> {
+    return snapshotBrowserFilesystemToCas({
+      fs: this.fs.asSnapshotDataFilesystem(),
+      casStore: options.casStore,
+      snapshotId: options.snapshotId,
+      parentSnapshotIds: options.parentSnapshotIds,
+      chunkSize: options.chunkSize,
+      chunking: options.chunking,
+    });
+  }
+
+  /** @deprecated Use restoreSnapshot. */
   async restoreFromCasSnapshot(
     options: DistributedBrowserPGliteRestoreOptions,
   ): Promise<DistributedBrowserPGliteRestoreResult> {
@@ -215,6 +252,12 @@ export class DistributedBrowserPGlite {
     return { handle, transferredBlocks };
   }
 
+  restoreSnapshot(
+    options: DistributedBrowserPGliteRestoreOptions,
+  ): Promise<DistributedBrowserPGliteRestoreResult> {
+    return this.restoreFromCasSnapshot(options);
+  }
+
   async subscribe(options: DistributedBrowserPGlitePartitionOptions): Promise<void> {
     const partition = { ...options, schemaVersion: options.schemaVersion ?? 1 };
     this.partitions.set(partition.id, partition);
@@ -231,9 +274,7 @@ export class DistributedBrowserPGlite {
     payload?: TPayload,
   ): Promise<EventEnvelope<TPayload>> {
     const { input, projection } = this.localEventInput(partitionIdOrOptions, payload);
-    const event = await this.syncNode.write(input);
-    await projection?.(this.db, event);
-    return event;
+    return this.syncNode.writeEvent(input, projection);
   }
 
   async writeLocal<TPayload>(
@@ -241,9 +282,7 @@ export class DistributedBrowserPGlite {
     payload?: TPayload,
   ): Promise<EventEnvelope<TPayload>> {
     const { input, projection } = this.localEventInput(partitionIdOrOptions, payload);
-    const event = await this.baseStore.appendLocal(input);
-    await projection?.(this.db, event);
-    return event;
+    return this.baseStore.appendLocalEventTransaction(input, projection);
   }
 
   catchUpFrom(peerNodeId: NodeId, partitionId: PartitionId): Promise<number> {
@@ -254,12 +293,27 @@ export class DistributedBrowserPGlite {
     return this.syncNode.highWatermark(partitionId);
   }
 
+  listEventsAfter(partitionId: PartitionId, cursor?: EventCursor): Promise<EventEnvelope[]> {
+    return this.baseStore.listEventsAfter(partitionId, cursor);
+  }
+
+  listEventsAfterCursors(
+    partitionId: PartitionId,
+    cursors: ReadonlyMap<NodeId, EventId>,
+  ): Promise<EventEnvelope[]> {
+    return this.baseStore.listEventsAfterCursors(partitionId, cursors);
+  }
+
+  applyEvent<TPayload>(event: EventEnvelope<TPayload>): Promise<boolean> {
+    return this.projectedStore.applyRemoteEventTransaction(event);
+  }
+
   private localEventInput<TPayload>(
     partitionIdOrOptions: PartitionId | DistributedBrowserPGliteWriteOptions<TPayload>,
     payload?: TPayload,
   ): {
     input: LocalEventInput<TPayload>;
-    projection: DistributedBrowserPGliteProjection<TPayload> | undefined;
+    projection: EventProjection<TPayload> | undefined;
   } {
     const input =
       typeof partitionIdOrOptions === "string"
@@ -282,16 +336,22 @@ export class DistributedBrowserPGlite {
       typeof partitionIdOrOptions === "string" ? undefined : partitionIdOrOptions.project;
     return {
       input,
-      projection: writeProjection ?? configuredProjection,
+      projection: this.wrapProjection(writeProjection ?? configuredProjection),
     };
+  }
+
+  private wrapProjection<TPayload>(
+    projection: DistributedBrowserPGliteProjection<TPayload> | undefined,
+  ): EventProjection<TPayload> | undefined {
+    return projection ? (event) => projection(this.db, event) : undefined;
   }
 }
 
 class ProjectingBrowserStore implements PartitionStore {
-  private readonly projections = new Map<PartitionId, DistributedBrowserPGliteProjection>();
+  private readonly projections = new Map<PartitionId, EventProjection>();
 
   constructor(
-    private readonly inner: InMemoryPartitionStore,
+    private readonly inner: SqlPartitionStore,
     private readonly db: PGlite,
     private readonly onAppliedRemote?: (event: EventEnvelope) => Promise<void> | void,
   ) {}
@@ -301,7 +361,8 @@ class ProjectingBrowserStore implements PartitionStore {
     projection: DistributedBrowserPGliteProjection<TPayload> | undefined,
   ): void {
     if (projection) {
-      this.projections.set(partitionId, projection as DistributedBrowserPGliteProjection);
+      this.projections.set(partitionId, ((event) =>
+        projection(this.db, event as EventEnvelope<TPayload>)) as EventProjection);
     } else {
       this.projections.delete(partitionId);
     }
@@ -316,23 +377,38 @@ class ProjectingBrowserStore implements PartitionStore {
   }
 
   appendLocal<TPayload>(input: LocalEventInput<TPayload>) {
-    return this.inner.appendLocal(input);
+    return this.inner.appendLocalEventTransaction(input, this.projections.get(input.partitionId));
+  }
+
+  appendLocalEventTransaction<TPayload>(
+    input: LocalEventInput<TPayload>,
+    project?: EventProjection<TPayload>,
+  ) {
+    return this.inner.appendLocalEventTransaction(
+      input,
+      project ?? this.projections.get(input.partitionId),
+    );
   }
 
   async applyRemote(event: EventEnvelope): Promise<boolean> {
-    const applied = await this.inner.applyRemote(event);
-    if (applied) {
-      await this.projections.get(event.partitionId)?.(this.db, event);
-      await this.onAppliedRemote?.(event);
-    }
-    return applied;
+    return this.applyRemoteEventTransaction(event);
   }
 
-  listEventsAfter(...args: Parameters<InMemoryPartitionStore["listEventsAfter"]>) {
+  async applyRemoteEventTransaction<TPayload>(
+    event: EventEnvelope<TPayload>,
+    project?: EventProjection<TPayload>,
+  ) {
+    return this.inner.applyRemoteEventTransaction(event, async (appliedEvent) => {
+      await (project ?? this.projections.get(appliedEvent.partitionId))?.(appliedEvent);
+      await this.onAppliedRemote?.(appliedEvent);
+    });
+  }
+
+  listEventsAfter(...args: Parameters<SqlPartitionStore["listEventsAfter"]>) {
     return this.inner.listEventsAfter(...args);
   }
 
-  listEventsAfterCursors(...args: Parameters<InMemoryPartitionStore["listEventsAfterCursors"]>) {
+  listEventsAfterCursors(...args: Parameters<SqlPartitionStore["listEventsAfterCursors"]>) {
     return this.inner.listEventsAfterCursors(...args);
   }
 

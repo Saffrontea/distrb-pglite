@@ -1,6 +1,7 @@
 export { DistributedPGlite } from "./distributed-pglite.js";
 export type {
   DistributedPGliteOpenOptions,
+  DistributedPGliteInternals,
   DistributedPGlitePartitionOptions,
   DistributedPGliteProjection,
   DistributedPGliteTransportOptions,

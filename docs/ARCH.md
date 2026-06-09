@@ -33,6 +33,12 @@ graph TD
 
 ## コアコンポーネント
 
+Application code should normally enter through `DistributedPGlite` or
+`DistributedBrowserPGlite`. These facades expose the product contract:
+local SQL (`query` / `exec`), partition writes, catchup, event inspection, and
+snapshot operations. Lower-level building blocks remain available for tests and
+research, but facade instances expose them only through `internals`.
+
 ```mermaid
 classDiagram
   class SyncNode {

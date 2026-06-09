@@ -4,7 +4,9 @@ import {
   SyncNode,
   assertValidPartitionId,
   type EventEnvelope,
+  type EventCursor,
   type EventProjection,
+  type EventId,
   type LocalEventInput,
   type NodeId,
   type PartitionId,
@@ -85,6 +87,13 @@ export type DistributedPGliteProjection<TPayload = any> = (
   event: EventEnvelope<TPayload>,
 ) => Promise<void> | void;
 
+export type DistributedPGliteInternals = {
+  readonly db: PGlite;
+  readonly eventStore: PGlitePartitionStore;
+  readonly store: PartitionStore;
+  readonly syncNode: SyncNode;
+};
+
 type OpenPartition = Required<Pick<DistributedPGlitePartitionOptions, "schemaVersion">> &
   Omit<DistributedPGlitePartitionOptions, "schemaVersion">;
 
@@ -118,20 +127,13 @@ export class DistributedPGlite {
     return handle;
   }
 
-  get db(): PGlite {
-    return this.dbInstance;
-  }
-
-  get eventStore(): PGlitePartitionStore {
-    return this.storeInstance;
-  }
-
-  get store(): PartitionStore {
-    return this.projectedStore;
-  }
-
-  get node(): SyncNode {
-    return this.syncNode;
+  get internals(): DistributedPGliteInternals {
+    return {
+      db: this.dbInstance,
+      eventStore: this.storeInstance,
+      store: this.projectedStore,
+      syncNode: this.syncNode,
+    };
   }
 
   get isOnline(): boolean {
@@ -245,6 +247,21 @@ export class DistributedPGlite {
 
   highWatermark(partitionId: PartitionId) {
     return this.syncNode.highWatermark(partitionId);
+  }
+
+  listEventsAfter(partitionId: PartitionId, cursor?: EventCursor): Promise<EventEnvelope[]> {
+    return this.storeInstance.listEventsAfter(partitionId, cursor);
+  }
+
+  listEventsAfterCursors(
+    partitionId: PartitionId,
+    cursors: ReadonlyMap<NodeId, EventId>,
+  ): Promise<EventEnvelope[]> {
+    return this.storeInstance.listEventsAfterCursors(partitionId, cursors);
+  }
+
+  applyEvent<TPayload>(event: EventEnvelope<TPayload>): Promise<boolean> {
+    return this.projectedStore.applyRemoteEventTransaction(event);
   }
 
   async createSnapshot(

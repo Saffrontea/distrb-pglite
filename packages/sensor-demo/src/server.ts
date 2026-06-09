@@ -202,7 +202,7 @@ export class EdgeNodeServer {
   // ─── handlers ─────────────────────────────────────────────────
 
   private async getStatus() {
-    const events = await this.db.store.listEventsAfterCursors(this.config.partitionId, new Map());
+    const events = await this.db.listEventsAfterCursors(this.config.partitionId, new Map());
     return {
       nodeId: this.config.nodeId,
       online: this.db.isOnline,
@@ -261,7 +261,7 @@ export class EdgeNodeServer {
 
   private async getEvents(params: URLSearchParams) {
     const limit = Number(params.get("limit") ?? "50");
-    const events = await this.db.store.listEventsAfter(this.config.partitionId);
+    const events = await this.db.listEventsAfter(this.config.partitionId);
     return { events: events.slice(-limit), count: events.length };
   }
 

@@ -1,10 +1,6 @@
 import { MemoryTransport } from "@distrb-pglite/core";
 import { describe, expect, it } from "vitest";
-import {
-  DistributedBrowserPGlite,
-  snapshotBrowserFilesystemToCas,
-  type BrowserCasBlockStore,
-} from "../src/index.js";
+import { DistributedBrowserPGlite, type BrowserCasBlockStore } from "../src/index.js";
 
 const SCHEMA = `
   CREATE TABLE IF NOT EXISTS readings (
@@ -93,13 +89,12 @@ describe("DistributedBrowserPGlite", () => {
         sensorId: "tokyo-temperature",
         reading: 21,
       });
-      const manifest = await snapshotBrowserFilesystemToCas({
-        fs: nodeA.fs.asSnapshotDataFilesystem(),
+      const manifest = await nodeA.createSnapshot({
         casStore: sourceCasStore,
         snapshotId: "snapshot-browser-a",
       });
 
-      const restored = await nodeB.restoreFromCasSnapshot({
+      const restored = await nodeB.restoreSnapshot({
         manifest,
         sourceCasStore,
         targetCasStore,
@@ -114,10 +109,65 @@ describe("DistributedBrowserPGlite", () => {
           source_node: "browser-a",
         },
       ]);
+      const second = await nodeA.write<ReadingPayload>("tenant:jp", {
+        sensorId: "tokyo-humidity",
+        reading: 55,
+      });
+      await nodeB.start();
+      await expect(nodeB.catchUpFrom("browser-a", "tenant:jp")).resolves.toBe(1);
+      await expect(readings(nodeB)).resolves.toEqual([
+        {
+          event_id: expect.any(String),
+          reading: 21,
+          sensor_id: "tokyo-temperature",
+          source_node: "browser-a",
+        },
+        {
+          event_id: second.eventId,
+          reading: 55,
+          sensor_id: "tokyo-humidity",
+          source_node: "browser-a",
+        },
+      ]);
       expect(restored.transferredBlocks.length).toBeGreaterThan(0);
     } finally {
       await nodeA.close();
       await nodeB.close();
+    }
+  });
+
+  it("rolls back browser events when local SQL projection fails", async () => {
+    const transport = new MemoryTransport();
+    const node = await openNode("browser-a", transport);
+
+    try {
+      await expect(
+        node.write<ReadingPayload>({
+          partitionId: "tenant:jp",
+          payload: { sensorId: "tokyo-temperature", reading: 21 },
+          project: async () => {
+            throw new Error("projection failed");
+          },
+        }),
+      ).rejects.toThrow("projection failed");
+
+      await expect(readings(node)).resolves.toEqual([]);
+      await expect(node.highWatermark("tenant:jp")).resolves.toEqual(new Map());
+
+      const event = await node.write<ReadingPayload>("tenant:jp", {
+        sensorId: "tokyo-temperature",
+        reading: 22,
+      });
+      await expect(readings(node)).resolves.toEqual([
+        {
+          event_id: event.eventId,
+          reading: 22,
+          sensor_id: "tokyo-temperature",
+          source_node: "browser-a",
+        },
+      ]);
+    } finally {
+      await node.close();
     }
   });
 });

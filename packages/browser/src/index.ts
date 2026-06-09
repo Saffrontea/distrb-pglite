@@ -1,10 +1,14 @@
 export { DistributedBrowserPGlite } from "./distributed-pglite.js";
+export { SqlPartitionStore } from "@distrb-pglite/core";
+export type { SqlClient } from "@distrb-pglite/core";
 export type {
   DistributedBrowserPGliteOpenOptions,
+  DistributedBrowserPGliteInternals,
   DistributedBrowserPGlitePartitionOptions,
   DistributedBrowserPGliteProjection,
   DistributedBrowserPGliteRestoreOptions,
   DistributedBrowserPGliteRestoreResult,
+  DistributedBrowserPGliteSnapshotOptions,
   DistributedBrowserPGliteTransportOptions,
   DistributedBrowserPGliteWriteOptions,
 } from "./distributed-pglite.js";

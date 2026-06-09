@@ -9,7 +9,7 @@
     "lint:fix": "oxlint --fix",
     "fmt": "oxfmt",
     "fmt:check": "oxfmt --check",
-    "test": "pnpm -r test",
+    "test": "pnpm -r --workspace-concurrency=1 test",
     "test:integration": "pnpm --filter @distrb-pglite/node test:integration",
     "test:all": "pnpm test && pnpm test:integration",
     "playground": "pnpm --filter @distrb-pglite/sensor-demo playground",

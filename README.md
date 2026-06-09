@@ -168,6 +168,10 @@ local SQL write
 ```
 
 Node では低レベル部品を直接組み立てず、`DistributedPGlite` から始められます。
+安定した入口は `query` / `exec` / `subscribe` / `write` / `writeLocal` /
+`catchUpFrom` / `createSnapshot` / `pullSnapshot` です。PGlite 実体、event store、
+`SyncNode` などの低レベル部品は facade の直下には出さず、dogfooding や検証用の
+`internals` に隔離しています。
 
 ```ts
 import { DistributedPGlite } from "@distrb-pglite/node";

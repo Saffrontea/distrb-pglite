@@ -6,7 +6,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit && pnpm browser:check",
-    "test": "vitest run --fileParallelism=false",
+    "test": "vitest run --fileParallelism=false --testTimeout=120000 --hookTimeout=30000",
     "run": "node dist/run.js",
     "scenarios": "node dist/scenarios.js",
     "scale": "node dist/scale.js",

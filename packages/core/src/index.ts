@@ -36,6 +36,8 @@ export {
   validateEventCursorEntries,
 } from "./store.js";
 export type { EventProjection, EventTransactionalPartitionStore, PartitionStore } from "./store.js";
+export { SqlPartitionStore } from "./sql-partition-store.js";
+export type { SqlClient } from "./sql-partition-store.js";
 export { MemoryTransport } from "./memory-transport.js";
 export type { Transport, TransportConnection, TransportHandlers } from "./transport.js";
 export { SyncNode } from "./sync-node.js";
