@@ -1,3 +1,13 @@
+export { DistributedBrowserPGlite } from "./distributed-pglite.js";
+export type {
+  DistributedBrowserPGliteOpenOptions,
+  DistributedBrowserPGlitePartitionOptions,
+  DistributedBrowserPGliteProjection,
+  DistributedBrowserPGliteRestoreOptions,
+  DistributedBrowserPGliteRestoreResult,
+  DistributedBrowserPGliteTransportOptions,
+  DistributedBrowserPGliteWriteOptions,
+} from "./distributed-pglite.js";
 export { BrowserSha256BlobStore, sha256 } from "./blob-store.js";
 export {
   browserManifestFilesEqualInventory,
