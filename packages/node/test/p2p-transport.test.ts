@@ -869,8 +869,9 @@ describe("P2PWebSocketTransport (P2P 固有)", () => {
     const socket = await rawPeer(`ws://127.0.0.1:${port}`);
 
     try {
-      await expect(withTimeout(connection.close(), "p2p close with pre-hello peer", 1_000)).resolves
-        .toBeUndefined();
+      await expect(
+        withTimeout(connection.close(), "p2p close with pre-hello peer", 1_000),
+      ).resolves.toBeUndefined();
       await expect(waitForSocketClose(socket)).resolves.toBeUndefined();
     } finally {
       socket.terminate();
@@ -891,8 +892,9 @@ describe("P2PWebSocketTransport (P2P 固有)", () => {
     }).connect("node-a", { onEvent: () => {} });
 
     try {
-      await expect(withTimeout(connection.close(), "p2p close with failing seed", 1_000)).resolves
-        .toBeUndefined();
+      await expect(
+        withTimeout(connection.close(), "p2p close with failing seed", 1_000),
+      ).resolves.toBeUndefined();
       await new Promise((resolve) => setTimeout(resolve, 50));
       expect(errorSpy).not.toHaveBeenCalled();
     } finally {
@@ -916,10 +918,12 @@ describe("P2PWebSocketTransport (P2P 固有)", () => {
 
     const seedSocket = await accepted;
     try {
-      await expect(withTimeout(connection.close(), "p2p close with pre-hello seed", 1_000)).resolves
-        .toBeUndefined();
-      await expect(withTimeout(waitForSocketClose(seedSocket), "pre-hello seed socket close", 1_000))
-        .resolves.toBeUndefined();
+      await expect(
+        withTimeout(connection.close(), "p2p close with pre-hello seed", 1_000),
+      ).resolves.toBeUndefined();
+      await expect(
+        withTimeout(waitForSocketClose(seedSocket), "pre-hello seed socket close", 1_000),
+      ).resolves.toBeUndefined();
     } finally {
       seedSocket.terminate();
       await new Promise<void>((resolve, reject) => {
@@ -973,8 +977,9 @@ describe("P2PWebSocketTransport (P2P 固有)", () => {
         );
       }
 
-      await expect(withTimeout(oldClose, "old duplicate peer close", 1_000)).resolves
-        .toBeUndefined();
+      await expect(
+        withTimeout(oldClose, "old duplicate peer close", 1_000),
+      ).resolves.toBeUndefined();
       await new Promise((resolve) => setTimeout(resolve, 100));
       expect(onEvent).not.toHaveBeenCalled();
     } finally {

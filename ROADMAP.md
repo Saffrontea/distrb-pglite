@@ -47,16 +47,14 @@ Replication uses source-node-local event streams. Event IDs are UUID v7, but cor
 
 - Add a WebSocket transport behind the same core `Transport` interface.
 - Keep wire messages transport-neutral.
-- Add Node CLI commands for hub and node processes.
 - Acceptance: WebSocket transport passes the same behavioral sync scenarios as memory transport.
 
 ## Phase 6: Demo And Docs
 
 - Add a tenant-scoped demo schema or sensor-reading demo.
 - Demonstrate local write, local read, partition subscription, offline recovery, and WebSocket sync.
-- Provide Node CLI commands for write, list, and catch-up.
 - Link the MVP behavior back to `distributed_edge_db.md`.
-- Acceptance: `distrb-pglite demo` and the Phase 6 integration test exercise the same PGlite + WebSocket scenario.
+- Acceptance: integration tests exercise the PGlite + WebSocket scenario.
 
 ## Phase 7: PGlite File Boundary And Snapshot Inventory
 

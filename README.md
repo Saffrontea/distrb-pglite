@@ -319,6 +319,5 @@ mise exec -- pnpm playground
 
 - [distributed_edge_db.md](./distributed_edge_db.md)
 - [ROADMAP.md](./ROADMAP.md)
-- [docs/demo-node.md](./docs/demo-node.md)
 - [docs/adr/0001-eventual-consistency.md](./docs/adr/0001-eventual-consistency.md)
 - [docs/adr/0005-storage-layer-escalation.md](./docs/adr/0005-storage-layer-escalation.md)

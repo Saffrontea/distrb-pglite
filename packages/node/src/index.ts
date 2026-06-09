@@ -71,8 +71,6 @@ export type {
 } from "./partition-snapshot.js";
 export { PGliteCasFilesystem } from "./pglite-cas-filesystem.js";
 export { NodeFileBlobStore } from "./node-blob-store.js";
-export { runNodeDemo } from "./demo.js";
-export type { NodeDemoSummary } from "./demo.js";
 export {
   createManagedPartitionCasSnapshot,
   pullPartitionCasSnapshot,

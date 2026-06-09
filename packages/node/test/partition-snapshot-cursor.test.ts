@@ -161,9 +161,9 @@ describe("partition snapshot cursors", () => {
           replayEventsAfterPartitionSnapshot({ sourceStore, targetStore, snapshot }),
         ).resolves.toBe(0);
         await expect(
-          targetStore.listEventsAfterCursors(partitionId, new Map()).then((events) =>
-            events.map(eventKey),
-          ),
+          targetStore
+            .listEventsAfterCursors(partitionId, new Map())
+            .then((events) => events.map(eventKey)),
         ).resolves.toEqual(expectedDeltaKeys.sort());
         await expect(
           targetStore.listEventsAfterCursors("tenant:us", new Map()),

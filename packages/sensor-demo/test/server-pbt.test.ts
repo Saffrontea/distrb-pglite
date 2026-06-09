@@ -547,9 +547,7 @@ describe("PBT: sensor-demo EdgeNodeServer", () => {
       ).resolves.toEqual({ applied: 1 });
 
       const events = await get<{ events: EventRow[] }>(`${target.baseUrl}/events?limit=1000`);
-      const readings = await get<{ rows: ReadingRow[] }>(
-        `${target.baseUrl}/readings?limit=1000`,
-      );
+      const readings = await get<{ rows: ReadingRow[] }>(`${target.baseUrl}/readings?limit=1000`);
 
       expect(sourceEventKey(events.events)).toEqual([
         `${sourceA.nodeId}/${eventId}`,
@@ -783,7 +781,9 @@ describe("PBT: sensor-demo EdgeNodeServer", () => {
     return {
       servers: [sourceA, sourceB, target],
       cleanup: async () => {
-        await Promise.all([sourceA, sourceB, target].map((server) => server.close().catch(() => {})));
+        await Promise.all(
+          [sourceA, sourceB, target].map((server) => server.close().catch(() => {})),
+        );
         await hub.close().catch(() => {});
         await rm(root, { recursive: true, force: true });
       },

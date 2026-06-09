@@ -41,12 +41,9 @@ describe("VectorNode", () => {
   it("rolls back remote vector catchup events when SQL projection fails so retry can apply them", async () => {
     const root = await makeTempDir("vector-remote-projection");
     const transport = new MemoryTransport();
-    const source = await VectorNode.create(
-      "vector-node-source",
-      join(root, "source"),
-      transport,
-      ["jp"],
-    );
+    const source = await VectorNode.create("vector-node-source", join(root, "source"), transport, [
+      "jp",
+    ]);
     nodes.push(source);
 
     await source.writeProfile({
@@ -56,12 +53,9 @@ describe("VectorNode", () => {
       embedding: [0, 1, 0],
     });
 
-    const target = await VectorNode.create(
-      "vector-node-target",
-      join(root, "target"),
-      transport,
-      ["jp"],
-    );
+    const target = await VectorNode.create("vector-node-target", join(root, "target"), transport, [
+      "jp",
+    ]);
     nodes.push(target);
     await target.db.exec(
       "ALTER TABLE sensor_profiles_jp ADD CONSTRAINT reject_remote_vector CHECK (label <> 'reject-remote')",
