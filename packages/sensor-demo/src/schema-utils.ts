@@ -1,13 +1,15 @@
-import type { PGlite } from "@electric-sql/pglite";
-
 export type ConstraintRow = {
   constraint_name: string;
   constraint_type: "p" | "u";
   columns: string[];
 };
 
+type QueryClient = {
+  query<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<{ rows: T[] }>;
+};
+
 export async function tableConstraints(
-  db: PGlite,
+  db: QueryClient,
   tableName: string,
 ): Promise<ConstraintRow[]> {
   const result = await db.query<ConstraintRow>(
@@ -30,8 +32,7 @@ export async function tableConstraints(
 
 export function sameColumns(actual: readonly string[], expected: readonly string[]): boolean {
   return (
-    actual.length === expected.length &&
-    actual.every((column, index) => column === expected[index])
+    actual.length === expected.length && actual.every((column, index) => column === expected[index])
   );
 }
 

@@ -9,24 +9,9 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { StorageSnapshotScope } from "@distrb-pglite/core";
-import {
-  MemoryTransport,
-  SyncNode,
-  type EventEnvelope,
-  type PartitionStore,
-} from "@distrb-pglite/core";
-import {
-  bindStoragePartition,
-  createManagedPartitionCasSnapshot,
-  createStorageBindingGroup,
-  listStorageSnapshotCatalogEntries,
-  loadStoragePartitionBinding,
-  PGlitePartitionStore,
-  pullPartitionCasSnapshot,
-  type CasManifest,
-} from "@distrb-pglite/node";
-import { PGlite } from "@electric-sql/pglite";
+import { MemoryTransport, type EventEnvelope } from "@distrb-pglite/core";
+import { DistributedPGlite, type PGliteClient } from "@distrb-pglite/node";
+import type { PGlite } from "@electric-sql/pglite";
 import { vector } from "@electric-sql/pglite/vector";
 import { quoteIdentifier, sameColumns, tableConstraints } from "./schema-utils.js";
 
@@ -80,94 +65,125 @@ type SearchRow = {
 type ExplainRow = {
   "QUERY PLAN": string;
 };
-class VectorPartitionStore implements PartitionStore {
-  constructor(
-    readonly inner: PGlitePartitionStore,
-    private readonly db: PGlite,
-  ) {}
 
-  registerPartition(id: string) {
-    return this.inner.registerPartition(id);
-  }
-  hasPartition(id: string) {
-    return this.inner.hasPartition(id);
-  }
-  appendLocal<T>(input: Parameters<PGlitePartitionStore["appendLocal"]>[0]) {
-    return this.inner.appendLocalEventTransaction<T>(input as never, async (event) => {
-      await upsertVectorPayload(this.db, event);
-    });
-  }
-  listEventsAfter(...args: Parameters<PGlitePartitionStore["listEventsAfter"]>) {
-    return this.inner.listEventsAfter(...args);
-  }
-  listEventsAfterCursors(...args: Parameters<PGlitePartitionStore["listEventsAfterCursors"]>) {
-    return this.inner.listEventsAfterCursors(...args);
-  }
-  getHighWatermark(id: string) {
-    return this.inner.getHighWatermark(id);
-  }
-  createSnapshotMetadata(id: string) {
-    return this.inner.createSnapshotMetadata(id);
-  }
-
-  async applyRemote(event: EventEnvelope): Promise<boolean> {
-    return await this.inner.applyRemoteEventTransaction(event, async (appliedEvent) => {
-      await upsertVectorPayload(this.db, appliedEvent);
-    });
-  }
-}
+type VectorSnapshotOptions = Parameters<DistributedPGlite["createSnapshot"]>[1] & {
+  casDir?: string;
+};
 
 export class VectorNode {
   private constructor(
     readonly nodeId: string,
     readonly dataDir: string,
-    readonly db: PGlite,
-    readonly store: VectorPartitionStore,
-    readonly syncNode: SyncNode,
+    private readonly handle: DistributedPGlite,
   ) {}
+
+  get db(): PGlite {
+    return this.handle.db;
+  }
+
+  get store() {
+    return this.handle.store;
+  }
 
   static async create(
     nodeId: string,
     dataDir: string,
     transport: MemoryTransport,
     tenants: readonly TenantId[],
-    snapshotScope: StorageSnapshotScope = "data-only",
+    snapshotScope: "catalog-and-data" | "data-only" = "data-only",
+    casDir?: string,
   ): Promise<VectorNode> {
-    const db = new PGlite(dataDir, {
-      extensions: { vector },
+    const handle = await DistributedPGlite.open({
+      nodeId,
+      dataDir,
+      casDir,
+      pgliteOptions: { extensions: { vector } },
       relaxedDurability: false,
+      schema: SCHEMA,
+      migrate: async (db) => {
+        await migrateVectorEventIdentity(db, tenants);
+        await createTenantIvfIndexes(db, tenants);
+      },
+      transport,
+      partitions: tenants.map((tenantId) => ({
+        id: partitionForTenant(tenantId),
+        schemaVersion: SCHEMA_VERSION,
+        project: upsertVectorPayload,
+        storage: {
+          groupId: VECTOR_GROUP_ID,
+          rootRelation: "vector_groups",
+          relations: [tableForTenant(tenantId)],
+          snapshotScope,
+        },
+      })),
     });
-    await db.exec(SCHEMA);
-    await migrateVectorEventIdentity(db, tenants);
-    await createTenantIvfIndexes(db, tenants);
 
-    const inner = new PGlitePartitionStore(nodeId, db);
-    await inner.migrate();
-    const store = new VectorPartitionStore(inner, db);
-    await setupStorageBindings(db, tenants, snapshotScope);
-    const syncNode = new SyncNode(nodeId, store, transport);
-    await syncNode.start();
-    for (const tenantId of tenants) {
-      await syncNode.subscribe(partitionForTenant(tenantId));
-    }
-
-    return new VectorNode(nodeId, dataDir, db, store, syncNode);
+    return new VectorNode(nodeId, dataDir, handle);
   }
 
   async writeProfile(payload: VectorPayload): Promise<void> {
-    await this.syncNode.write<VectorPayload>({
+    await this.handle.write<VectorPayload>({
       partitionId: partitionForTenant(payload.tenantId),
-      schemaVersion: SCHEMA_VERSION,
       payload,
     });
   }
 
   async subscribeTenant(tenantId: TenantId): Promise<void> {
-    await this.syncNode.subscribe(partitionForTenant(tenantId));
+    await this.handle.subscribe({
+      id: partitionForTenant(tenantId),
+      schemaVersion: SCHEMA_VERSION,
+      project: upsertVectorPayload,
+      storage: {
+        groupId: VECTOR_GROUP_ID,
+        rootRelation: "vector_groups",
+        relations: [tableForTenant(tenantId)],
+        snapshotScope: "data-only",
+      },
+    });
+  }
+
+  async setTenantSnapshotScope(
+    tenantId: TenantId,
+    snapshotScope: "catalog-and-data" | "data-only",
+  ): Promise<void> {
+    await this.handle.subscribe({
+      id: partitionForTenant(tenantId),
+      schemaVersion: SCHEMA_VERSION,
+      project: upsertVectorPayload,
+      storage: {
+        groupId: VECTOR_GROUP_ID,
+        rootRelation: "vector_groups",
+        relations: [tableForTenant(tenantId)],
+        snapshotScope,
+      },
+    });
+  }
+
+  async createTenantSnapshot(tenantId: TenantId, options?: VectorSnapshotOptions) {
+    return this.handle.createSnapshot(
+      partitionForTenant(tenantId),
+      options as Parameters<DistributedPGlite["createSnapshot"]>[1],
+    );
+  }
+
+  async listTenantSnapshotEntries() {
+    return this.handle.listSnapshotEntries(VECTOR_GROUP_ID);
+  }
+
+  async loadSnapshotCatalog() {
+    return this.handle.loadCatalog(VECTOR_GROUP_ID);
   }
 
   async catchUpTenantFrom(tenantId: TenantId, peerNodeId: string): Promise<number> {
-    return this.syncNode.catchUpFrom(peerNodeId, partitionForTenant(tenantId));
+    return this.handle.catchUpFrom(peerNodeId, partitionForTenant(tenantId));
+  }
+
+  async stop(): Promise<void> {
+    await this.handle.stop();
+  }
+
+  async start(): Promise<void> {
+    await this.handle.start();
   }
 
   async createIvfIndex(tenantId: TenantId): Promise<void> {
@@ -227,8 +243,7 @@ export class VectorNode {
   }
 
   async close(): Promise<void> {
-    await this.syncNode.stop();
-    await this.db.close();
+    await this.handle.close();
   }
 }
 
@@ -237,7 +252,7 @@ export class VectorNode {
  * PGlitePartitionStore's event transaction. This keeps the event log and
  * tenant-local vector tables from diverging when SQL projection fails.
  */
-async function upsertVectorPayload(db: PGlite, event: EventEnvelope): Promise<void> {
+async function upsertVectorPayload(db: PGliteClient, event: EventEnvelope): Promise<void> {
   assertVectorPayload(event.payload);
   const payload = event.payload;
   if (event.partitionId !== partitionForTenant(payload.tenantId)) {
@@ -316,7 +331,10 @@ function ivfIndexName(tenantId: TenantId): string {
   return `${tableForTenant(tenantId)}_embedding_ivfflat_idx`;
 }
 
-async function createTenantIvfIndexes(db: PGlite, tenants: readonly TenantId[]): Promise<void> {
+async function createTenantIvfIndexes(
+  db: PGliteClient,
+  tenants: readonly TenantId[],
+): Promise<void> {
   for (const tenantId of tenants) {
     await db.exec(`
       CREATE INDEX IF NOT EXISTS ${ivfIndexName(tenantId)}
@@ -330,7 +348,7 @@ async function createTenantIvfIndexes(db: PGlite, tenants: readonly TenantId[]):
 }
 
 async function migrateVectorEventIdentity(
-  db: PGlite,
+  db: PGliteClient,
   tenants: readonly TenantId[],
 ): Promise<void> {
   for (const tenantId of tenants) {
@@ -350,38 +368,44 @@ async function migrateVectorEventIdentity(
         sameColumns(constraint.columns, ["source_node", "event_id"]),
     );
     if (!hasCompositeUnique) {
-      await db.exec(
-        `ALTER TABLE ${quoteIdentifier(tableName)} ADD UNIQUE (source_node, event_id)`,
-      );
+      await db.exec(`ALTER TABLE ${quoteIdentifier(tableName)} ADD UNIQUE (source_node, event_id)`);
     }
   }
 }
 
-async function setupStorageBindings(
-  db: PGlite,
-  tenants: readonly TenantId[],
-  snapshotScope: StorageSnapshotScope,
-): Promise<void> {
-  await createStorageBindingGroup({
-    db,
-    groupId: VECTOR_GROUP_ID,
-    rootRelation: "vector_groups",
-  });
-  for (const tenantId of tenants) {
-    await bindStoragePartition({
-      db,
-      groupId: VECTOR_GROUP_ID,
-      partitionId: partitionForTenant(tenantId),
-      relations: [tableForTenant(tenantId)],
-      snapshotScope,
-    });
-  }
-}
-
-async function openVectorDb(dataDir: string): Promise<PGlite> {
-  return new PGlite(dataDir, {
-    extensions: { vector },
+async function openVectorHandle(
+  dataDir: string,
+  options?: {
+    casDir?: string;
+    tenants?: readonly TenantId[];
+    snapshotScope?: "catalog-and-data" | "data-only";
+  },
+): Promise<DistributedPGlite> {
+  const tenants = options?.tenants ?? [];
+  return DistributedPGlite.open({
+    nodeId: "vector-restore-reader",
+    dataDir,
+    casDir: options?.casDir,
+    pgliteOptions: { extensions: { vector } },
     relaxedDurability: false,
+    schema: SCHEMA,
+    migrate: async (db) => {
+      await migrateVectorEventIdentity(db, TENANTS);
+      await createTenantIvfIndexes(db, TENANTS);
+    },
+    transport: new MemoryTransport(),
+    autoStart: false,
+    partitions: tenants.map((tenantId) => ({
+      id: partitionForTenant(tenantId),
+      schemaVersion: SCHEMA_VERSION,
+      project: upsertVectorPayload,
+      storage: {
+        groupId: VECTOR_GROUP_ID,
+        rootRelation: "vector_groups",
+        relations: [tableForTenant(tenantId)],
+        snapshotScope: options?.snapshotScope ?? "data-only",
+      },
+    })),
   });
 }
 
@@ -504,45 +528,24 @@ async function verifyDataOnlySnapshotDistribution(
 
   try {
     await seedBootstrapProfiles(source);
-    await createManagedPartitionCasSnapshot({
-      db: source.db,
-      store: source.store,
-      groupId: VECTOR_GROUP_ID,
-      partitionId,
-      dataDir: source.dataDir,
-      casDir: bootstrapSourceCasDir,
+    await source.createTenantSnapshot("jp", { casDir: bootstrapSourceCasDir });
+    const bootstrapEntries = await source.listTenantSnapshotEntries();
+    const catalogManifest = await source.loadSnapshotCatalog();
+    const bootstrapTargetHandle = await openVectorHandle(targetDir, {
+      casDir: bootstrapTargetCasDir,
+      tenants: ["jp"],
+      snapshotScope: "catalog-and-data",
     });
-    const bootstrapEntries = await listStorageSnapshotCatalogEntries<CasManifest>({
-      db: source.db,
-      groupId: VECTOR_GROUP_ID,
-      partitionId,
-    });
-    const sourceBootstrapBinding = await loadStoragePartitionBinding({
-      db: source.db,
-      groupId: VECTOR_GROUP_ID,
-      partitionId,
-    });
-    if (!sourceBootstrapBinding) {
-      throw new Error("data-only bootstrap source binding was not created");
-    }
-    await pullPartitionCasSnapshot({
+    await bootstrapTargetHandle.pullSnapshot({
       snapshotEntries: bootstrapEntries,
-      groupId: VECTOR_GROUP_ID,
       partitionId,
+      catalogManifest,
       requirement: "bootstrap",
       sourceCasDir: bootstrapSourceCasDir,
-      targetCasDir: bootstrapTargetCasDir,
-      targetDir,
-      storageBinding: sourceBootstrapBinding,
     });
+    await bootstrapTargetHandle.close();
 
-    await bindStoragePartition({
-      db: source.db,
-      groupId: VECTOR_GROUP_ID,
-      partitionId,
-      relations: [tableForTenant("jp")],
-      snapshotScope: "data-only",
-    });
+    await source.setTenantSnapshotScope("jp", "data-only");
     await source.writeProfile({
       tenantId: "jp",
       sensorId: "data-only-delta-temperature",
@@ -550,12 +553,7 @@ async function verifyDataOnlySnapshotDistribution(
       embedding: [0.86, 0.21, 0.1],
     });
     await source.db.exec(`VACUUM ${tableForTenant("jp")}`);
-    const managedDelta = await createManagedPartitionCasSnapshot({
-      db: source.db,
-      store: source.store,
-      groupId: VECTOR_GROUP_ID,
-      partitionId,
-      dataDir: source.dataDir,
+    const managedDelta = await source.createTenantSnapshot("jp", {
       casDir: deltaSourceCasDir,
       saveCatalogEntry: false,
       beforeStorageSnapshot: async () => {
@@ -564,46 +562,30 @@ async function verifyDataOnlySnapshotDistribution(
       },
     });
 
-    const targetDb = await openVectorDb(targetDir);
+    const targetHandle = await openVectorHandle(targetDir, {
+      casDir: deltaTargetCasDir,
+      tenants: ["jp"],
+      snapshotScope: "data-only",
+    });
     try {
-      await bindStoragePartition({
-        db: targetDb,
-        groupId: VECTOR_GROUP_ID,
-        partitionId,
-        relations: [tableForTenant("jp")],
-        snapshotScope: "data-only",
-      });
-      const targetBinding = await loadStoragePartitionBinding({
-        db: targetDb,
-        groupId: VECTOR_GROUP_ID,
-        partitionId,
-      });
-      if (!targetBinding) {
-        throw new Error("data-only target binding was not created");
-      }
-      await targetDb.close();
-
-      const pull = await pullPartitionCasSnapshot({
+      const pull = await targetHandle.pullSnapshot({
         snapshotEntries: [managedDelta.entry],
-        groupId: VECTOR_GROUP_ID,
         partitionId,
         requirement: "data-refresh",
         sourceCasDir: deltaSourceCasDir,
-        targetCasDir: deltaTargetCasDir,
-        targetDir,
-        storageBinding: targetBinding,
       });
+      await targetHandle.close();
 
-      const restoredDb = await openVectorDb(targetDir);
+      const restoredHandle = await openVectorHandle(targetDir);
       try {
         await assertSensorExists(
-          restoredDb,
+          restoredHandle.db,
           "jp",
           "data-only-delta-temperature",
           "data-only snapshot restore",
         );
-        const nearest = await queryNearest(restoredDb, "jp", [0.87, 0.2, 0.1], 3);
-        const explain = await explainNearestIvfForDb(restoredDb, "jp", [0.87, 0.2, 0.1], 2);
+        const nearest = await queryNearest(restoredHandle.db, "jp", [0.87, 0.2, 0.1], 3);
+        const explain = await explainNearestIvfForDb(restoredHandle.db, "jp", [0.87, 0.2, 0.1], 2);
         if (!explain.join("\n").includes(ivfIndexName("jp"))) {
           throw new Error(
             `data-only snapshot did not preserve IVFFlat EXPLAIN path:\n${explain.join("\n")}`,
@@ -615,13 +597,13 @@ async function verifyDataOnlySnapshotDistribution(
           explain,
         };
       } finally {
-        await restoredDb.close();
+        await restoredHandle.close();
       }
     } catch (error) {
       try {
-        await targetDb.close();
+        await targetHandle.close();
       } catch {
-        // targetDb may have already been closed before the file-level restore.
+        // targetHandle may have already been closed before the file-level restore.
       }
       throw error;
     }
@@ -629,7 +611,7 @@ async function verifyDataOnlySnapshotDistribution(
     if (!sourceDbClosed) {
       await source.close();
     } else {
-      await source.syncNode.stop();
+      await source.stop();
     }
   }
 }
@@ -652,48 +634,33 @@ async function verifyCatalogAndDataSnapshotDistribution(
 
   try {
     await seedBootstrapProfiles(source);
-    await createManagedPartitionCasSnapshot({
-      db: source.db,
-      store: source.store,
-      groupId: VECTOR_GROUP_ID,
-      partitionId,
-      dataDir: source.dataDir,
-      casDir: sourceCasDir,
+    await source.createTenantSnapshot("jp", { casDir: sourceCasDir });
+    const snapshotEntries = await source.listTenantSnapshotEntries();
+    const catalogManifest = await source.loadSnapshotCatalog();
+    const targetHandle = await openVectorHandle(targetDir, {
+      casDir: targetCasDir,
+      tenants: ["jp"],
+      snapshotScope: "catalog-and-data",
     });
-    const snapshotEntries = await listStorageSnapshotCatalogEntries<CasManifest>({
-      db: source.db,
-      groupId: VECTOR_GROUP_ID,
-      partitionId,
-    });
-    const sourceBinding = await loadStoragePartitionBinding({
-      db: source.db,
-      groupId: VECTOR_GROUP_ID,
-      partitionId,
-    });
-    if (!sourceBinding) {
-      throw new Error("catalog-and-data source binding was not created");
-    }
-    const pull = await pullPartitionCasSnapshot({
+    const pull = await targetHandle.pullSnapshot({
       snapshotEntries,
-      groupId: VECTOR_GROUP_ID,
       partitionId,
+      catalogManifest,
       requirement: "bootstrap",
       sourceCasDir,
-      targetCasDir,
-      targetDir,
-      storageBinding: sourceBinding,
     });
+    await targetHandle.close();
 
-    const restoredDb = await openVectorDb(targetDir);
+    const restoredHandle = await openVectorHandle(targetDir);
     try {
       const nearest = await assertNearestSensor(
-        restoredDb,
+        restoredHandle.db,
         "jp",
         [0.9, 0.1, 0.1],
         "bootstrap-temperature",
         "catalog-and-data snapshot restore",
       );
-      const explain = await explainNearestIvfForDb(restoredDb, "jp", [0.9, 0.1, 0.1], 2);
+      const explain = await explainNearestIvfForDb(restoredHandle.db, "jp", [0.9, 0.1, 0.1], 2);
       if (!explain.join("\n").includes(ivfIndexName("jp"))) {
         throw new Error(
           `catalog-and-data snapshot did not preserve IVFFlat EXPLAIN path:\n${explain.join("\n")}`,
@@ -705,7 +672,7 @@ async function verifyCatalogAndDataSnapshotDistribution(
         explain,
       };
     } finally {
-      await restoredDb.close();
+      await restoredHandle.close();
     }
   } finally {
     await source.close();
@@ -774,7 +741,7 @@ async function main(): Promise<void> {
       );
     }
 
-    await nodeB.syncNode.stop();
+    await nodeB.stop();
     await nodeA.writeProfile({
       tenantId: "jp",
       sensorId: "yokohama-temperature",
@@ -788,7 +755,7 @@ async function main(): Promise<void> {
       embedding: [0.87, 0.19, 0.11],
     });
 
-    await nodeB.syncNode.start();
+    await nodeB.start();
     await nodeB.subscribeTenant("jp");
     await nodeB.subscribeTenant("eu");
     const appliedJp = await nodeB.catchUpTenantFrom("jp", nodeA.nodeId);

@@ -66,6 +66,7 @@ edge で SQL を使いたい時、よくある選択肢には弱点がありま�
 - Browser 用 PGlite CAS filesystem adapter
 - Browser 用 WebSocket relay transport
 - browser playground で SQL / catchup / snapshot bootstrap を試す
+- Node 用 `DistributedPGlite` facade で PGlite / event store / transport / partition binding をまとめて開く
 
 ## やらないこと
 
@@ -164,6 +165,53 @@ local SQL write
   -> event append
   -> async transport
   -> idempotent remote apply
+```
+
+Node では低レベル部品を直接組み立てず、`DistributedPGlite` から始められます。
+
+```ts
+import { DistributedPGlite } from "@distrb-pglite/node";
+
+const db = await DistributedPGlite.open({
+  nodeId: "node-a",
+  dataDir: "./data/node-a",
+  casDir: "./data/node-a-cas",
+  schema: `
+    CREATE TABLE IF NOT EXISTS sensor_groups (id serial PRIMARY KEY);
+    CREATE TABLE IF NOT EXISTS sensor_readings (
+      source_node text NOT NULL,
+      event_id text NOT NULL,
+      sensor_id text NOT NULL,
+      reading numeric NOT NULL,
+      PRIMARY KEY (source_node, event_id)
+    );
+  `,
+  transport: { type: "websocket", url: "ws://127.0.0.1:4000" },
+  partitions: [
+    {
+      id: "tenant:jp",
+      storage: {
+        groupId: "sensors",
+        rootRelation: "sensor_groups",
+        relations: ["sensor_readings"],
+      },
+      project: async (sql, event) => {
+        const payload = event.payload as { sensorId: string; reading: number };
+        await sql.query(
+          `INSERT INTO sensor_readings (source_node, event_id, sensor_id, reading)
+           VALUES ($1, $2, $3, $4)
+           ON CONFLICT (source_node, event_id) DO NOTHING`,
+          [event.sourceNodeId, event.eventId, payload.sensorId, payload.reading],
+        );
+      },
+    },
+  ],
+});
+
+await db.write("tenant:jp", { sensorId: "tokyo-1", reading: 21 });
+await db.catchUpFrom("node-b", "tenant:jp");
+await db.createSnapshot("tenant:jp");
+await db.close();
 ```
 
 大量の event replay が重い場合や、新しい node を初期化する場合は snapshot pull を使います。

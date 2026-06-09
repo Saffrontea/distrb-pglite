@@ -14,23 +14,15 @@
  *   4. CAS snapshot pull — jp-replicaがスナップショット+デルタリプレイで同じSQLデータを得る
  */
 
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PGlite } from "@electric-sql/pglite";
-import { SyncNode, type EventEnvelope, type PartitionStore } from "@distrb-pglite/core";
 import {
-  PGlitePartitionStore,
+  DistributedPGlite,
   WebSocketHub,
-  WebSocketTransport,
-  bindStoragePartition,
-  createManagedPartitionCasSnapshot,
-  createStorageBindingGroup,
-  listStorageSnapshotCatalogEntries,
-  loadStorageCatalogManifest,
-  pullPartitionCasSnapshot,
-  type CasManifest,
+  type DistributedPGliteProjection,
+  type PGliteClient,
 } from "@distrb-pglite/node";
 
 // ─── application types ────────────────────────────────────────────────────────
@@ -55,90 +47,58 @@ const SCHEMA = `
   );
 `;
 
-// ─── SensorPartitionStore ─────────────────────────────────────────────────────
-// PartitionStore ラッパー:
-//   applyRemote でイベントを受け取ったとき、SQLテーブルにも書き込む。
-//   (ローカル書き込みはアプリケーション層が INSERT してから appendLocal する)
-
-class SensorPartitionStore implements PartitionStore {
-  constructor(
-    readonly inner: PGlitePartitionStore,
-    private readonly db: PGlite,
-  ) {}
-
-  registerPartition(partitionId: string) {
-    return this.inner.registerPartition(partitionId);
-  }
-  hasPartition(partitionId: string) {
-    return this.inner.hasPartition(partitionId);
-  }
-  appendLocal<T>(input: Parameters<PGlitePartitionStore["appendLocal"]>[0]) {
-    return this.inner.appendLocal<T>(input as never);
-  }
-  listEventsAfter(...args: Parameters<PGlitePartitionStore["listEventsAfter"]>) {
-    return this.inner.listEventsAfter(...args);
-  }
-  listEventsAfterCursors(...args: Parameters<PGlitePartitionStore["listEventsAfterCursors"]>) {
-    return this.inner.listEventsAfterCursors(...args);
-  }
-  getHighWatermark(partitionId: string) {
-    return this.inner.getHighWatermark(partitionId);
-  }
-  createSnapshotMetadata(partitionId: string) {
-    return this.inner.createSnapshotMetadata(partitionId);
-  }
-
-  async applyRemote(event: EventEnvelope): Promise<boolean> {
-    const applied = await this.inner.applyRemote(event);
-    if (applied) {
-      const table = tableForPartition(event.partitionId);
-      if (table) {
-        const { sensorId, reading } = event.payload as SensorPayload;
-        await this.db.query(`INSERT INTO ${table} (sensor_id, reading) VALUES ($1, $2)`, [
-          sensorId,
-          reading,
-        ]);
-      }
-    }
-    return applied;
-  }
-}
-
 function tableForPartition(partitionId: string): string | null {
   if (partitionId === "tenant:jp") return "sensor_readings_jp";
   if (partitionId === "tenant:us") return "sensor_readings_us";
   return null;
 }
 
+const projectSensorEvent: DistributedPGliteProjection<SensorPayload> = async (db, event) => {
+  const table = tableForPartition(event.partitionId);
+  if (!table) return;
+  const { sensorId, reading } = event.payload;
+  await db.query(`INSERT INTO ${table} (sensor_id, reading) VALUES ($1, $2)`, [sensorId, reading]);
+};
+
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
 type NodeSet = {
-  db: PGlite;
-  inner: PGlitePartitionStore;
-  store: SensorPartitionStore;
+  node: DistributedPGlite;
   dataDir: string;
 };
 
-async function openNode(nodeId: string, baseDir: string): Promise<NodeSet> {
+async function openNode(
+  nodeId: string,
+  baseDir: string,
+  url: string,
+  casDir: string,
+  partitions: readonly string[],
+): Promise<NodeSet> {
   const dataDir = join(baseDir, nodeId);
-  await mkdir(dataDir, { recursive: true });
-  const db = new PGlite(dataDir, { relaxedDurability: false });
-  await db.exec(SCHEMA);
-  const inner = new PGlitePartitionStore(nodeId, db);
-  await inner.migrate();
-  const store = new SensorPartitionStore(inner, db);
-  return { db, inner, store, dataDir };
-}
-
-async function setupBindings(db: PGlite): Promise<void> {
-  await createStorageBindingGroup({ db, groupId: "sensor_groups", rootRelation: "sensor_groups" });
-  await bindStoragePartition({
-    db,
-    groupId: "sensor_groups",
-    partitionId: "tenant:jp",
-    relations: ["sensor_readings_jp"],
-    snapshotScope: "catalog-and-data",
+  const node = await DistributedPGlite.open({
+    nodeId,
+    dataDir,
+    casDir,
+    schema: SCHEMA,
+    relaxedDurability: false,
+    transport: { type: "websocket", url },
+    autoStart: false,
+    partitions: partitions.map((id) => ({
+      id,
+      project: projectSensorEvent,
+      ...(id === "tenant:jp"
+        ? {
+            storage: {
+              groupId: "sensor_groups",
+              rootRelation: "sensor_groups",
+              relations: ["sensor_readings_jp"],
+              snapshotScope: "catalog-and-data" as const,
+            },
+          }
+        : {}),
+    })),
   });
+  return { node, dataDir };
 }
 
 async function getFreePort(): Promise<number> {
@@ -157,7 +117,7 @@ async function getFreePort(): Promise<number> {
 
 type AggRow = { sensor_id: string; avg_reading: string; count: string };
 
-async function printAggregation(db: PGlite, table: string, label: string): Promise<void> {
+async function printAggregation(db: PGliteClient, table: string, label: string): Promise<void> {
   const result = await db.query<AggRow>(
     `SELECT sensor_id,
             round(avg(reading)::numeric, 2) AS avg_reading,
@@ -198,23 +158,17 @@ async function run(): Promise<void> {
 
   const hub = new WebSocketHub({ port });
 
-  const jp = await openNode("jp-edge", baseDir);
-  const us = await openNode("us-edge", baseDir);
-  const dash = await openNode("dashboard", baseDir);
-
-  // sensor_groups グループ + tenant:jp パーティションを jp-edge に登録
-  await setupBindings(jp.db);
-
-  let jpNode = new SyncNode("jp-edge", jp.store, new WebSocketTransport(url));
-  const usNode = new SyncNode("us-edge", us.store, new WebSocketTransport(url));
-  const dashNode = new SyncNode("dashboard", dash.store, new WebSocketTransport(url));
+  const jp = await openNode("jp-edge", baseDir, url, casDir, ["tenant:jp"]);
+  const us = await openNode("us-edge", baseDir, url, casDir, ["tenant:us"]);
+  const dash = await openNode("dashboard", baseDir, url, casDir, ["tenant:jp"]);
+  let replica: NodeSet | undefined;
+  let jpClosed = false;
 
   try {
     // ── 1. JP edge online writes ─────────────────────────────
     section("1. JP edge がオンラインでセンサー読み値を書き込む");
 
-    await jpNode.start();
-    await jpNode.subscribe("tenant:jp");
+    await jp.node.start();
 
     const jpReadings: [string, number][] = [
       ["tokyo-1", 42.1],
@@ -222,14 +176,8 @@ async function run(): Promise<void> {
       ["tokyo-1", 43.8],
     ];
     for (const [sensorId, reading] of jpReadings) {
-      // アプリ層: SQLに書いてからイベントをpublish
-      await jp.db.query("INSERT INTO sensor_readings_jp (sensor_id, reading) VALUES ($1, $2)", [
-        sensorId,
-        reading,
-      ]);
-      await jpNode.write({
+      await jp.node.write({
         partitionId: "tenant:jp",
-        schemaVersion: 1,
         payload: { sensorId, reading } satisfies SensorPayload,
       });
     }
@@ -238,20 +186,14 @@ async function run(): Promise<void> {
     // ── 2. US edge (別パーティション) ────────────────────────
     section("2. US edge が tenant:us に書き込む (partition isolation)");
 
-    await usNode.start();
-    await usNode.subscribe("tenant:us");
+    await us.node.start();
 
     for (const [sensorId, reading] of [
       ["ny-1", 25.0],
       ["ny-1", 26.3],
     ] as [string, number][]) {
-      await us.db.query("INSERT INTO sensor_readings_us (sensor_id, reading) VALUES ($1, $2)", [
-        sensorId,
-        reading,
-      ]);
-      await usNode.write({
+      await us.node.write({
         partitionId: "tenant:us",
-        schemaVersion: 1,
         payload: { sensorId, reading } satisfies SensorPayload,
       });
     }
@@ -260,74 +202,64 @@ async function run(): Promise<void> {
     // ── 3. Dashboard が tenant:jp を購読 ──────────────────────
     section("3. Dashboard が tenant:jp を購読してSQLを集計する");
 
-    await dashNode.start();
-    await dashNode.subscribe("tenant:jp");
+    await dash.node.start();
 
     // jp-edge から過去イベントを catchup (購読前に書かれた分)
-    const caughtInitial = await dashNode.catchUpFrom("jp-edge", "tenant:jp");
+    const caughtInitial = await dash.node.catchUpFrom("jp-edge", "tenant:jp");
     console.log(`\n  初回catchup: ${caughtInitial} 件取得`);
 
-    const dashJpCount = (await dash.inner.listEventsAfterCursors("tenant:jp", new Map())).length;
-    const dashUsCount = (await dash.inner.listEventsAfterCursors("tenant:us", new Map())).length;
+    const dashJpCount = (await dash.node.store.listEventsAfterCursors("tenant:jp", new Map()))
+      .length;
+    const dashUsCount = (await dash.node.store.listEventsAfterCursors("tenant:us", new Map()))
+      .length;
     console.log(
       `\n  dashboard tenant:jp イベント数: ${dashJpCount}  (expected: ${jpReadings.length})`,
     );
     console.log(`  dashboard tenant:us イベント数: ${dashUsCount}  (expected: 0, isolation OK)`);
 
-    await printAggregation(dash.db, "sensor_readings_jp", "dashboard");
+    await printAggregation(dash.node.db, "sensor_readings_jp", "dashboard");
 
     // ── 4. JP edge オフライン → ローカル書き込み ─────────────
     section("4. JP edge がオフラインになりローカルに書き込む");
 
-    await jpNode.stop();
+    await jp.node.stop();
 
     const offlineReadings: [string, number][] = [
       ["osaka-1", 39.2],
       ["tokyo-1", 44.0],
     ];
     for (const [sensorId, reading] of offlineReadings) {
-      await jp.db.query("INSERT INTO sensor_readings_jp (sensor_id, reading) VALUES ($1, $2)", [
-        sensorId,
-        reading,
-      ]);
-      await jp.inner.appendLocal({
+      await jp.node.writeLocal({
         partitionId: "tenant:jp",
-        schemaVersion: 1,
         payload: { sensorId, reading } satisfies SensorPayload,
       });
     }
 
-    const beforeCatchup = (await dash.inner.listEventsAfterCursors("tenant:jp", new Map())).length;
+    const beforeCatchup = (await dash.node.store.listEventsAfterCursors("tenant:jp", new Map()))
+      .length;
     console.log(`\n  catchup前 dashboard イベント数: ${beforeCatchup}`);
 
     // ── 5. JP edge 再接続 → dashboard が catch up ────────────
     section("5. JP edge が再接続し、dashboard が差分を取得する");
 
-    jpNode = new SyncNode("jp-edge", jp.store, new WebSocketTransport(url));
-    await jpNode.start();
+    await jp.node.start();
 
-    const caught = await dashNode.catchUpFrom("jp-edge", "tenant:jp");
+    const caught = await dash.node.catchUpFrom("jp-edge", "tenant:jp");
     console.log(`\n  catchup完了: ${caught} イベント取得`);
 
-    const afterCatchup = (await dash.inner.listEventsAfterCursors("tenant:jp", new Map())).length;
+    const afterCatchup = (await dash.node.store.listEventsAfterCursors("tenant:jp", new Map()))
+      .length;
     console.log(
       `  catchup後 dashboard イベント数: ${afterCatchup}  (expected: ${jpReadings.length + offlineReadings.length})`,
     );
 
-    await printAggregation(dash.db, "sensor_readings_jp", "dashboard (updated)");
+    await printAggregation(dash.node.db, "sensor_readings_jp", "dashboard (updated)");
 
     // ── 6. CAS snapshot + new replica ────────────────────────
     section("6. jp-replica が CASスナップショット+デルタリプレイで参加する");
 
     // スナップショットを取得 (jp-edge db はまだ open)
-    const managed = await createManagedPartitionCasSnapshot({
-      db: jp.db,
-      store: jp.inner,
-      groupId: "sensor_groups",
-      partitionId: "tenant:jp",
-      dataDir: jp.dataDir,
-      casDir,
-    });
+    const managed = await jp.node.createSnapshot("tenant:jp");
     console.log(`\n  スナップショット取得: ${managed.snapshot.snapshotId}`);
     console.log(
       `  CASブロック数: ${managed.snapshot.manifest.files.reduce((n, f) => n + f.blocks.length, 0)}`,
@@ -338,13 +270,8 @@ async function run(): Promise<void> {
 
     // スナップショット後に jp-edge が 1 件追加書き込み
     const postSnapshotReading: [string, number] = ["tokyo-1", 45.5];
-    await jp.db.query(
-      "INSERT INTO sensor_readings_jp (sensor_id, reading) VALUES ($1, $2)",
-      postSnapshotReading,
-    );
-    await jp.inner.appendLocal({
+    await jp.node.writeLocal({
       partitionId: "tenant:jp",
-      schemaVersion: 1,
       payload: {
         sensorId: postSnapshotReading[0],
         reading: postSnapshotReading[1],
@@ -354,92 +281,75 @@ async function run(): Promise<void> {
 
     // デルタイベント収集 (jp db を閉じる前に)
     const snapshotWatermark = new Map<string, string>(managed.snapshot.highWatermark);
-    const deltaEvents = await jp.inner.listEventsAfterCursors("tenant:jp", snapshotWatermark);
+    const deltaEvents = await jp.node.store.listEventsAfterCursors("tenant:jp", snapshotWatermark);
     console.log(`  デルタイベント: ${deltaEvents.length} 件`);
 
     // カタログマニフェストとスナップショットエントリを保存
-    const catalogManifest = await loadStorageCatalogManifest({
-      db: jp.db,
-      groupId: "sensor_groups",
-    });
-    const snapshotEntries = await listStorageSnapshotCatalogEntries<CasManifest>({
-      db: jp.db,
-      groupId: "sensor_groups",
-    });
+    const catalogManifest = await jp.node.loadCatalog("sensor_groups");
+    const snapshotEntries = await jp.node.listSnapshotEntries("sensor_groups");
 
     // jp-edge ノードを停止
-    await jpNode.stop();
-    await jp.db.close();
-
-    // jp-replica: スナップショットから復元
-    const replicaDir = join(baseDir, "jp-replica");
-    await mkdir(replicaDir, { recursive: true });
+    await jp.node.close();
+    jpClosed = true;
 
     // スナップショット pull (catalog-and-data を bootstrap で取得)
-    const storageBinding = catalogManifest?.bindings.find((b) => b.partitionId === "tenant:jp");
-    if (!storageBinding) throw new Error("storage binding not found in catalog manifest");
-
-    const pulled = await pullPartitionCasSnapshot({
+    replica = await openNode("jp-replica", baseDir, url, casDir, ["tenant:jp"]);
+    const pulled = await replica.node.pullSnapshot({
       snapshotEntries,
-      groupId: "sensor_groups",
+      catalogManifest,
       partitionId: "tenant:jp",
       requirement: "bootstrap",
       sourceCasDir: casDir,
-      targetCasDir: casDir,
-      targetDir: replicaDir,
-      storageBinding,
     });
     console.log(`\n  pull完了: ${pulled.transferredBlocks} ブロック転送`);
 
-    // replica で PGlite を起動 (スナップショット復元済みのデータディレクトリ)
-    const replicaDb = new PGlite(replicaDir, { relaxedDurability: false });
-    const replicaInner = new PGlitePartitionStore("jp-replica", replicaDb);
-    await replicaInner.migrate();
-    const replicaStore = new SensorPartitionStore(replicaInner, replicaDb);
-
     // スナップショット時点でのSQL行数を確認
-    const beforeDelta = await replicaDb.query<{ count: string }>(
+    const beforeDelta = await replica.node.query<{ count: string }>(
       "SELECT count(*)::int AS count FROM sensor_readings_jp",
     );
     console.log(`  スナップショット復元後の行数: ${beforeDelta.rows[0]?.count}`);
 
-    // デルタイベントをリプレイ (applyRemote → SQLにも書き込まれる)
-    await replicaStore.registerPartition("tenant:jp");
+    // デルタイベントをリプレイ (facade の projection で SQL にも書き込まれる)
     let replayCount = 0;
     for (const event of deltaEvents) {
-      if (await replicaStore.applyRemote(event)) replayCount++;
+      if (await replica.node.store.applyRemote(event)) replayCount++;
     }
     console.log(`  デルタリプレイ: ${replayCount} 件`);
 
-    await printAggregation(replicaDb, "sensor_readings_jp", "jp-replica");
+    await printAggregation(replica.node.db, "sensor_readings_jp", "jp-replica");
 
     // ── 検証: jp-edge と jp-replica の集計が一致するか ───────
     section("7. 検証: jp-edge と jp-replica のSQL集計が一致する");
 
     // jp-edge のデータを直接確認 (db は閉じているのでイベントから再集計)
     const totalExpectedReadings = jpReadings.length + offlineReadings.length + 1; // +1 post-snapshot
-    const replicaTotalEvents = (await replicaInner.listEventsAfterCursors("tenant:jp", new Map()))
-      .length;
+    const replicaTotalEvents = (
+      await replica.node.store.listEventsAfterCursors("tenant:jp", new Map())
+    ).length;
     console.log(`\n  jp-edge 総書き込み: ${totalExpectedReadings} 件`);
     console.log(
       `  jp-replica 総イベント: ${replicaTotalEvents} 件  (expected: ${totalExpectedReadings})`,
     );
 
-    const finalRows = await replicaDb.query<{ count: string }>(
+    const finalRows = await replica.node.query<{ count: string }>(
       "SELECT count(*)::int AS count FROM sensor_readings_jp",
     );
     console.log(`  jp-replica 総行数: ${finalRows.rows[0]?.count}`);
 
-    await printAggregation(replicaDb, "sensor_readings_jp", "jp-replica (final)");
+    await printAggregation(replica.node.db, "sensor_readings_jp", "jp-replica (final)");
 
     const ok = replicaTotalEvents === totalExpectedReadings;
     console.log(`\n  ${"═".repeat(60)}`);
     console.log(`  結果: ${ok ? "✓ PASS — イベント数一致" : "✗ FAIL — イベント数不一致"}`);
     console.log(`  ${"═".repeat(60)}\n`);
-
-    await replicaDb.close();
   } finally {
-    await Promise.allSettled([dashNode.stop(), usNode.stop(), hub.close()]);
+    await Promise.allSettled([
+      dash.node.close(),
+      us.node.close(),
+      jpClosed ? Promise.resolve() : jp.node.close(),
+      replica?.node.close() ?? Promise.resolve(),
+      hub.close(),
+    ]);
     await rm(baseDir, { recursive: true, force: true });
   }
 }

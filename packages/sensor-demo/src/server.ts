@@ -1,23 +1,15 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { mkdir } from "node:fs/promises";
-import { PGlite } from "@electric-sql/pglite";
-import { SyncNode, type EventEnvelope, type PartitionStore } from "@distrb-pglite/core";
 import type {
   StorageCatalogManifest,
   StoragePullRequirement,
   StorageSnapshotCatalogEntry,
 } from "@distrb-pglite/core";
 import {
-  P2PWebSocketTransport,
-  PGlitePartitionStore,
-  WebSocketTransport,
-  bindStoragePartition,
-  createManagedPartitionCasSnapshot,
-  createStorageBindingGroup,
-  listStorageSnapshotCatalogEntries,
-  loadStorageCatalogManifest,
-  pullPartitionCasSnapshot,
+  DistributedPGlite,
+  type DistributedPGliteProjection,
+  type DistributedPGliteTransportOptions,
   type CasManifest,
+  type PGliteClient,
 } from "@distrb-pglite/node";
 import { quoteIdentifier, sameColumns, tableConstraints } from "./schema-utils.js";
 
@@ -45,72 +37,6 @@ export type SensorPayload = {
   reading: number;
   unit?: string;
 };
-
-// ─── SensorPartitionStore ─────────────────────────────────────────────────────
-// applyRemote でイベントを受け取ったとき、sensor_readings にも書き込む。
-
-class SensorPartitionStore implements PartitionStore {
-  constructor(
-    readonly inner: PGlitePartitionStore,
-    private readonly db: PGlite,
-    private readonly projectedPartitionId: string,
-  ) {}
-
-  registerPartition(id: string) {
-    return this.inner.registerPartition(id);
-  }
-  hasPartition(id: string) {
-    return this.inner.hasPartition(id);
-  }
-  appendLocal<T>(input: Parameters<PGlitePartitionStore["appendLocal"]>[0]) {
-    const sensorInput = input as Parameters<PGlitePartitionStore["appendLocal"]>[0];
-    if (
-      sensorInput.partitionId === this.projectedPartitionId &&
-      !isSensorPayload(sensorInput.payload)
-    ) {
-      throw new Error("invalid sensor payload");
-    }
-    return this.inner.appendLocalEventTransaction<T>(sensorInput as never, async (event) => {
-      if (event.partitionId === this.projectedPartitionId) {
-        await this.projectSensorEvent(event);
-      }
-    });
-  }
-  listEventsAfter(...a: Parameters<PGlitePartitionStore["listEventsAfter"]>) {
-    return this.inner.listEventsAfter(...a);
-  }
-  listEventsAfterCursors(...a: Parameters<PGlitePartitionStore["listEventsAfterCursors"]>) {
-    return this.inner.listEventsAfterCursors(...a);
-  }
-  getHighWatermark(id: string) {
-    return this.inner.getHighWatermark(id);
-  }
-  createSnapshotMetadata(id: string) {
-    return this.inner.createSnapshotMetadata(id);
-  }
-
-  async applyRemote(event: EventEnvelope): Promise<boolean> {
-    if (event.partitionId === this.projectedPartitionId && !isSensorPayload(event.payload)) {
-      return false;
-    }
-
-    return this.inner.applyRemoteEventTransaction(event, async (appliedEvent) => {
-      if (appliedEvent.partitionId === this.projectedPartitionId) {
-        await this.projectSensorEvent(appliedEvent);
-      }
-    });
-  }
-
-  private async projectSensorEvent(event: EventEnvelope): Promise<void> {
-    const p = event.payload as SensorPayload;
-    await this.db.query(
-      `INSERT INTO sensor_readings (event_id, sensor_id, reading, unit, source_node)
-       VALUES ($1, $2, $3, $4, $5)
-       ON CONFLICT (source_node, event_id) DO NOTHING`,
-      [event.eventId, p.sensorId, p.reading, p.unit ?? "C", event.sourceNodeId],
-    );
-  }
-}
 
 // ─── EdgeNodeServer ───────────────────────────────────────────────────────────
 
@@ -155,11 +81,7 @@ type SqlResponse = {
   durationMs: number;
 };
 export class EdgeNodeServer {
-  private db!: PGlite;
-  private inner!: PGlitePartitionStore;
-  private store!: SensorPartitionStore;
-  private syncNode!: SyncNode;
-  private online = false;
+  private db!: DistributedPGlite;
   private readonly http;
 
   private constructor(private config: EdgeServerConfig) {
@@ -168,9 +90,7 @@ export class EdgeNodeServer {
 
   static async create(config: EdgeServerConfig): Promise<EdgeNodeServer> {
     const s = new EdgeNodeServer(config);
-    await s.initDb();
-    await s.initSync();
-    await s.setupBindings();
+    await s.openDb();
     return s;
   }
 
@@ -186,81 +106,53 @@ export class EdgeNodeServer {
   }
 
   async close(): Promise<void> {
-    if (this.online) await this.syncNode.stop();
     await new Promise<void>((r, j) => this.http.close((e) => (e ? j(e) : r())));
     await this.db.close();
   }
 
   // ─── init ─────────────────────────────────────────────────────
 
-  private async initDb(): Promise<void> {
-    await mkdir(this.config.dataDir, { recursive: true });
-    await mkdir(this.config.casDir, { recursive: true });
-    await this.openDb();
+  private async openDb(): Promise<void> {
+    this.db = await DistributedPGlite.open({
+      nodeId: this.config.nodeId,
+      dataDir: this.config.dataDir,
+      casDir: this.config.casDir,
+      schema: SCHEMA,
+      migrate: migrateSensorReadingsEventIdentity,
+      relaxedDurability: false,
+      transport: this.transportOptions(),
+      partitions: [
+        {
+          id: this.config.partitionId,
+          project: projectSensorEvent(this.config.partitionId),
+          storage: {
+            groupId: GROUP_ID,
+            rootRelation: "sensor_groups",
+            relations: ["sensor_readings"],
+            snapshotScope: this.config.snapshotScope ?? "catalog-and-data",
+          },
+        },
+      ],
+    });
   }
 
-  private async initSync(): Promise<void> {
-    this.syncNode = this.createSyncNode();
-    await this.syncNode.start();
-    await this.syncNode.subscribe(this.config.partitionId);
-    this.online = true;
-  }
-
-  private createSyncNode(): SyncNode {
+  private transportOptions(): DistributedPGliteTransportOptions {
     if ((this.config.transport ?? "hub") === "p2p") {
       if (!this.config.p2pPublicUrl || !this.config.p2pPort) {
         throw new Error("p2p transport requires p2pPublicUrl and p2pPort");
       }
-      return new SyncNode(
-        this.config.nodeId,
-        this.store,
-        new P2PWebSocketTransport({
-          publicUrl: this.config.p2pPublicUrl,
-          port: this.config.p2pPort,
-          seeds: this.config.p2pSeeds ?? [],
-        }),
-      );
+      return {
+        type: "p2p",
+        publicUrl: this.config.p2pPublicUrl,
+        port: this.config.p2pPort,
+        seeds: this.config.p2pSeeds ?? [],
+      };
     }
 
     if (!this.config.hubUrl) {
       throw new Error("hub transport requires hubUrl");
     }
-    return new SyncNode(this.config.nodeId, this.store, new WebSocketTransport(this.config.hubUrl));
-  }
-
-  private async setupBindings(): Promise<void> {
-    await createStorageBindingGroup({
-      db: this.db,
-      groupId: GROUP_ID,
-      rootRelation: "sensor_groups",
-    });
-    await bindStoragePartition({
-      db: this.db,
-      groupId: GROUP_ID,
-      partitionId: this.config.partitionId,
-      relations: ["sensor_readings"],
-      snapshotScope: this.config.snapshotScope ?? "catalog-and-data",
-    });
-  }
-
-  private async openDb(): Promise<void> {
-    this.db = new PGlite(this.config.dataDir, { relaxedDurability: false });
-    await this.db.exec(SCHEMA);
-    await migrateSensorReadingsEventIdentity(this.db);
-    this.inner = new PGlitePartitionStore(this.config.nodeId, this.db);
-    await this.inner.migrate();
-    this.store = new SensorPartitionStore(this.inner, this.db, this.config.partitionId);
-  }
-
-  private async reopenDbAndSync(wasOnline: boolean): Promise<void> {
-    await this.openDb();
-    await this.setupBindings();
-    this.syncNode = this.createSyncNode();
-    if (wasOnline) {
-      await this.syncNode.start();
-      await this.syncNode.subscribe(this.config.partitionId);
-      this.online = true;
-    }
+    return { type: "websocket", url: this.config.hubUrl };
   }
 
   // ─── HTTP dispatch ────────────────────────────────────────────
@@ -310,10 +202,10 @@ export class EdgeNodeServer {
   // ─── handlers ─────────────────────────────────────────────────
 
   private async getStatus() {
-    const events = await this.inner.listEventsAfterCursors(this.config.partitionId, new Map());
+    const events = await this.db.store.listEventsAfterCursors(this.config.partitionId, new Map());
     return {
       nodeId: this.config.nodeId,
-      online: this.online,
+      online: this.db.isOnline,
       partitionId: this.config.partitionId,
       eventCount: events.length,
     };
@@ -321,16 +213,15 @@ export class EdgeNodeServer {
 
   private async postSubscribe(body: unknown) {
     const { partitionId } = parseSubscribeBody(body);
-    await this.syncNode.subscribe(partitionId);
+    await this.db.subscribe({ id: partitionId });
     return { ok: true, partitionId };
   }
 
   private async postReading(body: unknown) {
-    if (!this.online) throw new Error("node is offline — use /readings-offline");
+    if (!this.db.isOnline) throw new Error("node is offline — use /readings-offline");
     const p = parseSensorPayload(body);
-    const event = await this.syncNode.write({
+    const event = await this.db.write({
       partitionId: this.config.partitionId,
-      schemaVersion: 1,
       payload: p,
     });
     return { eventId: event.eventId, sensorId: p.sensorId, reading: p.reading };
@@ -338,9 +229,8 @@ export class EdgeNodeServer {
 
   private async postReadingOffline(body: unknown) {
     const p = parseSensorPayload(body);
-    const event = await this.store.appendLocal({
+    const event = await this.db.writeLocal({
       partitionId: this.config.partitionId,
-      schemaVersion: 1,
       payload: p,
     });
     return { eventId: event.eventId, sensorId: p.sensorId, reading: p.reading, offline: true };
@@ -371,7 +261,7 @@ export class EdgeNodeServer {
 
   private async getEvents(params: URLSearchParams) {
     const limit = Number(params.get("limit") ?? "50");
-    const events = await this.inner.listEventsAfter(this.config.partitionId);
+    const events = await this.db.store.listEventsAfter(this.config.partitionId);
     return { events: events.slice(-limit), count: events.length };
   }
 
@@ -407,21 +297,17 @@ export class EdgeNodeServer {
 
   private async postCatchup(body: unknown) {
     const { peerNodeId, partitionId } = parseCatchupBody(body);
-    const applied = await this.syncNode.catchUpFrom(
-      peerNodeId,
-      partitionId ?? this.config.partitionId,
-    );
+    const applied = await this.db.catchUpFrom(peerNodeId, partitionId ?? this.config.partitionId);
     return { applied };
   }
 
   private async postDisconnect() {
-    await this.syncNode.stop();
-    this.online = false;
+    await this.db.stop();
     return { ok: true, online: false };
   }
 
   private async postConnect() {
-    if (this.online) {
+    if (this.db.isOnline) {
       return {
         ok: true,
         online: true,
@@ -430,10 +316,7 @@ export class EdgeNodeServer {
       };
     }
 
-    this.syncNode = this.createSyncNode();
-    await this.syncNode.start();
-    await this.syncNode.subscribe(this.config.partitionId);
-    this.online = true;
+    await this.db.start();
     const catchup =
       this.config.autoCatchupOnConnect === false ? [] : await this.catchupKnownPeers();
     return {
@@ -450,21 +333,14 @@ export class EdgeNodeServer {
       if (peerNodeId === this.config.nodeId) {
         continue;
       }
-      const applied = await this.syncNode.catchUpFrom(peerNodeId, this.config.partitionId);
+      const applied = await this.db.catchUpFrom(peerNodeId, this.config.partitionId);
       results.push({ peerNodeId, applied });
     }
     return results;
   }
 
   private async postCreateSnapshot() {
-    const managed = await createManagedPartitionCasSnapshot({
-      db: this.db,
-      store: this.inner,
-      groupId: GROUP_ID,
-      partitionId: this.config.partitionId,
-      dataDir: this.config.dataDir,
-      casDir: this.config.casDir,
-    });
+    const managed = await this.db.createSnapshot(this.config.partitionId);
     const blocks = managed.snapshot.manifest.files.reduce((n, f) => n + f.blocks.length, 0);
     return {
       snapshotId: managed.snapshot.snapshotId,
@@ -475,14 +351,11 @@ export class EdgeNodeServer {
   }
 
   private async getCatalog() {
-    return await loadStorageCatalogManifest({ db: this.db, groupId: GROUP_ID });
+    return await this.db.loadCatalog(GROUP_ID);
   }
 
   private async getSnapshotEntries() {
-    const entries = await listStorageSnapshotCatalogEntries<CasManifest>({
-      db: this.db,
-      groupId: GROUP_ID,
-    });
+    const entries = await this.db.listSnapshotEntries(GROUP_ID);
     return { entries };
   }
 
@@ -499,37 +372,13 @@ export class EdgeNodeServer {
       requirement?: StoragePullRequirement;
     };
 
-    const storageBinding = catalogManifest.bindings.find(
-      (b) => b.partitionId === this.config.partitionId,
-    );
-    if (!storageBinding) throw new Error(`no binding for partition ${this.config.partitionId}`);
-
-    const wasOnline = this.online;
-    if (wasOnline) {
-      await this.syncNode.stop();
-      this.online = false;
-    }
-    await this.db.close();
-
-    let pulled: Awaited<ReturnType<typeof pullPartitionCasSnapshot>>;
-    try {
-      pulled = await pullPartitionCasSnapshot({
-        snapshotEntries,
-        groupId: GROUP_ID,
-        partitionId: this.config.partitionId,
-        requirement,
-        sourceCasDir,
-        targetCasDir: this.config.casDir,
-        targetDir: this.config.dataDir,
-        storageBinding,
-      });
-    } catch (error) {
-      await this.reopenDbAndSync(wasOnline);
-      throw error;
-    }
-
-    // PGlite を復元済みデータディレクトリで再起動
-    await this.reopenDbAndSync(wasOnline);
+    const pulled = await this.db.pullSnapshot({
+      catalogManifest,
+      snapshotEntries,
+      partitionId: this.config.partitionId,
+      requirement,
+      sourceCasDir,
+    });
 
     return {
       ok: true,
@@ -632,6 +481,24 @@ function isSensorPayload(body: unknown): body is SensorPayload {
   return true;
 }
 
+function projectSensorEvent(partitionId: string): DistributedPGliteProjection<SensorPayload> {
+  return async (db, event) => {
+    if (event.partitionId !== partitionId) {
+      return;
+    }
+    if (!isSensorPayload(event.payload)) {
+      throw new Error("invalid sensor payload");
+    }
+    const p = event.payload;
+    await db.query(
+      `INSERT INTO sensor_readings (event_id, sensor_id, reading, unit, source_node)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (source_node, event_id) DO NOTHING`,
+      [event.eventId, p.sensorId, p.reading, p.unit ?? "C", event.sourceNodeId],
+    );
+  };
+}
+
 function objectRecord(value: unknown): Record<string, unknown> | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return undefined;
@@ -659,7 +526,7 @@ function normalizeValue(value: unknown): unknown {
   return value;
 }
 
-async function migrateSensorReadingsEventIdentity(db: PGlite): Promise<void> {
+async function migrateSensorReadingsEventIdentity(db: PGliteClient): Promise<void> {
   const constraints = await tableConstraints(db, "sensor_readings");
   const singleEventIdPrimaryKey = constraints.find(
     (constraint) =>

@@ -1,13 +1,11 @@
 #!/usr/bin/env node
-import { PGlite } from "@electric-sql/pglite";
-import { SyncNode } from "@distrb-pglite/core";
 import { parseArgs } from "node:util";
 import { restoreFromCas, snapshotToCas } from "./cas.js";
+import { DistributedPGlite } from "./distributed-pglite.js";
 import { copyDataDirSnapshot, inventoryDataDir } from "./inventory.js";
 import { createPartitionCasSnapshot } from "./partition-snapshot.js";
-import { PGlitePartitionStore } from "./pglite-store.js";
 import { discoverStoragePartitionBinding } from "./storage-binding.js";
-import { WebSocketHub, WebSocketTransport } from "./websocket-transport.js";
+import { WebSocketHub } from "./websocket-transport.js";
 import { runNodeDemo } from "./demo.js";
 
 const { positionals, values } = parseArgs({
@@ -45,13 +43,7 @@ if (command === "hub") {
   }
 
   const dataDir = values.dataDir ?? `./.data/${nodeId}`;
-  const db = new PGlite(dataDir);
-  const store = new PGlitePartitionStore(nodeId, db);
-  await store.migrate();
-
-  const node = new SyncNode(nodeId, store, new WebSocketTransport(values.url));
-  await node.start();
-  await node.subscribe(partition);
+  await openDistributedNode(nodeId, dataDir, values.url, [partition]);
 
   console.log(`${nodeId} subscribed to ${partition} via ${values.url}`);
 } else if (command === "write") {
@@ -61,25 +53,22 @@ if (command === "hub") {
     throw new Error("--node, --partition, and --payload are required");
   }
 
-  const store = await openStore(nodeId, values.dataDir);
+  const db = await openDistributedNode(nodeId, values.dataDir, values.url, [], !values.offline);
   const payload = JSON.parse(values.payload);
 
   if (values.offline) {
-    const event = await store.appendLocal({
+    const event = await db.writeLocal({
       partitionId: partition,
-      schemaVersion: 1,
       payload,
     });
+    await db.close();
     console.log(JSON.stringify(event, null, 2));
   } else {
-    const node = new SyncNode(nodeId, store, new WebSocketTransport(values.url));
-    await node.start();
-    const event = await node.write({
+    const event = await db.write({
       partitionId: partition,
-      schemaVersion: 1,
       payload,
     });
-    await node.stop();
+    await db.close();
     console.log(JSON.stringify(event, null, 2));
   }
 } else if (command === "list") {
@@ -89,8 +78,9 @@ if (command === "hub") {
     throw new Error("--node and --partition are required");
   }
 
-  const store = await openStore(nodeId, values.dataDir);
-  const events = await store.listEventsAfterCursors(partition, new Map());
+  const db = await openDistributedNode(nodeId, values.dataDir, values.url, [], false);
+  const events = await db.store.listEventsAfterCursors(partition, new Map());
+  await db.close();
   console.log(JSON.stringify(events, null, 2));
 } else if (command === "catchup") {
   const nodeId = values.node;
@@ -100,12 +90,9 @@ if (command === "hub") {
     throw new Error("--node, --peer, and --partition are required");
   }
 
-  const store = await openStore(nodeId, values.dataDir);
-  const node = new SyncNode(nodeId, store, new WebSocketTransport(values.url));
-  await node.start();
-  await node.subscribe(partition);
-  const applied = await node.catchUpFrom(peerNodeId, partition);
-  await node.stop();
+  const db = await openDistributedNode(nodeId, values.dataDir, values.url, [partition]);
+  const applied = await db.catchUpFrom(peerNodeId, partition);
+  await db.close();
   console.log(JSON.stringify({ applied }, null, 2));
 } else if (command === "inventory") {
   const nodeId = values.node;
@@ -149,11 +136,11 @@ if (command === "hub") {
   }
 
   const dataDir = values.dataDir ?? `./.data/${nodeId}`;
-  const { db, store } = await openStoreWithDb(nodeId, dataDir);
+  const handle = await openDistributedNode(nodeId, dataDir, values.url, [], false);
   const storageBinding = values.storageBinding
     ? JSON.parse(values.storageBinding)
     : await discoverStoragePartitionBinding({
-        db,
+        db: handle.db,
         partitionId: partition,
         rootRelation: requireString(
           values.rootRelation,
@@ -163,13 +150,13 @@ if (command === "hub") {
         snapshotScope: snapshotScopeValue(values.snapshotScope),
       });
   const snapshot = await createPartitionCasSnapshot({
-    store,
+    store: handle.eventStore,
     partitionId: partition,
     storageBinding,
     dataDir,
     casDir: values.casDir,
   });
-  await db.close();
+  await handle.close();
   console.log(JSON.stringify(snapshot, null, 2));
 } else if (command === "storage-binding") {
   const nodeId = values.node;
@@ -179,15 +166,15 @@ if (command === "hub") {
   }
 
   const dataDir = values.dataDir ?? `./.data/${nodeId}`;
-  const { db } = await openStoreWithDb(nodeId, dataDir);
+  const handle = await openDistributedNode(nodeId, dataDir, values.url, [], false);
   const binding = await discoverStoragePartitionBinding({
-    db,
+    db: handle.db,
     partitionId: partition,
     rootRelation: values.rootRelation,
     relations: relationValues(values.relation),
     snapshotScope: snapshotScopeValue(values.snapshotScope),
   });
-  await db.close();
+  await handle.close();
   console.log(JSON.stringify(binding, null, 2));
 } else if (command === "cas-restore") {
   if (!values.casDir || !values.targetDir || !values.manifest) {
@@ -224,21 +211,20 @@ if (command === "hub") {
 `);
 }
 
-async function openStore(
+async function openDistributedNode(
   nodeId: string,
   dataDir = `./.data/${nodeId}`,
-): Promise<PGlitePartitionStore> {
-  return (await openStoreWithDb(nodeId, dataDir)).store;
-}
-
-async function openStoreWithDb(
-  nodeId: string,
-  dataDir = `./.data/${nodeId}`,
-): Promise<{ db: PGlite; store: PGlitePartitionStore }> {
-  const db = new PGlite(dataDir);
-  const store = new PGlitePartitionStore(nodeId, db);
-  await store.migrate();
-  return { db, store };
+  url: string | boolean | undefined,
+  partitions: readonly string[] = [],
+  autoStart = true,
+): Promise<DistributedPGlite> {
+  return DistributedPGlite.open({
+    nodeId,
+    dataDir,
+    transport: { type: "websocket", url: typeof url === "string" ? url : "ws://localhost:8787" },
+    autoStart,
+    partitions: partitions.map((id) => ({ id })),
+  });
 }
 
 function relationValues(value: string | string[] | undefined): string[] | undefined {

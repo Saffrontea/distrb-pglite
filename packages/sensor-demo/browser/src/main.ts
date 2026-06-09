@@ -1,27 +1,20 @@
-import { PGlite } from "@electric-sql/pglite";
 import pgliteDataUrl from "../../node_modules/@electric-sql/pglite/dist/pglite.data?url";
 import pgliteWasmUrl from "../../node_modules/@electric-sql/pglite/dist/pglite.wasm?url";
-import {
-  InMemoryPartitionStore,
-  SyncNode,
-  type EventEnvelope,
-  type PartitionStore,
-} from "@distrb-pglite/core";
+import type { EventEnvelope } from "@distrb-pglite/core";
 import {
   BrowserPGliteCasFilesystem,
   BrowserSha256BlobStore,
-  BrowserWebSocketTransport,
+  DistributedBrowserPGlite,
   OpfsCasBlockStore,
   browserManifestFilesEqualInventory,
   diffMissingBrowserCasBlocks,
   gcBrowserCasBlocks,
   inventoryBrowserFilesystem,
-  restoreBrowserFilesystemFromCas,
   snapshotBrowserFilesystemToCas,
-  transferMissingBrowserCasBlocks,
   type BrowserCasBlockStore,
   type BrowserCasManifest,
 } from "@distrb-pglite/browser";
+import type { PGlite } from "@electric-sql/pglite";
 import "./style.css";
 
 type QueryRow = Record<string, unknown>;
@@ -31,12 +24,7 @@ type BrowserNode = {
   role: FactoryRole;
   lineId: string;
   partitions: string[];
-  fs: BrowserPGliteCasFilesystem;
-  blobs: BrowserSha256BlobStore;
-  db: PGlite;
-  store: SensorBrowserStore;
-  syncNode?: SyncNode;
-  relayOnline: boolean;
+  handle: DistributedBrowserPGlite;
   eventCount: number;
   stats: NodeStats;
 };
@@ -95,55 +83,6 @@ const SCHEMA = `
   );
 `;
 
-class SensorBrowserStore implements PartitionStore {
-  private readonly inner: InMemoryPartitionStore;
-
-  constructor(
-    nodeId: string,
-    private readonly db: PGlite,
-    private readonly onAppliedRemote: () => Promise<void>,
-  ) {
-    this.inner = new InMemoryPartitionStore(nodeId);
-  }
-
-  registerPartition(partitionId: string) {
-    return this.inner.registerPartition(partitionId);
-  }
-
-  hasPartition(partitionId: string) {
-    return this.inner.hasPartition(partitionId);
-  }
-
-  appendLocal<TPayload>(input: Parameters<InMemoryPartitionStore["appendLocal"]>[0]) {
-    return this.inner.appendLocal<TPayload>(input as never);
-  }
-
-  listEventsAfter(...args: Parameters<InMemoryPartitionStore["listEventsAfter"]>) {
-    return this.inner.listEventsAfter(...args);
-  }
-
-  listEventsAfterCursors(...args: Parameters<InMemoryPartitionStore["listEventsAfterCursors"]>) {
-    return this.inner.listEventsAfterCursors(...args);
-  }
-
-  getHighWatermark(partitionId: string) {
-    return this.inner.getHighWatermark(partitionId);
-  }
-
-  createSnapshotMetadata(partitionId: string) {
-    return this.inner.createSnapshotMetadata(partitionId);
-  }
-
-  async applyRemote(event: EventEnvelope): Promise<boolean> {
-    const applied = await this.inner.applyRemote(event);
-    if (applied) {
-      await insertFactoryEvent(this.db, event);
-      await this.onAppliedRemote();
-    }
-    return applied;
-  }
-}
-
 const app = document.querySelector<HTMLDivElement>("#app");
 if (!app) {
   throw new Error("missing #app");
@@ -173,6 +112,45 @@ let sqlText = defaultSql();
 let sqlMetaText = "ready";
 let sqlResultHtml = '<div class="empty">Run a query</div>';
 
+async function openBrowserNode(
+  id: string,
+  partitions: readonly string[],
+  options?: {
+    fs?: BrowserPGliteCasFilesystem;
+    blobs?: BrowserSha256BlobStore;
+  },
+): Promise<DistributedBrowserPGlite> {
+  return DistributedBrowserPGlite.open({
+    nodeId: id,
+    fs: options?.fs,
+    blobs: options?.blobs,
+    schema: SCHEMA,
+    pgliteOptions: {
+      fsBundle: await loadPGliteFsBundle(),
+      wasmModule: await loadPGliteWasmModule(),
+    },
+    transport: {
+      type: "websocket",
+      url: relayUrl,
+      reconnect: { maxAttempts: 8, baseDelayMs: 250, maxDelayMs: 5_000 },
+    },
+    autoStart: false,
+    partitions: partitions.map((partitionId) => ({
+      id: partitionId,
+      project: insertFactoryEvent,
+    })),
+    onAppliedRemote: async () => {
+      const node = nodes.get(id);
+      if (node) {
+        node.stats = await readNodeStats(node.handle.db);
+        node.eventCount = node.stats.events;
+        addLog("sync", `${id} applied remote event`);
+        render(false);
+      }
+    },
+  });
+}
+
 async function boot(): Promise<void> {
   sourceCasStore = await openCasStore("source", "distrb-pglite-browser-source-cas");
   targetCasStore = await openCasStore("target", "distrb-pglite-browser-target-cas");
@@ -195,15 +173,6 @@ async function boot(): Promise<void> {
   );
   render();
   startSimulation();
-}
-
-async function createPGlite(fs: BrowserPGliteCasFilesystem): Promise<PGlite> {
-  return new PGlite({
-    fs,
-    relaxedDurability: false,
-    fsBundle: await loadPGliteFsBundle(),
-    wasmModule: await loadPGliteWasmModule(),
-  });
 }
 
 function loadPGliteFsBundle(): Promise<Blob> {
@@ -232,31 +201,14 @@ async function addNode(
   lineId = lineForIndex(nodes.size),
   partitions = partitionsForRole(role, lineId),
 ): Promise<void> {
-  const blobs = new BrowserSha256BlobStore();
-  const fs = new BrowserPGliteCasFilesystem(blobs);
-  const db = await createPGlite(fs);
-  await db.waitReady;
-  await db.exec(SCHEMA);
-  const store = new SensorBrowserStore(id, db, async () => {
-    const node = nodes.get(id);
-    if (node) {
-      node.stats = await readNodeStats(node.db);
-      node.eventCount = node.stats.events;
-      addLog("sync", `${id} applied remote event`);
-      render(false);
-    }
-  });
-  const stats = await readNodeStats(db);
+  const handle = await openBrowserNode(id, partitions);
+  const stats = await readNodeStats(handle.db);
   nodes.set(id, {
     id,
     role,
     lineId,
     partitions,
-    fs,
-    blobs,
-    db,
-    store,
-    relayOnline: false,
+    handle,
     eventCount: stats.events,
     stats,
   });
@@ -271,33 +223,15 @@ async function addNode(
 
 async function resetNode(id: string): Promise<void> {
   const existing = requireNode(id);
-  await existing.syncNode?.stop().catch(() => {});
-  await existing.db.close();
-  const blobs = new BrowserSha256BlobStore();
-  const fs = new BrowserPGliteCasFilesystem(blobs);
-  const db = await createPGlite(fs);
-  await db.waitReady;
-  await db.exec(SCHEMA);
-  const store = new SensorBrowserStore(id, db, async () => {
-    const node = nodes.get(id);
-    if (node) {
-      node.stats = await readNodeStats(node.db);
-      node.eventCount = node.stats.events;
-      addLog("sync", `${id} applied remote event`);
-      render(false);
-    }
-  });
-  const stats = await readNodeStats(db);
+  await existing.handle.close();
+  const handle = await openBrowserNode(id, existing.partitions);
+  const stats = await readNodeStats(handle.db);
   nodes.set(id, {
     id,
     role: existing.role,
     lineId: existing.lineId,
     partitions: existing.partitions,
-    fs,
-    blobs,
-    db,
-    store,
-    relayOnline: false,
+    handle,
     eventCount: stats.events,
     stats,
   });
@@ -307,28 +241,14 @@ async function resetNode(id: string): Promise<void> {
 
 async function connectRelay(nodeId: string): Promise<void> {
   const node = requireNode(nodeId);
-  if (node.relayOnline) {
+  if (node.handle.isOnline) {
     return;
   }
 
   try {
-    const syncNode = new SyncNode(
-      node.id,
-      node.store,
-      new BrowserWebSocketTransport({
-        url: relayUrl,
-        reconnect: { maxAttempts: 8, baseDelayMs: 250, maxDelayMs: 5_000 },
-      }),
-    );
-    await syncNode.start({ autoRecoverSubscriptions: true });
-    for (const partitionId of node.partitions) {
-      await syncNode.subscribe(partitionId);
-    }
-    node.syncNode = syncNode;
-    node.relayOnline = true;
+    await node.handle.start();
     addLog("sync", `${node.id} connected to relay; subscribed ${node.partitions.join(", ")}`);
   } catch (error) {
-    node.relayOnline = false;
     addLog("sync", `${node.id} relay unavailable: ${String(error)}`);
   }
   render(false);
@@ -336,9 +256,7 @@ async function connectRelay(nodeId: string): Promise<void> {
 
 async function disconnectRelay(nodeId: string): Promise<void> {
   const node = requireNode(nodeId);
-  await node.syncNode?.stop().catch(() => {});
-  node.syncNode = undefined;
-  node.relayOnline = false;
+  await node.handle.stop().catch(() => {});
   addLog("sync", `${node.id} disconnected from relay`);
   render(false);
 }
@@ -349,31 +267,27 @@ async function writeFactoryEvent(
 ): Promise<void> {
   const node = requireNode(nodeId);
   const payload = createFactoryPayload(node, preferredType);
-  if (node.syncNode) {
-    const event = await node.syncNode.write<FactoryPayload>({
+  if (node.handle.isOnline) {
+    await node.handle.write<FactoryPayload>({
       partitionId: payload.partitionId,
-      schemaVersion: 1,
       payload,
     });
-    await insertFactoryEvent(node.db, event);
     addLog("write", `${nodeId} relayed ${eventSummary(payload)}`);
   } else {
-    const event = await node.store.appendLocal<FactoryPayload>({
+    await node.handle.writeLocal<FactoryPayload>({
       partitionId: payload.partitionId,
-      schemaVersion: 1,
       payload,
     });
-    await insertFactoryEvent(node.db, event);
     addLog("write", `${nodeId} recorded offline ${eventSummary(payload)}`);
   }
-  node.stats = await readNodeStats(node.db);
+  node.stats = await readNodeStats(node.handle.db);
   node.eventCount = node.stats.events;
   render();
 }
 
 async function catchupTargetFromSource(): Promise<void> {
   const target = requireNode(targetNodeId);
-  if (!target.syncNode) {
+  if (!target.handle.isOnline) {
     await connectRelay(target.id);
   }
   const source = requireNode(sourceNodeId);
@@ -393,13 +307,13 @@ async function writeBurst(nodeId: string, count = 5): Promise<void> {
 }
 
 async function catchUpNodeFromPeer(target: BrowserNode, peer: BrowserNode): Promise<number> {
-  if (!target.syncNode) return 0;
+  if (!target.handle.isOnline) return 0;
   const partitions = sharedPartitions(target, peer);
   let applied = 0;
   for (const partitionId of partitions) {
-    applied += await target.syncNode.catchUpFrom(peer.id, partitionId);
+    applied += await target.handle.catchUpFrom(peer.id, partitionId);
   }
-  target.stats = await readNodeStats(target.db);
+  target.stats = await readNodeStats(target.handle.db);
   target.eventCount = target.stats.events;
   return applied;
 }
@@ -407,7 +321,11 @@ async function catchUpNodeFromPeer(target: BrowserNode, peer: BrowserNode): Prom
 async function fanOutCatchupFromPeer(peer: BrowserNode): Promise<number> {
   let applied = 0;
   for (const target of nodes.values()) {
-    if (target.id === peer.id || !target.syncNode || sharedPartitions(target, peer).length === 0) {
+    if (
+      target.id === peer.id ||
+      !target.handle.isOnline ||
+      sharedPartitions(target, peer).length === 0
+    ) {
       continue;
     }
     applied += await catchUpNodeFromPeer(target, peer);
@@ -459,7 +377,7 @@ async function simulationStep(): Promise<void> {
       const target = nodeList.find((node) => node.id === "plant-control") ?? pick(nodeList);
       const peer = pick(nodeList.filter((node) => node.id !== target.id));
       const partitions = peer ? sharedPartitions(target, peer) : [];
-      if (target.syncNode && peer && partitions.length > 0) {
+      if (target.handle.isOnline && peer && partitions.length > 0) {
         const applied = await catchUpNodeFromPeer(target, peer);
         addLog(
           "sync",
@@ -476,8 +394,8 @@ async function simulationStep(): Promise<void> {
 async function incidentStep(): Promise<void> {
   if (!simulationRunning || nodes.size === 0) return;
   const nodeList = [...nodes.values()];
-  const online = nodeList.filter((node) => node.relayOnline);
-  const offline = nodeList.filter((node) => !node.relayOnline);
+  const online = nodeList.filter((node) => node.handle.isOnline);
+  const offline = nodeList.filter((node) => !node.handle.isOnline);
 
   if (Math.random() > 0.55 && online.length > 2) {
     const node = pick(online.filter((candidate) => candidate.id !== "plant-control"));
@@ -495,10 +413,12 @@ async function incidentStep(): Promise<void> {
   if (offline.length > 0) {
     const node = pick(offline);
     await connectRelay(node.id);
-    const peers = nodeList.filter((candidate) => candidate.id !== node.id && candidate.relayOnline);
+    const peers = nodeList.filter(
+      (candidate) => candidate.id !== node.id && candidate.handle.isOnline,
+    );
     const peer = peers.length ? pick(peers) : undefined;
     const partitions = peer ? sharedPartitions(node, peer) : [];
-    if (node.syncNode && peer && partitions.length > 0) {
+    if (node.handle.isOnline && peer && partitions.length > 0) {
       const applied = await catchUpNodeFromPeer(node, peer);
       const fannedOut = await fanOutCatchupFromPeer(node);
       addLog(
@@ -520,12 +440,14 @@ async function incidentStep(): Promise<void> {
 async function createSnapshot(): Promise<void> {
   const source = requireNode(sourceNodeId);
   lastManifest = await snapshotBrowserFilesystemToCas({
-    fs: source.fs.asSnapshotDataFilesystem(),
+    fs: source.handle.fs.asSnapshotDataFilesystem(),
     casStore: sourceCasStore,
     chunkSize: 16 * 1024,
     snapshotId: `browser-${Date.now()}`,
   });
-  const inventory = await inventoryBrowserFilesystem({ fs: source.fs.asSnapshotDataFilesystem() });
+  const inventory = await inventoryBrowserFilesystem({
+    fs: source.handle.fs.asSnapshotDataFilesystem(),
+  });
   const matches = browserManifestFilesEqualInventory(lastManifest, inventory);
   addLog(
     "snapshot",
@@ -540,48 +462,25 @@ async function restoreSnapshot(): Promise<void> {
   }
   const manifest = lastManifest!;
   const target = requireNode(targetNodeId);
-  await target.syncNode?.stop().catch(() => {});
-  await target.db.close();
-  const missing = await transferMissingBrowserCasBlocks({
+  const restored = await target.handle.restoreFromCasSnapshot({
     manifest,
     sourceCasStore,
     targetCasStore,
   });
-  const blobs = new BrowserSha256BlobStore();
-  const fs = new BrowserPGliteCasFilesystem(blobs);
-  await restoreBrowserFilesystemFromCas({
-    manifest,
-    casStore: targetCasStore,
-    fs: fs.asSnapshotDataFilesystem(),
-  });
-  const db = await createPGlite(fs);
-  await db.waitReady;
-  const stats = await readNodeStats(db);
-  const store = new SensorBrowserStore(target.id, db, async () => {
-    const node = nodes.get(target.id);
-    if (node) {
-      node.stats = await readNodeStats(node.db);
-      node.eventCount = node.stats.events;
-      addLog("sync", `${target.id} applied remote event`);
-      render(false);
-    }
-  });
+  const handle = restored.handle;
+  const stats = await readNodeStats(handle.db);
   nodes.set(target.id, {
     id: target.id,
     role: target.role,
     lineId: target.lineId,
     partitions: target.partitions,
-    fs,
-    blobs,
-    db,
-    store,
-    relayOnline: false,
+    handle,
     eventCount: stats.events,
     stats,
   });
   addLog(
     "restore",
-    `${target.id} restored ${manifest.snapshotId}; transferred ${missing.length} missing blocks`,
+    `${target.id} restored ${manifest.snapshotId}; transferred ${restored.transferredBlocks.length} missing blocks`,
   );
   selectedSqlNodeId = target.id;
   render();
@@ -621,7 +520,7 @@ async function runSql(): Promise<void> {
   sqlText = input.value;
   const started = performance.now();
   try {
-    const result = await node.db.query<QueryRow>(sqlText);
+    const result = await node.handle.db.query<QueryRow>(sqlText);
     const duration = Math.round(performance.now() - started);
     sqlMetaText = `${node.id}: ${result.rows.length} rows in ${duration}ms`;
     sqlResultHtml = renderTable(result.rows);
@@ -817,7 +716,7 @@ function renderNode(node: BrowserNode): string {
         <span>${node.lineId}</span>
         ${isSource ? "<span>source</span>" : ""}
         ${isTarget ? "<span>target</span>" : ""}
-        ${node.relayOnline ? "<span>relay</span>" : ""}
+        ${node.handle.isOnline ? "<span>relay</span>" : ""}
       </div>
       <div class="partitions">${node.partitions.map((partition) => `<span>${escapeHtml(partition)}</span>`).join("")}</div>
       <div class="node-metrics">
@@ -838,7 +737,7 @@ function renderNode(node: BrowserNode): string {
       <p>${stale}</p>
       <div class="node-actions">
         <button data-write="${node.id}">Record</button>
-        <button data-connect="${node.id}">${node.relayOnline ? "Disconnect" : "Connect"}</button>
+        <button data-connect="${node.id}">${node.handle.isOnline ? "Disconnect" : "Connect"}</button>
         <button data-reset="${node.id}">Reset</button>
         <button data-use-sql="${node.id}">SQL</button>
       </div>
@@ -924,7 +823,7 @@ function bindEvents(): void {
     button.addEventListener("click", () => {
       const id = button.dataset.connect!;
       const node = requireNode(id);
-      void (node.relayOnline ? disconnectRelay(id) : connectRelay(id));
+      void (node.handle.isOnline ? disconnectRelay(id) : connectRelay(id));
     });
   });
   document.querySelectorAll<HTMLButtonElement>("[data-reset]").forEach((button) => {
@@ -1123,7 +1022,7 @@ function fleetStats(nodeList: BrowserNode[]): NodeStats & { online: number } {
       openIssues: total.openIssues + node.stats.openIssues,
       latest: total.latest,
       partitions: total.partitions,
-      online: total.online + (node.relayOnline ? 1 : 0),
+      online: total.online + (node.handle.isOnline ? 1 : 0),
     }),
     { events: 0, units: 0, defects: 0, openIssues: 0, latest: "", partitions: {}, online: 0 },
   );
