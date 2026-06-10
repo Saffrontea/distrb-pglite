@@ -1,6 +1,7 @@
 import { mkdir } from "node:fs/promises";
 import { PGlite, type PGliteOptions } from "@electric-sql/pglite";
 import {
+  SingleWriterRegistry,
   SyncNode,
   assertValidPartitionId,
   type EventEnvelope,
@@ -16,6 +17,7 @@ import {
   type StorageSnapshotCatalogEntry,
   type StorageSnapshotComponent,
   type StorageSnapshotScope,
+  type SingleWriterViolationError,
   type Transport,
 } from "@distrb-pglite/core";
 import { P2PWebSocketTransport, type P2PTransportOptions } from "./p2p-transport.js";
@@ -73,6 +75,8 @@ export type DistributedPGliteOpenOptions = {
   partitions?: DistributedPGlitePartitionOptions[];
   autoStart?: boolean;
   autoRecoverSubscriptions?: boolean;
+  singleWriter?: SingleWriterRegistry | { owners: Record<PartitionId, NodeId> };
+  onSingleWriterViolation?: (error: SingleWriterViolationError) => void;
 };
 
 export type DistributedPGliteWriteOptions<TPayload> = {
@@ -383,6 +387,10 @@ export class DistributedPGlite {
       this.options.nodeId,
       this.projectedStore,
       createTransport(this.options.transport),
+      {
+        singleWriter: resolveSingleWriterRegistry(this.options.singleWriter),
+        onSingleWriterViolation: this.options.onSingleWriterViolation,
+      },
     );
   }
 
@@ -524,6 +532,22 @@ class ProjectingPartitionStore implements PartitionStore {
   createSnapshotMetadata(partitionId: PartitionId) {
     return this.inner.createSnapshotMetadata(partitionId);
   }
+}
+
+function resolveSingleWriterRegistry(
+  option: DistributedPGliteOpenOptions["singleWriter"],
+): SingleWriterRegistry | undefined {
+  if (!option) {
+    return undefined;
+  }
+  if (option instanceof SingleWriterRegistry) {
+    return option;
+  }
+  const registry = new SingleWriterRegistry();
+  for (const [partitionId, ownerNodeId] of Object.entries(option.owners)) {
+    registry.assign(partitionId, ownerNodeId);
+  }
+  return registry;
 }
 
 function createTransport(options: DistributedPGliteTransportOptions): Transport {

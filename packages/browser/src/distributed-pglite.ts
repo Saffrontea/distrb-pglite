@@ -1,5 +1,6 @@
 import { PGlite, type PGliteOptions } from "@electric-sql/pglite";
 import {
+  SingleWriterRegistry,
   SqlPartitionStore,
   SyncNode,
   assertValidPartitionId,
@@ -11,6 +12,7 @@ import {
   type NodeId,
   type PartitionId,
   type PartitionStore,
+  type SingleWriterViolationError,
   type Transport,
 } from "@distrb-pglite/core";
 import { BrowserSha256BlobStore } from "./blob-store.js";
@@ -57,6 +59,8 @@ export type DistributedBrowserPGliteOpenOptions = {
   autoStart?: boolean;
   autoRecoverSubscriptions?: boolean;
   onAppliedRemote?: (event: EventEnvelope) => Promise<void> | void;
+  singleWriter?: SingleWriterRegistry | { owners: Record<PartitionId, NodeId> };
+  onSingleWriterViolation?: (error: SingleWriterViolationError) => void;
 };
 
 export type DistributedBrowserPGliteWriteOptions<TPayload> = {
@@ -129,6 +133,10 @@ export class DistributedBrowserPGlite {
       options.nodeId,
       this.projectedStore,
       createTransport(options.transport),
+      {
+        singleWriter: resolveSingleWriterRegistry(options.singleWriter),
+        onSingleWriterViolation: options.onSingleWriterViolation,
+      },
     );
     for (const partition of options.partitions ?? []) {
       this.partitions.set(partition.id, {
@@ -419,6 +427,22 @@ class ProjectingBrowserStore implements PartitionStore {
   createSnapshotMetadata(partitionId: PartitionId) {
     return this.inner.createSnapshotMetadata(partitionId);
   }
+}
+
+function resolveSingleWriterRegistry(
+  option: DistributedBrowserPGliteOpenOptions["singleWriter"],
+): SingleWriterRegistry | undefined {
+  if (!option) {
+    return undefined;
+  }
+  if (option instanceof SingleWriterRegistry) {
+    return option;
+  }
+  const registry = new SingleWriterRegistry();
+  for (const [partitionId, ownerNodeId] of Object.entries(option.owners)) {
+    registry.assign(partitionId, ownerNodeId);
+  }
+  return registry;
 }
 
 function createTransport(options: DistributedBrowserPGliteTransportOptions): Transport {

@@ -21,6 +21,7 @@ import {
   type CatchupPlan,
   type PartitionConvergenceStatus,
 } from "./convergence.js";
+import { SingleWriterViolationError, type SingleWriterRegistry } from "./single-writer.js";
 
 export type SyncNodeStartOptions = {
   autoRecoverSubscriptions?: boolean;
@@ -28,6 +29,14 @@ export type SyncNodeStartOptions = {
 
 export type SubscribeOptions = {
   recoverFrom?: NodeId;
+};
+
+// ADR 0006 detection is opt-in: pass a registry to reject events that break
+// the single-writer-per-partition invariant. Without onViolation the error
+// propagates; with it, violating remote events are skipped and reported.
+export type SyncNodeOptions = {
+  singleWriter?: SingleWriterRegistry;
+  onSingleWriterViolation?: (error: SingleWriterViolationError) => void;
 };
 
 export class SyncNode {
@@ -41,6 +50,7 @@ export class SyncNode {
     readonly nodeId: NodeId,
     private readonly store: PartitionStore,
     private readonly transport: Transport,
+    private readonly options: SyncNodeOptions = {},
   ) {
     assertValidNodeId(nodeId);
   }
@@ -53,6 +63,9 @@ export class SyncNode {
     this.connection = await this.transport.connect(this.nodeId, {
       onEvent: async (event) => {
         await this.runConnectionHandler(epoch, undefined, async () => {
+          if (!this.admitEvent(event)) {
+            return;
+          }
           await this.store.applyRemote(event);
         });
       },
@@ -96,6 +109,7 @@ export class SyncNode {
 
   async write<TPayload>(input: LocalEventInput<TPayload>): Promise<EventEnvelope<TPayload>> {
     const connection = this.requireConnection();
+    this.claimLocalWrite(input.partitionId);
     return this.store
       .appendLocal(input)
       .then((event) => connection.publish(event).then(() => event));
@@ -110,6 +124,7 @@ export class SyncNode {
     }
 
     const connection = this.requireConnection();
+    this.claimLocalWrite(input.partitionId);
     return this.store
       .appendLocalEventTransaction(input, project)
       .then((event) => connection.publish(event).then(() => event));
@@ -145,6 +160,9 @@ export class SyncNode {
 
     let applied = 0;
     for (const event of response.events) {
+      if (!this.admitEvent(event)) {
+        continue;
+      }
       if (await this.store.applyRemote(event)) {
         applied += 1;
       }
@@ -184,6 +202,29 @@ export class SyncNode {
     this.connection = undefined;
     await connection?.close();
     await this.waitForConnectionHandlers();
+  }
+
+  // Local writes always throw on violation: writing into a partition owned by
+  // another node is a local protocol error, not something to skip silently.
+  private claimLocalWrite(partitionId: PartitionId): void {
+    this.options.singleWriter?.observe({ partitionId, sourceNodeId: this.nodeId });
+  }
+
+  private admitEvent(event: EventEnvelope): boolean {
+    const registry = this.options.singleWriter;
+    if (!registry) {
+      return true;
+    }
+    try {
+      registry.observe(event);
+      return true;
+    } catch (error) {
+      if (error instanceof SingleWriterViolationError && this.options.onSingleWriterViolation) {
+        this.options.onSingleWriterViolation(error);
+        return false;
+      }
+      throw error;
+    }
   }
 
   private requireConnection(): TransportConnection {

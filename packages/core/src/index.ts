@@ -41,7 +41,9 @@ export type { SqlClient } from "./sql-partition-store.js";
 export { MemoryTransport } from "./memory-transport.js";
 export type { Transport, TransportConnection, TransportHandlers } from "./transport.js";
 export { SyncNode } from "./sync-node.js";
-export type { SyncNodeStartOptions, SubscribeOptions } from "./sync-node.js";
+export type { SyncNodeOptions, SyncNodeStartOptions, SubscribeOptions } from "./sync-node.js";
+export { SingleWriterRegistry, SingleWriterViolationError } from "./single-writer.js";
+export type { PartitionOwnershipTransfer } from "./single-writer.js";
 export { compareHighWatermarks, convergenceStatus, planCatchupFromStatus } from "./convergence.js";
 export type {
   CatchupPlan,

@@ -28,6 +28,7 @@ Replication uses source-node-local event streams. Event IDs are UUID v7, but cor
 - Implement append-only event logs with idempotent apply keyed by `(source_node_id, event_id)`.
 - Implement partition subscription filtering.
 - Acceptance: duplicate and out-of-order delivery do not corrupt local state.
+- Current prototype: ADR 0006 single-writer ownership can be enforced opt-in via `SingleWriterRegistry` (core), wired through `SyncNode` and both `DistributedPGlite` facades; violating events are rejected and reported instead of merged.
 
 ## Phase 3: Memory Multi-Node Simulation
 
