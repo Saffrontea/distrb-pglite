@@ -36,6 +36,7 @@ Replication uses source-node-local event streams. Event IDs are UUID v7, but cor
 - Implement a sync node that can subscribe, publish, receive, and catch up.
 - Simulate multiple nodes in one process.
 - Acceptance: subscribed nodes converge and unsubscribed nodes ignore unrelated partitions.
+- Current prototype: `@distrb-pglite/testkit` provides `FaultInjectionTransport` (drop/duplicate/replay-failure injection with deterministic seeds) plus property-based convergence suites over SyncNode recovery paths.
 
 ## Phase 4: Snapshot Pull MVP
 

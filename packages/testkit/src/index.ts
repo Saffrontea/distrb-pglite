@@ -5,6 +5,14 @@ import {
   type NodeId,
 } from "@distrb-pglite/core";
 
+export {
+  expectStoresConverged,
+  FaultInjectionTransport,
+  mulberry32,
+  partitionEventKey,
+} from "./fault-injection.js";
+export type { TransportFaultOptions, TransportFaultStats } from "./fault-injection.js";
+
 export type TestNode = {
   node: SyncNode;
   store: InMemoryPartitionStore;
