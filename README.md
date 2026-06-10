@@ -74,6 +74,7 @@ edge で SQL を使いたい時、よくある選択肢には弱点がありま�
 - global transaction
 - central coordinator
 - Postgres `smgr` fork
+- Auth(use wireguard or something)
 
 ## まだやらないこと
 
