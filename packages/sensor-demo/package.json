@@ -21,7 +21,7 @@
     "@distrb-pglite/browser": "workspace:*",
     "@distrb-pglite/core": "workspace:*",
     "@distrb-pglite/node": "workspace:*",
-    "@electric-sql/pglite": "^0.3.4"
+    "@electric-sql/pglite": "^0.4.6"
   },
   "devDependencies": {
     "vite": "^8.0.16"

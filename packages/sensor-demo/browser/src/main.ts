@@ -1,5 +1,6 @@
 import pgliteDataUrl from "../../node_modules/@electric-sql/pglite/dist/pglite.data?url";
 import pgliteWasmUrl from "../../node_modules/@electric-sql/pglite/dist/pglite.wasm?url";
+import pgliteInitdbWasmUrl from "../../node_modules/@electric-sql/pglite/dist/initdb.wasm?url";
 import type { EventEnvelope } from "@distrb-pglite/core";
 import {
   BrowserPGliteCasFilesystem,
@@ -102,7 +103,7 @@ let targetCasStore: BrowserCasBlockStore;
 let opfsEnabled = false;
 let casRelayEnabled = false;
 let pgliteFsBundlePromise: Promise<Blob> | undefined;
-let pgliteWasmModulePromise: Promise<WebAssembly.Module> | undefined;
+const pgliteWasmModulePromises = new Map<string, Promise<WebAssembly.Module>>();
 let simulationRunning = true;
 let automationBusy = false;
 let simulationTimer: ReturnType<typeof setInterval> | undefined;
@@ -126,7 +127,8 @@ async function openBrowserNode(
     schema: SCHEMA,
     pgliteOptions: {
       fsBundle: await loadPGliteFsBundle(),
-      wasmModule: await loadPGliteWasmModule(),
+      pgliteWasmModule: await loadPGliteWasmModule(pgliteWasmUrl, "pglite"),
+      initdbWasmModule: await loadPGliteWasmModule(pgliteInitdbWasmUrl, "initdb"),
     },
     transport: {
       type: "websocket",
@@ -184,14 +186,20 @@ function loadPGliteFsBundle(): Promise<Blob> {
   return pgliteFsBundlePromise;
 }
 
-function loadPGliteWasmModule(): Promise<WebAssembly.Module> {
-  pgliteWasmModulePromise ??= fetch(pgliteWasmUrl).then(async (response) => {
-    if (!response.ok) {
-      throw new Error(`failed to load PGlite WASM module: ${response.status} ${response.url}`);
-    }
-    return WebAssembly.compile(await response.arrayBuffer());
-  });
-  return pgliteWasmModulePromise;
+function loadPGliteWasmModule(url: string, kind: string): Promise<WebAssembly.Module> {
+  let promise = pgliteWasmModulePromises.get(kind);
+  if (!promise) {
+    promise = fetch(url).then(async (response) => {
+      if (!response.ok) {
+        throw new Error(
+          `failed to load PGlite ${kind} WASM module: ${response.status} ${response.url}`,
+        );
+      }
+      return WebAssembly.compile(await response.arrayBuffer());
+    });
+    pgliteWasmModulePromises.set(kind, promise);
+  }
+  return promise;
 }
 
 async function addNode(
