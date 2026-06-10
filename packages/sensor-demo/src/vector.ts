@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 import { MemoryTransport, type EventEnvelope } from "@distrb-pglite/core";
 import { DistributedPGlite, type PGliteClient } from "@distrb-pglite/node";
 import type { PGlite } from "@electric-sql/pglite";
-import { vector } from "@electric-sql/pglite/vector";
+import { vector } from "@electric-sql/pglite-pgvector";
 import { quoteIdentifier, sameColumns, tableConstraints } from "./schema-utils.js";
 
 const SCHEMA_VERSION = 1;

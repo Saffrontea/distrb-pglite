@@ -16,7 +16,7 @@
   },
   "dependencies": {
     "@distrb-pglite/core": "workspace:*",
-    "@electric-sql/pglite": "^0.4.6",
+    "@electric-sql/pglite": "^0.5.1",
     "@hpcc-js/wasm-zstd": "^1.12.5",
     "ws": "^8.18.0"
   },
