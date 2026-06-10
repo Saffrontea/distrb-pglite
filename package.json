@@ -16,11 +16,11 @@
     "playground:browser": "pnpm --filter @distrb-pglite/sensor-demo browser:dev"
   },
   "devDependencies": {
-    "@types/node": "^22.19.19",
+    "@types/node": "^22.19.20",
     "fast-check": "^4.8.0",
     "oxfmt": "^0.53.0",
-    "oxlint": "^1.68.0",
-    "typescript": "^5.9.3",
+    "oxlint": "^1.69.0",
+    "typescript": "^6.0.3",
     "vitest": "^4.1.8"
   },
   "packageManager": "pnpm@9.15.0"
