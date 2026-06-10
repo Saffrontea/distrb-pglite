@@ -72,6 +72,7 @@ Replication uses source-node-local event streams. Event IDs are UUID v7, but cor
 - Keep this phase outside PGlite internals to validate snapshot, GC, and replication invariants before maintaining a fork.
 - Acceptance: two snapshots with overlapping data reuse blocks, transfer only missing blocks, and reconstruct a readable PGlite data directory.
 - Current contract: CAS manifests include snapshot ids, parent snapshot ids, directories, file hashes, and content-addressed block lists.
+- Current contract: CAS manifests carry an ADR 0007 compatibility stamp (`manifestFormat`, `pgMajorVersion` from PG_VERSION, `pgliteVersion` when detectable); managed pull, bootstrap restore, and data-only restore reject unstamped or mismatched manifests before selection and before applying blocks.
 
 ## Phase 9: Partition-Aware Snapshot Semantics
 

@@ -55,6 +55,11 @@ export type {
   CasSnapshotFilter,
 } from "./cas.js";
 export {
+  pgliteRuntimeVersion,
+  readDataDirCasCompatibility,
+  readSnapshotFilesystemCasCompatibility,
+} from "./compatibility.js";
+export {
   createPartitionCasSnapshot,
   createPartitionFilesystemSnapshot,
   highWatermarkMap,

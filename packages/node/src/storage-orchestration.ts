@@ -33,6 +33,8 @@ import {
   type CasChunking,
   type CasManifest,
 } from "./cas.js";
+import { pgliteRuntimeVersion, readDataDirCasCompatibility } from "./compatibility.js";
+import { assertCasCompatible, isCasCompatible, type CasCompatibility } from "@distrb-pglite/core";
 
 export type ManagedPartitionCasSnapshot = {
   drift: StorageBindingDrift[];
@@ -137,11 +139,24 @@ export async function pullPartitionCasSnapshot(options: {
       candidate.partitionId === options.partitionId &&
       (!catalogSnapshots || isAdvertisedByCatalogManifest(candidate, catalogSnapshots)),
   );
-  const compatibleEntries = storageBinding
+  // ADR 0007: the version fence runs before snapshot selection so an
+  // incompatible physical snapshot can never win selection.
+  const localCompatibility = await readDataDirCasCompatibility(options.targetDir);
+  const bindingCompatibleEntries = storageBinding
     ? candidateEntries.filter((candidate) => isPullStorageCompatible(candidate, storageBinding))
     : candidateEntries;
+  const compatibleEntries = bindingCompatibleEntries.filter((candidate) =>
+    isManifestPullCompatible(candidate.manifest, localCompatibility),
+  );
   const entry = selectStorageSnapshotCatalogEntryForPull(compatibleEntries, options.requirement);
   if (!entry) {
+    const versionIncompatibleEntry = selectStorageSnapshotCatalogEntryForPull(
+      bindingCompatibleEntries,
+      options.requirement,
+    );
+    if (versionIncompatibleEntry) {
+      assertManifestPullCompatible(versionIncompatibleEntry.manifest, localCompatibility);
+    }
     const incompatibleEntry = storageBinding
       ? selectStorageSnapshotCatalogEntryForPull(candidateEntries, options.requirement)
       : undefined;
@@ -199,6 +214,52 @@ export async function pullPartitionCasSnapshot(options: {
   }
 
   return { entry, transferredBlocks };
+}
+
+// Managed pulls reject unstamped manifests outright (ADR 0007). When the
+// target data directory does not exist yet (bootstrap), the only local fact
+// is the runtime PGlite package version, so only that part is enforced.
+function isManifestPullCompatible(
+  manifest: CasManifest,
+  localCompatibility: CasCompatibility | undefined,
+): boolean {
+  if (!manifest.compatibility) {
+    return false;
+  }
+  if (localCompatibility) {
+    return isCasCompatible(manifest.compatibility, localCompatibility);
+  }
+  const localPgliteVersion = pgliteRuntimeVersion();
+  return (
+    localPgliteVersion === undefined ||
+    manifest.compatibility.pgliteVersion === undefined ||
+    manifest.compatibility.pgliteVersion === localPgliteVersion
+  );
+}
+
+function assertManifestPullCompatible(
+  manifest: CasManifest,
+  localCompatibility: CasCompatibility | undefined,
+): void {
+  if (localCompatibility) {
+    assertCasCompatible(manifest.compatibility, localCompatibility, "managed snapshot pull");
+    return;
+  }
+  if (!manifest.compatibility) {
+    throw new Error(
+      "managed snapshot pull: CAS manifest has no compatibility stamp and is rejected",
+    );
+  }
+  const localPgliteVersion = pgliteRuntimeVersion();
+  if (
+    localPgliteVersion !== undefined &&
+    manifest.compatibility.pgliteVersion !== undefined &&
+    manifest.compatibility.pgliteVersion !== localPgliteVersion
+  ) {
+    throw new Error(
+      `managed snapshot pull: PGlite version mismatch: manifest=${manifest.compatibility.pgliteVersion} local=${localPgliteVersion}`,
+    );
+  }
 }
 
 function validatePullStorageCompatibility(

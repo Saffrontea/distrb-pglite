@@ -1,6 +1,10 @@
 import {
+  assertCasCompatible,
+  CAS_MANIFEST_FORMAT,
   uuidV7,
+  validateCasCompatibility,
   type BlobRef,
+  type CasCompatibility,
   type SnapshotFile,
   type SnapshotFilesystemManifest,
   type StorageSnapshotComponent,
@@ -79,6 +83,7 @@ export type BrowserCasManifest = SnapshotFilesystemManifest<BrowserCasFileManife
   snapshotId: string;
   parentSnapshotIds: string[];
   chunking?: BrowserCasChunking;
+  compatibility?: CasCompatibility;
 };
 
 export type BrowserCasSnapshotFilter = {
@@ -105,9 +110,14 @@ export async function snapshotBrowserFilesystemToCas(options: {
   snapshotId?: string;
   parentSnapshotIds?: string[];
   filter?: BrowserCasSnapshotFilter;
+  compatibility?: CasCompatibility;
+  pgliteVersion?: string;
 }): Promise<BrowserCasManifest> {
   const chunking = options.chunking ?? fixedChunking(options.chunkSize ?? 64 * 1024);
   const chunkSize = manifestChunkSize(chunking);
+  const compatibility =
+    options.compatibility ??
+    (await readBrowserFilesystemCasCompatibility(options.fs, options.pgliteVersion));
   const inventory = await inventoryBrowserFilesystem({ fs: options.fs });
   const selectedFiles = options.filter
     ? inventory.files.filter((file) => options.filter?.includeFile(file) ?? false)
@@ -131,6 +141,7 @@ export async function snapshotBrowserFilesystemToCas(options: {
     parentSnapshotIds: options.parentSnapshotIds ?? [],
     chunkSize,
     chunking,
+    ...(compatibility ? { compatibility } : {}),
     directories: options.filter
       ? selectedDirectories(inventory.directories, selectedFiles, options.filter)
       : inventory.directories,
@@ -138,12 +149,39 @@ export async function snapshotBrowserFilesystemToCas(options: {
   };
 }
 
+export async function readBrowserFilesystemCasCompatibility(
+  fs: BrowserSnapshotDataFilesystem,
+  pgliteVersion?: string,
+): Promise<CasCompatibility | undefined> {
+  let pgVersionFile: Uint8Array;
+  try {
+    pgVersionFile = await fs.readFile("PG_VERSION");
+  } catch {
+    return undefined;
+  }
+
+  const pgMajorVersion = new TextDecoder().decode(pgVersionFile).trim();
+  if (!/^\d+(\.\d+)?$/.test(pgMajorVersion)) {
+    return undefined;
+  }
+
+  return {
+    manifestFormat: CAS_MANIFEST_FORMAT,
+    pgMajorVersion,
+    ...(pgliteVersion ? { pgliteVersion } : {}),
+  };
+}
+
 export async function restoreBrowserFilesystemFromCas(options: {
   manifest: BrowserCasManifest;
   casStore: BrowserCasBlockStore;
   fs: BrowserSnapshotDataFilesystem;
+  expectedCompatibility?: CasCompatibility;
 }): Promise<void> {
   const manifest = validateBrowserCasManifest(options.manifest);
+  if (options.expectedCompatibility) {
+    assertCasCompatible(manifest.compatibility, options.expectedCompatibility, "CAS restore");
+  }
   await options.fs.mkdir("");
   for (const directory of manifest.directories) {
     validateBrowserLogicalPath(directory);
@@ -308,6 +346,9 @@ export function validateBrowserCasManifest(
 
   if (manifest.chunking !== undefined) {
     validateBrowserCasChunking(manifest.chunking);
+  }
+  if (manifest.compatibility !== undefined) {
+    validateCasCompatibility(manifest.compatibility, "browser CAS manifest compatibility");
   }
 
   return manifest as BrowserCasManifest;

@@ -10,7 +10,12 @@ import type {
   StoragePartitionBinding,
   StorageRelationLocator,
 } from "@distrb-pglite/core";
-import { assertValidEventEnvelope, isUuidV7, UuidV7Factory } from "@distrb-pglite/core";
+import {
+  assertCasCompatible,
+  assertValidEventEnvelope,
+  isUuidV7,
+  UuidV7Factory,
+} from "@distrb-pglite/core";
 import {
   restoreFromCas,
   snapshotToCas,
@@ -18,6 +23,7 @@ import {
   type CasManifest,
   type CasSnapshotFilter,
 } from "./cas.js";
+import { pgliteRuntimeVersion, readDataDirCasCompatibility } from "./compatibility.js";
 import type { FileInventoryEntry } from "./inventory.js";
 
 export type PartitionCasSnapshot = {
@@ -165,6 +171,7 @@ export async function restorePartitionCasSnapshot(options: {
   if (options.snapshot.storageBinding.snapshotScope !== "catalog-and-data") {
     throw new Error("only catalog-and-data partition snapshots can restore a full data directory");
   }
+  assertManifestRestorableByLocalRuntime(options.snapshot.manifest);
 
   await restoreFromCas({
     manifest: options.snapshot.manifest,
@@ -195,6 +202,19 @@ export async function restorePartitionDataOnlyCasSnapshot(options: {
   if (options.targetStorageBinding) {
     validateDataOnlyTargetBinding(options.snapshot.storageBinding, options.targetStorageBinding);
   }
+  // ADR 0007: data-only snapshots land in an existing data directory, so the
+  // target's physical format is known and must match the manifest stamp.
+  const targetCompatibility = await readDataDirCasCompatibility(options.targetDir);
+  if (!targetCompatibility) {
+    throw new Error(
+      `data-only snapshot target is not an initialized PGlite data directory: ${options.targetDir}`,
+    );
+  }
+  assertCasCompatible(
+    options.snapshot.manifest.compatibility,
+    targetCompatibility,
+    "data-only snapshot restore",
+  );
 
   await restoreFromCas({
     manifest: options.targetStorageBinding
@@ -303,6 +323,27 @@ export function storageBindingSnapshotFilter(
     filter.includeDirectory = () => true;
   }
   return filter;
+}
+
+// Bootstrap restores write into a fresh directory, so there is no target
+// PG_VERSION to compare. The strongest local fence is the runtime PGlite
+// package version; an unstamped manifest is rejected outright (ADR 0007).
+function assertManifestRestorableByLocalRuntime(manifest: CasManifest): void {
+  if (!manifest.compatibility) {
+    throw new Error(
+      "partition snapshot restore: CAS manifest has no compatibility stamp and is rejected",
+    );
+  }
+  const localPgliteVersion = pgliteRuntimeVersion();
+  if (
+    localPgliteVersion !== undefined &&
+    manifest.compatibility.pgliteVersion !== undefined &&
+    manifest.compatibility.pgliteVersion !== localPgliteVersion
+  ) {
+    throw new Error(
+      `partition snapshot restore: PGlite version mismatch: manifest=${manifest.compatibility.pgliteVersion} local=${localPgliteVersion}`,
+    );
+  }
 }
 
 function validateStorageBinding(

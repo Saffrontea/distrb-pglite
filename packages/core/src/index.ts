@@ -69,3 +69,11 @@ export {
   selectStorageSnapshotCatalogEntryForPull,
 } from "./storage-policy.js";
 export type { StorageGcPlanOptions } from "./storage-policy.js";
+export {
+  CAS_MANIFEST_FORMAT,
+  assertCasCompatible,
+  describeCasCompatibility,
+  isCasCompatible,
+  validateCasCompatibility,
+} from "./cas-compatibility.js";
+export type { CasCompatibility } from "./cas-compatibility.js";

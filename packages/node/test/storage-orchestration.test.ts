@@ -3,6 +3,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { PGlite } from "@electric-sql/pglite";
 import { describe, expect, it } from "vitest";
+import { CAS_MANIFEST_FORMAT, type CasCompatibility } from "@distrb-pglite/core";
 import {
   bindStoragePartition,
   createManagedPartitionCasSnapshot,
@@ -10,6 +11,7 @@ import {
   loadStorageBindingGroup,
   listStorageSnapshotCatalogEntries,
   PGlitePartitionStore,
+  pgliteRuntimeVersion,
   pullPartitionCasSnapshot,
   type CasManifest,
 } from "../src/index.js";
@@ -701,6 +703,119 @@ describe("storage orchestration", () => {
     expect(restored).toBe("compatible snapshot");
   });
 
+  it("skips version-incompatible pull snapshots before selection (ADR 0007 version fence)", async () => {
+    const root = await makeTempDir("managed-pull-version-fence");
+    const sourceCasDir = join(root, "source-cas");
+    const targetCasDir = join(root, "target-cas");
+    const targetDir = join(root, "target");
+    await mkdir(sourceCasDir, { recursive: true });
+    const compatibleContent = Buffer.from("compatible snapshot");
+    const compatibleHash = sha256(compatibleContent);
+    const compatibleCatalogContent = Buffer.from("compatible catalog");
+    const compatibleCatalogHash = sha256(compatibleCatalogContent);
+    await writeFile(join(sourceCasDir, compatibleHash), compatibleContent);
+    await writeFile(join(sourceCasDir, compatibleCatalogHash), compatibleCatalogContent);
+    const foreignContent = Buffer.from("foreign-version snapshot");
+    const foreignHash = sha256(foreignContent);
+    const foreignManifest: CasManifest = {
+      ...manifestForCatalogAndDataPayload(
+        "foreign-version-newer",
+        foreignContent,
+        foreignHash,
+        compatibleCatalogContent,
+        compatibleCatalogHash,
+      ),
+      compatibility: {
+        manifestFormat: CAS_MANIFEST_FORMAT,
+        pgMajorVersion: "17",
+        pgliteVersion: "0.0.1-foreign",
+      },
+    };
+    const storageBinding = {
+      partitionId: "tenant:jp",
+      rootRelationOid: 1,
+      relations: [
+        {
+          databaseOid: 1,
+          tablespaceOid: 1,
+          relationOid: 1,
+          relfilenode: 1,
+          storagePath: "payload.txt",
+          role: "child" as const,
+        },
+      ],
+      snapshotScope: "catalog-and-data" as const,
+      ddlGeneration: 2,
+    };
+
+    const pulled = await pullPartitionCasSnapshot({
+      snapshotEntries: [
+        {
+          groupId: "files",
+          partitionId: "tenant:jp",
+          snapshotId: "foreign-version-newer",
+          components: ["catalog", "data"],
+          highWatermark: [],
+          ddlGeneration: 2,
+          manifestKind: "cas",
+          manifest: foreignManifest,
+        },
+        {
+          groupId: "files",
+          partitionId: "tenant:jp",
+          snapshotId: "compatible-older",
+          components: ["catalog", "data"],
+          highWatermark: [],
+          ddlGeneration: 2,
+          manifestKind: "cas",
+          manifest: manifestForCatalogAndDataPayload(
+            "compatible-older",
+            compatibleContent,
+            compatibleHash,
+            compatibleCatalogContent,
+            compatibleCatalogHash,
+          ),
+        },
+      ],
+      groupId: "files",
+      partitionId: "tenant:jp",
+      requirement: "bootstrap",
+      sourceCasDir,
+      targetCasDir,
+      targetDir,
+      storageBinding,
+    });
+
+    expect(pulled).toMatchObject({ entry: { snapshotId: "compatible-older" } });
+    await expect(readFile(join(targetDir, "payload.txt"), "utf8")).resolves.toBe(
+      "compatible snapshot",
+    );
+
+    await expect(
+      pullPartitionCasSnapshot({
+        snapshotEntries: [
+          {
+            groupId: "files",
+            partitionId: "tenant:jp",
+            snapshotId: "foreign-version-newer",
+            components: ["catalog", "data"],
+            highWatermark: [],
+            ddlGeneration: 2,
+            manifestKind: "cas",
+            manifest: foreignManifest,
+          },
+        ],
+        groupId: "files",
+        partitionId: "tenant:jp",
+        requirement: "bootstrap",
+        sourceCasDir,
+        targetCasDir,
+        targetDir: join(root, "target-2"),
+        storageBinding,
+      }),
+    ).rejects.toThrow("PGlite version mismatch");
+  });
+
   it("rejects pulls when an explicit target storage binding belongs to another partition", async () => {
     const root = await makeTempDir("managed-pull-partition-mismatch");
     const targetCasDir = join(root, "target-cas");
@@ -767,12 +882,22 @@ function sha256(content: Uint8Array): string {
   return createHash("sha256").update(content).digest("hex");
 }
 
+function fixtureCompatibility(): CasCompatibility {
+  const pgliteVersion = pgliteRuntimeVersion();
+  return {
+    manifestFormat: CAS_MANIFEST_FORMAT,
+    pgMajorVersion: "17",
+    ...(pgliteVersion ? { pgliteVersion } : {}),
+  };
+}
+
 function manifestForPayload(snapshotId: string, content: Uint8Array, hash: string): CasManifest {
   return {
     version: 1,
     snapshotId,
     parentSnapshotIds: [],
     chunkSize: 64 * 1024,
+    compatibility: fixtureCompatibility(),
     directories: [],
     files: [
       {
@@ -798,6 +923,7 @@ function manifestForCatalogAndDataPayload(
     snapshotId,
     parentSnapshotIds: [],
     chunkSize: 64 * 1024,
+    compatibility: fixtureCompatibility(),
     directories: [],
     files: [
       {

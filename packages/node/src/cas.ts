@@ -2,12 +2,16 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import {
+  assertCasCompatible,
+  validateCasCompatibility,
   type BlobRef,
+  type CasCompatibility,
   type SnapshotFile,
   type SnapshotFilesystemManifest,
   type StorageSnapshotComponent,
   uuidV7,
 } from "@distrb-pglite/core";
+import { readSnapshotFilesystemCasCompatibility } from "./compatibility.js";
 import {
   NodeDataDirFilesystem,
   inventoryFilesystem,
@@ -85,6 +89,7 @@ export type CasManifest = SnapshotFilesystemManifest<CasFileManifest> & {
   parentSnapshotIds: string[];
   compression?: "zstd";
   chunking?: CasChunking;
+  compatibility?: CasCompatibility;
 };
 
 export type CasSnapshotFilter = {
@@ -116,6 +121,7 @@ export async function snapshotToCas(options: {
   parentSnapshotIds?: string[];
   filter?: CasSnapshotFilter;
   compress?: boolean;
+  compatibility?: CasCompatibility;
 }): Promise<CasManifest> {
   return snapshotFilesystemToCas({
     fs: new NodeDataDirFilesystem(options.dataDir),
@@ -126,6 +132,7 @@ export async function snapshotToCas(options: {
     parentSnapshotIds: options.parentSnapshotIds,
     filter: options.filter,
     compress: options.compress,
+    compatibility: options.compatibility,
   });
 }
 
@@ -138,11 +145,14 @@ export async function snapshotFilesystemToCas(
     parentSnapshotIds?: string[];
     filter?: CasSnapshotFilter;
     compress?: boolean;
+    compatibility?: CasCompatibility;
   } & CasBlockStoreOption,
 ): Promise<CasManifest> {
   const casStore = resolveCasBlockStore(options);
   const chunking = options.chunking ?? fixedChunking(options.chunkSize ?? 64 * 1024);
   const chunkSize = manifestChunkSize(chunking);
+  const compatibility =
+    options.compatibility ?? (await readSnapshotFilesystemCasCompatibility(options.fs));
   const inventory = await inventoryFilesystem({ fs: options.fs });
   const selectedFiles = options.filter
     ? inventory.files.filter((file) => options.filter?.includeFile(file) ?? false)
@@ -170,6 +180,7 @@ export async function snapshotFilesystemToCas(
     chunkSize,
     chunking,
     ...(options.compress ? { compression: "zstd" as const } : {}),
+    ...(compatibility ? { compatibility } : {}),
     directories: options.filter
       ? selectedDirectories(inventory.directories, selectedFiles, options.filter)
       : inventory.directories,
@@ -282,6 +293,9 @@ export function validateCasManifest(manifest: unknown, expectedSnapshotId?: stri
   if (manifest.chunking !== undefined) {
     validateCasChunking(manifest.chunking);
   }
+  if (manifest.compatibility !== undefined) {
+    validateCasCompatibility(manifest.compatibility);
+  }
 
   return manifest as CasManifest;
 }
@@ -290,11 +304,13 @@ export async function restoreFromCas(options: {
   manifest: CasManifest;
   casDir: string;
   targetDir: string;
+  expectedCompatibility?: CasCompatibility;
 }): Promise<void> {
   await restoreFilesystemFromCas({
     manifest: options.manifest,
     casStore: new NodeCasBlockStore(options.casDir),
     fs: new NodeDataDirFilesystem(options.targetDir),
+    expectedCompatibility: options.expectedCompatibility,
   });
 }
 
@@ -302,10 +318,14 @@ export async function restoreFilesystemFromCas(
   options: {
     manifest: CasManifest;
     fs: SnapshotDataFilesystem;
+    expectedCompatibility?: CasCompatibility;
   } & CasBlockStoreOption,
 ): Promise<void> {
   const casStore = resolveCasBlockStore(options);
   const manifest = validateCasManifest(options.manifest);
+  if (options.expectedCompatibility) {
+    assertCasCompatible(manifest.compatibility, options.expectedCompatibility, "CAS restore");
+  }
   await options.fs.mkdir("");
 
   const zstd = manifest.compression === "zstd" ? await loadZstd() : undefined;
@@ -360,12 +380,14 @@ export async function transferMissingBlocks(options: {
   sourceCasDir: string;
   targetCasDir: string;
   availableBlockHashes?: ReadonlySet<string>;
+  expectedCompatibility?: CasCompatibility;
 }): Promise<CasBlock[]> {
   return transferMissingBlocksBetweenStores({
     manifest: options.manifest,
     sourceCasStore: new NodeCasBlockStore(options.sourceCasDir),
     targetCasStore: new NodeCasBlockStore(options.targetCasDir),
     availableBlockHashes: options.availableBlockHashes,
+    expectedCompatibility: options.expectedCompatibility,
   });
 }
 
@@ -374,8 +396,16 @@ export async function transferMissingBlocksBetweenStores(options: {
   sourceCasStore: CasBlockStore;
   targetCasStore: CasBlockStore;
   availableBlockHashes?: ReadonlySet<string>;
+  expectedCompatibility?: CasCompatibility;
 }): Promise<CasBlock[]> {
   const manifest = validateCasManifest(options.manifest);
+  if (options.expectedCompatibility) {
+    assertCasCompatible(
+      manifest.compatibility,
+      options.expectedCompatibility,
+      "CAS block transfer",
+    );
+  }
   const available =
     options.availableBlockHashes ?? (await options.targetCasStore.listBlockHashes());
   const missing = diffMissingBlocks(manifest, available);

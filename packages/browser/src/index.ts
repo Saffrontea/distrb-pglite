@@ -18,6 +18,7 @@ export {
   diffMissingBrowserCasBlocks,
   gcBrowserCasBlocks,
   OpfsCasBlockStore,
+  readBrowserFilesystemCasCompatibility,
   restoreBrowserFilesystemFromCas,
   snapshotBrowserFilesystemToCas,
   transferMissingBrowserCasBlocks,
