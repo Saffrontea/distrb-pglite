@@ -43,6 +43,8 @@ export type { Transport, TransportConnection, TransportHandlers } from "./transp
 export { SyncNode } from "./sync-node.js";
 export type { SyncNodeOptions, SyncNodeStartOptions, SubscribeOptions } from "./sync-node.js";
 export { SingleWriterRegistry, SingleWriterViolationError } from "./single-writer.js";
+export { emitTelemetry } from "./telemetry.js";
+export type { SyncTelemetryEvent, SyncTelemetrySink } from "./telemetry.js";
 export type { PartitionOwnershipTransfer } from "./single-writer.js";
 export { compareHighWatermarks, convergenceStatus, planCatchupFromStatus } from "./convergence.js";
 export type {

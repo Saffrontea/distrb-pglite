@@ -22,6 +22,7 @@ import {
   type PartitionConvergenceStatus,
 } from "./convergence.js";
 import { SingleWriterViolationError, type SingleWriterRegistry } from "./single-writer.js";
+import { emitTelemetry, type SyncTelemetrySink } from "./telemetry.js";
 
 export type SyncNodeStartOptions = {
   autoRecoverSubscriptions?: boolean;
@@ -37,6 +38,7 @@ export type SubscribeOptions = {
 export type SyncNodeOptions = {
   singleWriter?: SingleWriterRegistry;
   onSingleWriterViolation?: (error: SingleWriterViolationError) => void;
+  telemetry?: SyncTelemetrySink;
 };
 
 export class SyncNode {
@@ -63,10 +65,7 @@ export class SyncNode {
     this.connection = await this.transport.connect(this.nodeId, {
       onEvent: async (event) => {
         await this.runConnectionHandler(epoch, undefined, async () => {
-          if (!this.admitEvent(event)) {
-            return;
-          }
-          await this.store.applyRemote(event);
+          await this.applyRemoteEvent(event, "live");
         });
       },
       onReplayRequest: async (request): Promise<ReplayResponse> => {
@@ -78,6 +77,12 @@ export class SyncNode {
               request.partitionId,
               request.cursors,
             );
+            emitTelemetry(this.options.telemetry, {
+              type: "replay-served",
+              nodeId: this.nodeId,
+              partitionId: request.partitionId,
+              events: events.length,
+            });
             return { partitionId: request.partitionId, events };
           },
         );
@@ -88,13 +93,21 @@ export class SyncNode {
               for (const partitionId of partitionIds) {
                 const peer = this.recoverFrom.get(partitionId);
                 if (peer) {
-                  await this.catchUpFrom(peer, partitionId);
+                  const applied = await this.catchUpFrom(peer, partitionId);
+                  emitTelemetry(this.options.telemetry, {
+                    type: "subscription-recovered",
+                    nodeId: this.nodeId,
+                    partitionId,
+                    peerNodeId: peer,
+                    applied,
+                  });
                 }
               }
             });
           }
         : undefined,
     });
+    emitTelemetry(this.options.telemetry, { type: "sync-started", nodeId: this.nodeId });
   }
 
   async subscribe(partitionId: PartitionId, options?: SubscribeOptions): Promise<void> {
@@ -110,9 +123,10 @@ export class SyncNode {
   async write<TPayload>(input: LocalEventInput<TPayload>): Promise<EventEnvelope<TPayload>> {
     const connection = this.requireConnection();
     this.claimLocalWrite(input.partitionId);
-    return this.store
-      .appendLocal(input)
-      .then((event) => connection.publish(event).then(() => event));
+    return this.store.appendLocal(input).then((event) => {
+      this.emitLocalWrite(event);
+      return connection.publish(event).then(() => event);
+    });
   }
 
   async writeEvent<TPayload>(
@@ -125,29 +139,32 @@ export class SyncNode {
 
     const connection = this.requireConnection();
     this.claimLocalWrite(input.partitionId);
-    return this.store
-      .appendLocalEventTransaction(input, project)
-      .then((event) => connection.publish(event).then(() => event));
+    return this.store.appendLocalEventTransaction(input, project).then((event) => {
+      this.emitLocalWrite(event);
+      return connection.publish(event).then(() => event);
+    });
   }
 
   async catchUpFrom(peerNodeId: NodeId, partitionId: PartitionId): Promise<number> {
     assertValidNodeId(peerNodeId);
     assertValidPartitionId(partitionId);
     const cursors = await this.store.getHighWatermark(partitionId);
-    return this.applyReplayFrom(peerNodeId, partitionId, cursors);
+    return this.applyReplayFrom(peerNodeId, partitionId, cursors, "catchup");
   }
 
   async reconcileFrom(peerNodeId: NodeId, partitionId: PartitionId): Promise<number> {
     assertValidNodeId(peerNodeId);
     assertValidPartitionId(partitionId);
-    return this.applyReplayFrom(peerNodeId, partitionId, new Map());
+    return this.applyReplayFrom(peerNodeId, partitionId, new Map(), "reconcile");
   }
 
   private async applyReplayFrom(
     peerNodeId: NodeId,
     partitionId: PartitionId,
     cursors: ReadonlyMap<NodeId, EventId>,
+    mode: "catchup" | "reconcile",
   ): Promise<number> {
+    const startedAt = Date.now();
     const response = await this.requireConnection().requestReplay(peerNodeId, partitionId, cursors);
 
     if (response.partitionId !== partitionId) {
@@ -160,13 +177,21 @@ export class SyncNode {
 
     let applied = 0;
     for (const event of response.events) {
-      if (!this.admitEvent(event)) {
-        continue;
-      }
-      if (await this.store.applyRemote(event)) {
+      if (await this.applyRemoteEvent(event, "replay")) {
         applied += 1;
       }
     }
+
+    emitTelemetry(this.options.telemetry, {
+      type: "catchup",
+      nodeId: this.nodeId,
+      peerNodeId,
+      partitionId,
+      mode,
+      received: response.events.length,
+      applied,
+      durationMs: Date.now() - startedAt,
+    });
 
     return applied;
   }
@@ -202,12 +227,50 @@ export class SyncNode {
     this.connection = undefined;
     await connection?.close();
     await this.waitForConnectionHandlers();
+    if (connection) {
+      emitTelemetry(this.options.telemetry, { type: "sync-stopped", nodeId: this.nodeId });
+    }
   }
 
   // Local writes always throw on violation: writing into a partition owned by
   // another node is a local protocol error, not something to skip silently.
   private claimLocalWrite(partitionId: PartitionId): void {
     this.options.singleWriter?.observe({ partitionId, sourceNodeId: this.nodeId });
+  }
+
+  private emitLocalWrite(event: EventEnvelope): void {
+    emitTelemetry(this.options.telemetry, {
+      type: "local-write",
+      nodeId: this.nodeId,
+      partitionId: event.partitionId,
+      eventId: event.eventId,
+    });
+  }
+
+  // Admits, applies, and reports one remote event. Returns true only when the
+  // event was newly merged into the local store.
+  private async applyRemoteEvent(
+    event: EventEnvelope,
+    context: "live" | "replay",
+  ): Promise<boolean> {
+    const emitOutcome = (outcome: "applied" | "duplicate" | "rejected-single-writer") =>
+      emitTelemetry(this.options.telemetry, {
+        type: "remote-event",
+        nodeId: this.nodeId,
+        partitionId: event.partitionId,
+        sourceNodeId: event.sourceNodeId,
+        eventId: event.eventId,
+        outcome,
+        context,
+      });
+
+    if (!this.admitEvent(event)) {
+      emitOutcome("rejected-single-writer");
+      return false;
+    }
+    const applied = await this.store.applyRemote(event);
+    emitOutcome(applied ? "applied" : "duplicate");
+    return applied;
   }
 
   private admitEvent(event: EventEnvelope): boolean {
