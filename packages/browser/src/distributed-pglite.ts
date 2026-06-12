@@ -4,6 +4,7 @@ import {
   SqlPartitionStore,
   SyncNode,
   assertValidPartitionId,
+  emitTelemetry,
   type EventCursor,
   type EventProjection,
   type EventEnvelope,
@@ -13,6 +14,7 @@ import {
   type PartitionId,
   type PartitionStore,
   type SingleWriterViolationError,
+  type SyncTelemetrySink,
   type Transport,
 } from "@distrb-pglite/core";
 import { BrowserSha256BlobStore } from "./blob-store.js";
@@ -61,6 +63,7 @@ export type DistributedBrowserPGliteOpenOptions = {
   onAppliedRemote?: (event: EventEnvelope) => Promise<void> | void;
   singleWriter?: SingleWriterRegistry | { owners: Record<PartitionId, NodeId> };
   onSingleWriterViolation?: (error: SingleWriterViolationError) => void;
+  telemetry?: SyncTelemetrySink;
 };
 
 export type DistributedBrowserPGliteWriteOptions<TPayload> = {
@@ -113,6 +116,7 @@ export class DistributedBrowserPGlite {
   private readonly syncNode: SyncNode;
   private online = false;
   private readonly partitions = new Map<PartitionId, OpenPartition>();
+  private readonly singleWriterRegistry?: SingleWriterRegistry;
 
   private constructor(
     private readonly options: DistributedBrowserPGliteOpenOptions,
@@ -129,13 +133,15 @@ export class DistributedBrowserPGlite {
       this.db,
       options.onAppliedRemote,
     );
+    this.singleWriterRegistry = resolveSingleWriterRegistry(options.singleWriter);
     this.syncNode = new SyncNode(
       options.nodeId,
       this.projectedStore,
       createTransport(options.transport),
       {
-        singleWriter: resolveSingleWriterRegistry(options.singleWriter),
+        singleWriter: this.singleWriterRegistry,
         onSingleWriterViolation: options.onSingleWriterViolation,
+        telemetry: options.telemetry,
       },
     );
     for (const partition of options.partitions ?? []) {
@@ -223,8 +229,11 @@ export class DistributedBrowserPGlite {
     await this.db.close();
   }
 
-  createSnapshot(options: DistributedBrowserPGliteSnapshotOptions): Promise<BrowserCasManifest> {
-    return snapshotBrowserFilesystemToCas({
+  async createSnapshot(
+    options: DistributedBrowserPGliteSnapshotOptions,
+  ): Promise<BrowserCasManifest> {
+    const startedAt = Date.now();
+    const manifest = await snapshotBrowserFilesystemToCas({
       fs: this.fs.asSnapshotDataFilesystem(),
       casStore: options.casStore,
       snapshotId: options.snapshotId,
@@ -232,12 +241,20 @@ export class DistributedBrowserPGlite {
       chunkSize: options.chunkSize,
       chunking: options.chunking,
     });
+    emitTelemetry(this.options.telemetry, {
+      type: "snapshot-created",
+      nodeId: this.options.nodeId,
+      snapshotId: manifest.snapshotId,
+      durationMs: Date.now() - startedAt,
+    });
+    return manifest;
   }
 
   /** @deprecated Use restoreSnapshot. */
   async restoreFromCasSnapshot(
     options: DistributedBrowserPGliteRestoreOptions,
   ): Promise<DistributedBrowserPGliteRestoreResult> {
+    const startedAt = Date.now();
     await this.close();
     const transferredBlocks = await transferMissingBrowserCasBlocks({
       manifest: options.manifest,
@@ -256,6 +273,13 @@ export class DistributedBrowserPGlite {
       fs,
       blobs,
       autoStart: options.autoStart ?? false,
+    });
+    emitTelemetry(this.options.telemetry, {
+      type: "snapshot-pulled",
+      nodeId: this.options.nodeId,
+      snapshotId: options.manifest.snapshotId,
+      transferredBlocks: transferredBlocks.length,
+      durationMs: Date.now() - startedAt,
     });
     return { handle, transferredBlocks };
   }
@@ -291,6 +315,38 @@ export class DistributedBrowserPGlite {
   ): Promise<EventEnvelope<TPayload>> {
     const { input, projection } = this.localEventInput(partitionIdOrOptions, payload);
     return this.baseStore.appendLocalEventTransaction(input, projection);
+  }
+
+  // ADR 0006 ownership helpers. Ownership is local knowledge for violation
+  // detection only: claims and transfers are not replicated to peers, and
+  // nothing prevents a node that skips the registry from writing anyway.
+  partitionOwner(partitionId: PartitionId): NodeId | undefined {
+    assertValidPartitionId(partitionId);
+    return this.requireSingleWriter().ownerOf(partitionId);
+  }
+
+  claimPartition(partitionId: PartitionId, ownerNodeId: NodeId = this.options.nodeId): void {
+    assertValidPartitionId(partitionId);
+    this.requireSingleWriter().assign(partitionId, ownerNodeId);
+  }
+
+  transferPartition(partitionId: PartitionId, toNodeId: NodeId): void {
+    assertValidPartitionId(partitionId);
+    const registry = this.requireSingleWriter();
+    const fromNodeId = registry.ownerOf(partitionId);
+    if (fromNodeId === undefined) {
+      throw new Error(`partition ${partitionId} has no writer to transfer from`);
+    }
+    registry.transfer({ partitionId, fromNodeId, toNodeId });
+  }
+
+  private requireSingleWriter(): SingleWriterRegistry {
+    if (!this.singleWriterRegistry) {
+      throw new Error(
+        "single-writer ownership is not enabled; pass singleWriter when opening DistributedBrowserPGlite",
+      );
+    }
+    return this.singleWriterRegistry;
   }
 
   catchUpFrom(peerNodeId: NodeId, partitionId: PartitionId): Promise<number> {

@@ -1,4 +1,9 @@
-import { MemoryTransport } from "@distrb-pglite/core";
+import {
+  MemoryTransport,
+  SingleWriterRegistry,
+  SingleWriterViolationError,
+} from "@distrb-pglite/core";
+import type { SyncTelemetryEvent } from "@distrb-pglite/core";
 import { describe, expect, it } from "vitest";
 import { DistributedBrowserPGlite, type BrowserCasBlockStore } from "../src/index.js";
 
@@ -170,9 +175,124 @@ describe("DistributedBrowserPGlite", () => {
       await node.close();
     }
   });
+
+  describe("telemetry option", () => {
+    it("emits local-write and remote-event{applied} events when a write is replicated", async () => {
+      const transport = new MemoryTransport();
+      const sinkA: SyncTelemetryEvent[] = [];
+      const sinkB: SyncTelemetryEvent[] = [];
+
+      const nodeA = await openNode("browser-a", transport, { telemetry: (e) => sinkA.push(e) });
+      const nodeB = await openNode("browser-b", transport, { telemetry: (e) => sinkB.push(e) });
+
+      try {
+        await nodeA.write<ReadingPayload>("tenant:jp", { sensorId: "s1", reading: 1 });
+
+        // MemoryTransport delivers synchronously so nodeB already has the event
+        await expect(readings(nodeB)).resolves.toHaveLength(1);
+
+        expect(sinkA.some((e) => e.type === "local-write")).toBe(true);
+        expect(sinkB.some((e) => e.type === "remote-event" && e.outcome === "applied")).toBe(true);
+      } finally {
+        await nodeA.close();
+        await nodeB.close();
+      }
+    });
+  });
+
+  describe("ownership helpers without singleWriter option", () => {
+    it("partitionOwner, claimPartition, and transferPartition throw the expected error", async () => {
+      const transport = new MemoryTransport();
+      const node = await openNode("browser-a", transport);
+      try {
+        expect(() => node.partitionOwner("tenant:jp")).toThrow(
+          "single-writer ownership is not enabled",
+        );
+        expect(() => node.claimPartition("tenant:jp")).toThrow(
+          "single-writer ownership is not enabled",
+        );
+        expect(() => node.transferPartition("tenant:jp", "browser-b")).toThrow(
+          "single-writer ownership is not enabled",
+        );
+      } finally {
+        await node.close();
+      }
+    });
+  });
+
+  describe("ownership helpers with singleWriter option", () => {
+    it("claimPartition defaults to own nodeId and partitionOwner reflects it", async () => {
+      const transport = new MemoryTransport();
+      const node = await openNode("browser-a", transport, {
+        singleWriter: new SingleWriterRegistry(),
+      });
+      try {
+        expect(node.partitionOwner("tenant:jp")).toBeUndefined();
+        node.claimPartition("tenant:jp");
+        expect(node.partitionOwner("tenant:jp")).toBe("browser-a");
+      } finally {
+        await node.close();
+      }
+    });
+
+    it("transferPartition moves ownership and partitionOwner reflects the new owner", async () => {
+      const transport = new MemoryTransport();
+      const node = await openNode("browser-a", transport, {
+        singleWriter: new SingleWriterRegistry(),
+      });
+      try {
+        node.claimPartition("tenant:jp");
+        node.transferPartition("tenant:jp", "browser-b");
+        expect(node.partitionOwner("tenant:jp")).toBe("browser-b");
+      } finally {
+        await node.close();
+      }
+    });
+
+    it("transferPartition throws when the partition has no owner", async () => {
+      const transport = new MemoryTransport();
+      const node = await openNode("browser-a", transport, {
+        singleWriter: new SingleWriterRegistry(),
+      });
+      try {
+        expect(() => node.transferPartition("tenant:jp", "browser-b")).toThrow(
+          "has no writer to transfer from",
+        );
+      } finally {
+        await node.close();
+      }
+    });
+
+    it("write throws SingleWriterViolationError after ownership is transferred away", async () => {
+      const transport = new MemoryTransport();
+      const node = await openNode("browser-a", transport, {
+        singleWriter: new SingleWriterRegistry(),
+      });
+      try {
+        node.claimPartition("tenant:jp", "browser-a");
+        node.transferPartition("tenant:jp", "browser-b");
+
+        // browser-a still holds the sync connection but no longer owns the partition
+        await expect(
+          node.write<ReadingPayload>("tenant:jp", { sensorId: "s1", reading: 99 }),
+        ).rejects.toThrow(SingleWriterViolationError);
+      } finally {
+        await node.close();
+      }
+    });
+  });
 });
 
-function openNode(nodeId: string, transport: MemoryTransport): Promise<DistributedBrowserPGlite> {
+function openNode(
+  nodeId: string,
+  transport: MemoryTransport,
+  extra?: Partial<
+    Pick<
+      Parameters<typeof DistributedBrowserPGlite.open>[0],
+      "telemetry" | "singleWriter" | "onSingleWriterViolation"
+    >
+  >,
+): Promise<DistributedBrowserPGlite> {
   return DistributedBrowserPGlite.open({
     nodeId,
     schema: SCHEMA,
@@ -193,6 +313,7 @@ function openNode(nodeId: string, transport: MemoryTransport): Promise<Distribut
         },
       },
     ],
+    ...extra,
   });
 }
 

@@ -1,4 +1,4 @@
-import type { EventId, NodeId, PartitionId } from "./types.js";
+import type { EventId, NodeId, PartitionId, SnapshotId } from "./types.js";
 
 // Telemetry stays a plain structured-event sink so the library never depends
 // on OpenTelemetry. An OTel (or logging, or metrics) integration is one
@@ -52,6 +52,22 @@ export type SyncTelemetryEvent =
       mode: "catchup" | "reconcile";
       received: number;
       applied: number;
+      durationMs: number;
+    }
+  | {
+      type: "snapshot-created";
+      nodeId: NodeId;
+      // Browser whole-filesystem snapshots are not partition-scoped.
+      partitionId?: PartitionId;
+      snapshotId: SnapshotId;
+      durationMs: number;
+    }
+  | {
+      type: "snapshot-pulled";
+      nodeId: NodeId;
+      partitionId?: PartitionId;
+      snapshotId: SnapshotId;
+      transferredBlocks: number;
       durationMs: number;
     };
 

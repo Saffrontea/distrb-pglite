@@ -4,6 +4,7 @@ import {
   SingleWriterRegistry,
   SyncNode,
   assertValidPartitionId,
+  emitTelemetry,
   type EventEnvelope,
   type EventCursor,
   type EventProjection,
@@ -18,6 +19,7 @@ import {
   type StorageSnapshotComponent,
   type StorageSnapshotScope,
   type SingleWriterViolationError,
+  type SyncTelemetrySink,
   type Transport,
 } from "@distrb-pglite/core";
 import { P2PWebSocketTransport, type P2PTransportOptions } from "./p2p-transport.js";
@@ -77,6 +79,7 @@ export type DistributedPGliteOpenOptions = {
   autoRecoverSubscriptions?: boolean;
   singleWriter?: SingleWriterRegistry | { owners: Record<PartitionId, NodeId> };
   onSingleWriterViolation?: (error: SingleWriterViolationError) => void;
+  telemetry?: SyncTelemetrySink;
 };
 
 export type DistributedPGliteWriteOptions<TPayload> = {
@@ -108,8 +111,12 @@ export class DistributedPGlite {
   private syncNode!: SyncNode;
   private online = false;
   private readonly partitions = new Map<PartitionId, OpenPartition>();
+  // Resolved once so ownership learned at runtime survives reopen() after a
+  // snapshot pull instead of being rebuilt from the original open options.
+  private readonly singleWriterRegistry?: SingleWriterRegistry;
 
   private constructor(private readonly options: DistributedPGliteOpenOptions) {
+    this.singleWriterRegistry = resolveSingleWriterRegistry(options.singleWriter);
     for (const partition of options.partitions ?? []) {
       this.partitions.set(partition.id, {
         ...partition,
@@ -241,6 +248,38 @@ export class DistributedPGlite {
     };
   }
 
+  // ADR 0006 ownership helpers. Ownership is local knowledge for violation
+  // detection only: claims and transfers are not replicated to peers, and
+  // nothing prevents a node that skips the registry from writing anyway.
+  partitionOwner(partitionId: PartitionId): NodeId | undefined {
+    assertValidPartitionId(partitionId);
+    return this.requireSingleWriter().ownerOf(partitionId);
+  }
+
+  claimPartition(partitionId: PartitionId, ownerNodeId: NodeId = this.options.nodeId): void {
+    assertValidPartitionId(partitionId);
+    this.requireSingleWriter().assign(partitionId, ownerNodeId);
+  }
+
+  transferPartition(partitionId: PartitionId, toNodeId: NodeId): void {
+    assertValidPartitionId(partitionId);
+    const registry = this.requireSingleWriter();
+    const fromNodeId = registry.ownerOf(partitionId);
+    if (fromNodeId === undefined) {
+      throw new Error(`partition ${partitionId} has no writer to transfer from`);
+    }
+    registry.transfer({ partitionId, fromNodeId, toNodeId });
+  }
+
+  private requireSingleWriter(): SingleWriterRegistry {
+    if (!this.singleWriterRegistry) {
+      throw new Error(
+        "single-writer ownership is not enabled; pass singleWriter when opening DistributedPGlite",
+      );
+    }
+    return this.singleWriterRegistry;
+  }
+
   catchUpFrom(peerNodeId: NodeId, partitionId: PartitionId): Promise<number> {
     return this.syncNode.catchUpFrom(peerNodeId, partitionId);
   }
@@ -280,7 +319,8 @@ export class DistributedPGlite {
     },
   ): Promise<ManagedPartitionCasSnapshot> {
     const partition = this.requireStoragePartition(partitionId);
-    return createManagedPartitionCasSnapshot({
+    const startedAt = Date.now();
+    const snapshot = await createManagedPartitionCasSnapshot({
       db: this.dbInstance,
       store: this.storeInstance,
       groupId: partition.storage.groupId,
@@ -293,6 +333,14 @@ export class DistributedPGlite {
       saveCatalogEntry: options?.saveCatalogEntry,
       beforeStorageSnapshot: options?.beforeStorageSnapshot,
     });
+    emitTelemetry(this.options.telemetry, {
+      type: "snapshot-created",
+      nodeId: this.options.nodeId,
+      partitionId,
+      snapshotId: snapshot.entry.snapshotId,
+      durationMs: Date.now() - startedAt,
+    });
+    return snapshot;
   }
 
   async loadCatalog(groupId: string): Promise<StorageCatalogManifest | undefined> {
@@ -324,6 +372,7 @@ export class DistributedPGlite {
         partitionId: options.partitionId,
       }));
     const wasOnline = this.online;
+    const startedAt = Date.now();
     await this.stop();
     await this.dbInstance.close();
 
@@ -346,6 +395,14 @@ export class DistributedPGlite {
     }
 
     await this.reopen(wasOnline);
+    emitTelemetry(this.options.telemetry, {
+      type: "snapshot-pulled",
+      nodeId: this.options.nodeId,
+      partitionId: options.partitionId,
+      snapshotId: pulled.entry.snapshotId,
+      transferredBlocks: pulled.transferredBlocks,
+      durationMs: Date.now() - startedAt,
+    });
     return pulled;
   }
 
@@ -388,8 +445,9 @@ export class DistributedPGlite {
       this.projectedStore,
       createTransport(this.options.transport),
       {
-        singleWriter: resolveSingleWriterRegistry(this.options.singleWriter),
+        singleWriter: this.singleWriterRegistry,
         onSingleWriterViolation: this.options.onSingleWriterViolation,
+        telemetry: this.options.telemetry,
       },
     );
   }

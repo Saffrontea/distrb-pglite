@@ -1,5 +1,11 @@
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import {
+  MemoryTransport,
+  SingleWriterRegistry,
+  SingleWriterViolationError,
+} from "@distrb-pglite/core";
+import type { SyncTelemetryEvent } from "@distrb-pglite/core";
 import { DistributedPGlite, WebSocketHub } from "../src/index.js";
 import { getFreePort, waitFor } from "./transport-contract.js";
 import { makeTempDir } from "./temp-dir.js";
@@ -178,6 +184,155 @@ describe("DistributedPGlite", () => {
       await node?.close();
       await hub.close();
     }
+  });
+
+  describe("telemetry option", () => {
+    it("emits local-write and remote-event{applied} events when a write is replicated", async () => {
+      const root = await makeTempDir("distributed-pglite-telemetry");
+      const transport = new MemoryTransport();
+      const sinkA: SyncTelemetryEvent[] = [];
+      const sinkB: SyncTelemetryEvent[] = [];
+
+      const nodeA = await DistributedPGlite.open({
+        nodeId: "node-a",
+        dataDir: join(root, "node-a"),
+        schema: SCHEMA,
+        transport,
+        partitions: [sensorPartition("tenant:jp")],
+        telemetry: (e) => sinkA.push(e),
+      });
+      const nodeB = await DistributedPGlite.open({
+        nodeId: "node-b",
+        dataDir: join(root, "node-b"),
+        schema: SCHEMA,
+        transport,
+        partitions: [sensorPartition("tenant:jp")],
+        telemetry: (e) => sinkB.push(e),
+      });
+
+      try {
+        await nodeA.write<SensorPayload>("tenant:jp", { sensorId: "s1", reading: 1 });
+
+        await waitFor(async () => {
+          await expect(readSensors(nodeB)).resolves.toHaveLength(1);
+        });
+
+        expect(sinkA.some((e) => e.type === "local-write")).toBe(true);
+        expect(sinkB.some((e) => e.type === "remote-event" && e.outcome === "applied")).toBe(true);
+      } finally {
+        await nodeA.close();
+        await nodeB.close();
+      }
+    });
+  });
+
+  describe("ownership helpers without singleWriter option", () => {
+    it("partitionOwner, claimPartition, and transferPartition throw the expected error", async () => {
+      const root = await makeTempDir("distributed-pglite-owner-no-sw");
+      const transport = new MemoryTransport();
+      const node = await DistributedPGlite.open({
+        nodeId: "node-a",
+        dataDir: join(root, "node-a"),
+        schema: SCHEMA,
+        transport,
+      });
+      try {
+        expect(() => node.partitionOwner("tenant:jp")).toThrow(
+          "single-writer ownership is not enabled",
+        );
+        expect(() => node.claimPartition("tenant:jp")).toThrow(
+          "single-writer ownership is not enabled",
+        );
+        expect(() => node.transferPartition("tenant:jp", "node-b")).toThrow(
+          "single-writer ownership is not enabled",
+        );
+      } finally {
+        await node.close();
+      }
+    });
+  });
+
+  describe("ownership helpers with singleWriter option", () => {
+    it("claimPartition defaults to own nodeId and partitionOwner reflects it", async () => {
+      const root = await makeTempDir("distributed-pglite-claim");
+      const transport = new MemoryTransport();
+      const node = await DistributedPGlite.open({
+        nodeId: "node-a",
+        dataDir: join(root, "node-a"),
+        schema: SCHEMA,
+        transport,
+        singleWriter: new SingleWriterRegistry(),
+      });
+      try {
+        expect(node.partitionOwner("tenant:jp")).toBeUndefined();
+        node.claimPartition("tenant:jp");
+        expect(node.partitionOwner("tenant:jp")).toBe("node-a");
+      } finally {
+        await node.close();
+      }
+    });
+
+    it("transferPartition moves ownership and partitionOwner reflects the new owner", async () => {
+      const root = await makeTempDir("distributed-pglite-transfer");
+      const transport = new MemoryTransport();
+      const node = await DistributedPGlite.open({
+        nodeId: "node-a",
+        dataDir: join(root, "node-a"),
+        schema: SCHEMA,
+        transport,
+        singleWriter: new SingleWriterRegistry(),
+      });
+      try {
+        node.claimPartition("tenant:jp");
+        node.transferPartition("tenant:jp", "node-b");
+        expect(node.partitionOwner("tenant:jp")).toBe("node-b");
+      } finally {
+        await node.close();
+      }
+    });
+
+    it("transferPartition throws when the partition has no owner", async () => {
+      const root = await makeTempDir("distributed-pglite-transfer-noowner");
+      const transport = new MemoryTransport();
+      const node = await DistributedPGlite.open({
+        nodeId: "node-a",
+        dataDir: join(root, "node-a"),
+        schema: SCHEMA,
+        transport,
+        singleWriter: new SingleWriterRegistry(),
+      });
+      try {
+        expect(() => node.transferPartition("tenant:jp", "node-b")).toThrow(
+          "has no writer to transfer from",
+        );
+      } finally {
+        await node.close();
+      }
+    });
+
+    it("write throws SingleWriterViolationError after ownership is transferred away", async () => {
+      const root = await makeTempDir("distributed-pglite-violation");
+      const transport = new MemoryTransport();
+      const node = await DistributedPGlite.open({
+        nodeId: "node-a",
+        dataDir: join(root, "node-a"),
+        schema: SCHEMA,
+        transport,
+        singleWriter: new SingleWriterRegistry(),
+        partitions: [{ id: "tenant:jp" }],
+      });
+      try {
+        node.claimPartition("tenant:jp", "node-a");
+        node.transferPartition("tenant:jp", "node-b");
+
+        // node-a still holds the sync connection but no longer owns the partition
+        await expect(
+          node.write<SensorPayload>("tenant:jp", { sensorId: "s1", reading: 99 }),
+        ).rejects.toThrow(SingleWriterViolationError);
+      } finally {
+        await node.close();
+      }
+    });
   });
 });
 
