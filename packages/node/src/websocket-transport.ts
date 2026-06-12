@@ -9,6 +9,7 @@ import {
   type NodeId,
   type PartitionId,
   type ReplayResponse,
+  type ReplaySnapshotRequired,
   type Transport,
   type TransportConnection,
   type TransportHandlers,
@@ -16,8 +17,14 @@ import {
 import WebSocket, { WebSocketServer } from "ws";
 import { loadZstd } from "./zstd.js";
 
+// ADR 0008 introduced protocolVersion (2). Pre-versioned peers (absent
+// field = 1) are assumed to predate pruning; the hub refuses to forward a
+// snapshot-required response to them so they fail by timeout, never by a
+// silently empty replay.
+export const WIRE_PROTOCOL_VERSION = 2;
+
 type WireMessage =
-  | { type: "hello"; nodeId: NodeId }
+  | { type: "hello"; nodeId: NodeId; protocolVersion?: number }
   | { type: "subscribe"; partitionId: PartitionId }
   | { type: "ping"; sentAt: number }
   | { type: "pong"; sentAt: number }
@@ -36,12 +43,14 @@ type WireMessage =
       requesterNodeId: NodeId;
       partitionId: PartitionId;
       events: EventEnvelope[];
+      snapshotRequired?: ReplaySnapshotRequired;
     };
 
 type ClientRecord = {
   nodeId: NodeId;
   socket: WebSocket;
   subscriptions: Set<PartitionId>;
+  protocolVersion: number;
 };
 
 type PendingHubReplay = {
@@ -118,6 +127,7 @@ export class WebSocketHub {
               nodeId: message.nodeId,
               socket,
               subscriptions: new Set(),
+              protocolVersion: validateProtocolVersion(message.protocolVersion),
             };
             const previous = this.clients.get(message.nodeId);
             if (previous && previous.socket !== socket) {
@@ -263,6 +273,14 @@ export class WebSocketHub {
       throw new Error(`replay response mismatch: ${message.requestId}`);
     }
     this.deletePendingReplay(message.requestId);
+    // A pre-ADR-0008 requester would misread snapshot-required as "caught
+    // up" (empty events). Dropping the response makes it time out instead.
+    if (message.snapshotRequired) {
+      const requester = this.clients.get(message.requesterNodeId);
+      if ((requester?.protocolVersion ?? 1) < 2) {
+        return;
+      }
+    }
     void this.encode(pending.requesterSocket, message);
   }
 
@@ -390,7 +408,7 @@ class WebSocketTransportConnection implements TransportConnection {
   ) {
     this.socket = socket;
     this.attach(socket);
-    this.send({ type: "hello", nodeId });
+    this.send({ type: "hello", nodeId, protocolVersion: WIRE_PROTOCOL_VERSION });
     this.startPing();
   }
 
@@ -436,7 +454,11 @@ class WebSocketTransportConnection implements TransportConnection {
 
         this.socket = socket;
         this.attach(socket);
-        this.sendIfOpen({ type: "hello", nodeId: this.nodeId });
+        this.sendIfOpen({
+          type: "hello",
+          nodeId: this.nodeId,
+          protocolVersion: WIRE_PROTOCOL_VERSION,
+        });
         for (const partitionId of this.subscriptions) {
           this.sendIfOpen({ type: "subscribe", partitionId });
         }
@@ -620,9 +642,24 @@ class WebSocketTransportConnection implements TransportConnection {
             );
             break;
           }
+          if (message.snapshotRequired) {
+            try {
+              validateEventCursorEntries(message.snapshotRequired.prunedThrough);
+              if (message.events.length > 0) {
+                throw new Error("snapshot-required replay response must not carry events");
+              }
+            } catch (error) {
+              this.rejectPendingReplay(message.requestId, String(error));
+              break;
+            }
+          }
           this.pendingReplay.delete(message.requestId);
           clearTimeout(pending.timer);
-          pending.resolve({ partitionId: message.partitionId, events: message.events });
+          pending.resolve({
+            partitionId: message.partitionId,
+            events: message.events,
+            snapshotRequired: message.snapshotRequired,
+          });
         }
         break;
       }
@@ -702,6 +739,16 @@ function sleep(ms: number): Promise<void> {
 
 function clampTimeout(ms: number): number {
   return Math.max(REPLAY_REQUEST_MIN_TIMEOUT_MS, Math.min(REPLAY_REQUEST_MAX_TIMEOUT_MS, ms));
+}
+
+function validateProtocolVersion(value: unknown): number {
+  if (value === undefined) {
+    return 1;
+  }
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+    throw new Error("protocolVersion must be a positive integer when present");
+  }
+  return value;
 }
 
 function assertValidRequestId(requestId: unknown): asserts requestId is string {

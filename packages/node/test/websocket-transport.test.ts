@@ -1193,6 +1193,96 @@ describe("WebSocketTransport (Hub 固有)", () => {
   });
 });
 
+describe("WebSocketTransport protocol v2 (ADR 0008)", () => {
+  it("passes snapshotRequired intact from target handler to requester", async () => {
+    const port = await getFreePort();
+    if (port === undefined) return;
+
+    const hub = new WebSocketHub({ port });
+    hubs.push(hub);
+    const url = `ws://127.0.0.1:${port}`;
+
+    const prunedThrough: [string, string][] = [["node-x", "018bcfe5-6800-7001-8000-000000000001"]];
+
+    const target = await new WebSocketTransport(url).connect("node-target", {
+      onEvent: () => {},
+      onReplayRequest: async ({ partitionId }) => ({
+        partitionId,
+        events: [],
+        snapshotRequired: { prunedThrough },
+      }),
+    });
+
+    const requester = await new WebSocketTransport(url).connect("node-requester", {
+      onEvent: () => {},
+    });
+
+    try {
+      const response = await requester.requestReplay("node-target", "tenant:jp", new Map());
+
+      expect(response.snapshotRequired).toBeDefined();
+      expect(response.snapshotRequired!.prunedThrough).toEqual(prunedThrough);
+      expect(response.events).toHaveLength(0);
+    } finally {
+      await requester.close();
+      await target.close();
+    }
+  });
+
+  it("hub drops snapshot-required response for a pre-v2 (no protocolVersion) requester", async () => {
+    const port = await getFreePort();
+    if (port === undefined) return;
+
+    const hub = new WebSocketHub({ port });
+    hubs.push(hub);
+    const url = `ws://127.0.0.1:${port}`;
+
+    // v2 target using the full transport
+    const target = await new WebSocketTransport(url).connect("node-target-v2", {
+      onEvent: () => {},
+      onReplayRequest: async ({ partitionId }) => ({
+        partitionId,
+        events: [],
+        snapshotRequired: {
+          prunedThrough: [["node-x", "018bcfe5-6800-7001-8000-000000000001"]] as [string, string][],
+        },
+      }),
+    });
+
+    // Raw "old" client: connects WITHOUT protocolVersion in hello
+    const rawRequester = new WebSocket(url);
+    await new Promise<void>((resolve, reject) => {
+      rawRequester.once("open", resolve);
+      rawRequester.once("error", reject);
+    });
+    // Send hello without protocolVersion field (simulates pre-ADR-0008 client)
+    rawRequester.send(JSON.stringify({ type: "hello", nodeId: "node-old-requester" }));
+
+    // Small delay to ensure hello is processed
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // Send replay-request from old client
+    rawRequester.send(
+      JSON.stringify({
+        type: "replay-request",
+        requestId: "old-proto-request",
+        requesterNodeId: "node-old-requester",
+        targetNodeId: "node-target-v2",
+        partitionId: "tenant:jp",
+        cursors: [],
+      }),
+    );
+
+    // The hub should drop the snapshot-required response — old client gets NO replay-response
+    await expect(nextRawMessageOfType(rawRequester, "replay-response", 600)).rejects.toThrow(
+      "timed out",
+    );
+
+    rawRequester.terminate();
+    await target.close();
+  });
+});
+
 const hubs: WebSocketHub[] = [];
 
 async function waitFor(fn: () => Promise<void>, ms = 2000): Promise<void> {

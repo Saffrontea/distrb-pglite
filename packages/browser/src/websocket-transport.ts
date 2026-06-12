@@ -9,13 +9,18 @@ import {
   type NodeId,
   type PartitionId,
   type ReplayResponse,
+  type ReplaySnapshotRequired,
   type Transport,
   type TransportConnection,
   type TransportHandlers,
 } from "@distrb-pglite/core";
 
+// Must stay in sync with the Node WebSocketHub wire protocol.
+// ADR 0008: protocolVersion 2 adds the snapshot-required replay variant.
+const WIRE_PROTOCOL_VERSION = 2;
+
 type WireMessage =
-  | { type: "hello"; nodeId: NodeId }
+  | { type: "hello"; nodeId: NodeId; protocolVersion?: number }
   | { type: "subscribe"; partitionId: PartitionId }
   | { type: "ping"; sentAt: number }
   | { type: "pong"; sentAt: number }
@@ -34,6 +39,7 @@ type WireMessage =
       requesterNodeId: NodeId;
       partitionId: PartitionId;
       events: EventEnvelope[];
+      snapshotRequired?: ReplaySnapshotRequired;
     };
 
 export type BrowserWebSocketTransportReconnectOptions = {
@@ -108,7 +114,7 @@ class BrowserWebSocketTransportConnection implements TransportConnection {
   ) {
     this.socket = socket;
     this.attach(socket);
-    this.send({ type: "hello", nodeId });
+    this.send({ type: "hello", nodeId, protocolVersion: WIRE_PROTOCOL_VERSION });
     this.startPing();
   }
 
@@ -220,7 +226,11 @@ class BrowserWebSocketTransportConnection implements TransportConnection {
 
         this.socket = socket;
         this.attach(socket);
-        this.sendIfOpen({ type: "hello", nodeId: this.nodeId });
+        this.sendIfOpen({
+          type: "hello",
+          nodeId: this.nodeId,
+          protocolVersion: WIRE_PROTOCOL_VERSION,
+        });
         for (const partitionId of this.subscriptions) {
           this.sendIfOpen({ type: "subscribe", partitionId });
         }
@@ -323,9 +333,24 @@ class BrowserWebSocketTransportConnection implements TransportConnection {
             );
             break;
           }
+          if (message.snapshotRequired) {
+            try {
+              validateEventCursorEntries(message.snapshotRequired.prunedThrough);
+              if (message.events.length > 0) {
+                throw new Error("snapshot-required replay response must not carry events");
+              }
+            } catch (error) {
+              this.rejectPendingReplay(message.requestId, String(error));
+              break;
+            }
+          }
           this.pendingReplay.delete(message.requestId);
           clearTimeout(pending.timer);
-          pending.resolve({ partitionId: message.partitionId, events: message.events });
+          pending.resolve({
+            partitionId: message.partitionId,
+            events: message.events,
+            snapshotRequired: message.snapshotRequired,
+          });
         }
         break;
       }

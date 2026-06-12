@@ -9,6 +9,7 @@ import {
   type NodeId,
   type PartitionId,
   type ReplayResponse,
+  type ReplaySnapshotRequired,
   type Transport,
   type TransportConnection,
   type TransportHandlers,
@@ -44,8 +45,18 @@ export type P2PTransportOptions = {
 
 // ─── wire protocol ────────────────────────────────────────────────────────────
 
+// ADR 0008: protocolVersion 2 adds the snapshot-required replay variant.
+// Absent field = 1 (pre-pruning peer).
+const P2P_WIRE_PROTOCOL_VERSION = 2;
+
 type P2PWireMessage =
-  | { type: "hello"; nodeId: NodeId; publicUrl: string; subscriptions: PartitionId[] }
+  | {
+      type: "hello";
+      nodeId: NodeId;
+      publicUrl: string;
+      subscriptions: PartitionId[];
+      protocolVersion?: number;
+    }
   | { type: "peers"; urls: string[] }
   | { type: "subscribe"; partitionId: PartitionId }
   | { type: "ping"; sentAt: number }
@@ -65,6 +76,7 @@ type P2PWireMessage =
       requesterNodeId: NodeId;
       partitionId: PartitionId;
       events: EventEnvelope[];
+      snapshotRequired?: ReplaySnapshotRequired;
     };
 
 // ─── PeerSocket ───────────────────────────────────────────────────────────────
@@ -74,6 +86,7 @@ type PeerRecord = {
   publicUrl: string | undefined;
   subscriptions: Set<PartitionId>;
   readonly direction: "inbound" | "outbound";
+  protocolVersion: number;
 };
 
 type PeerSocketCallbacks = {
@@ -103,6 +116,7 @@ class PeerSocket {
       publicUrl: knownPublicUrl,
       subscriptions: new Set(),
       direction,
+      protocolVersion: 1,
     };
     this.closePromise = new Promise<void>((r) => {
       this.closeResolve = r;
@@ -125,6 +139,9 @@ class PeerSocket {
             }
             this.record.nodeId = msg.nodeId;
             this.record.publicUrl ??= msg.publicUrl;
+            if (typeof msg.protocolVersion === "number" && msg.protocolVersion >= 1) {
+              this.record.protocolVersion = msg.protocolVersion;
+            }
             for (const p of msg.subscriptions) this.record.subscriptions.add(p);
             this.callbacks.onHello(this);
           } else if (msg.type === "peers") {
@@ -426,6 +443,7 @@ class P2PWebSocketConnection implements TransportConnection {
       nodeId: this.nodeId,
       publicUrl: this.options.publicUrl,
       subscriptions: [...this.localSubscriptions],
+      protocolVersion: P2P_WIRE_PROTOCOL_VERSION,
     });
   }
 
@@ -526,6 +544,11 @@ class P2PWebSocketConnection implements TransportConnection {
               partitionId: msg.partitionId,
               cursors: new Map(cursors),
             });
+            // ADR 0008: a pre-versioned peer would misread snapshot-required
+            // as "caught up". Let it time out instead of lying to it.
+            if (response.snapshotRequired && peer.record.protocolVersion < 2) {
+              break;
+            }
             peer.send({
               type: "replay-response",
               requestId: msg.requestId,
@@ -563,9 +586,24 @@ class P2PWebSocketConnection implements TransportConnection {
                 );
                 break;
               }
+              if (msg.snapshotRequired) {
+                try {
+                  validateEventCursorEntries(msg.snapshotRequired.prunedThrough);
+                  if (msg.events.length > 0) {
+                    throw new Error("snapshot-required replay response must not carry events");
+                  }
+                } catch (error) {
+                  this.rejectPendingReplay(msg.requestId, String(error));
+                  break;
+                }
+              }
               this.pendingReplay.delete(msg.requestId);
               clearTimeout(pending.timer);
-              pending.resolve({ partitionId: msg.partitionId, events: msg.events });
+              pending.resolve({
+                partitionId: msg.partitionId,
+                events: msg.events,
+                snapshotRequired: msg.snapshotRequired,
+              });
             }
             break;
           }
