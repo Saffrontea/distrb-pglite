@@ -69,6 +69,15 @@ export type SyncTelemetryEvent =
       snapshotId: SnapshotId;
       transferredBlocks: number;
       durationMs: number;
+    }
+  | {
+      type: "cas-gc";
+      nodeId: NodeId;
+      groupId: string;
+      deletedBlocks: number;
+      retainedBlocks: number;
+      dryRun: boolean;
+      durationMs: number;
     };
 
 export type SyncTelemetrySink = (event: SyncTelemetryEvent) => void;

@@ -47,6 +47,10 @@ function otelSink(event: SyncTelemetryEvent): void {
         transferredBlocks.add(event.transferredBlocks);
       }
       break;
+    case "cas-gc":
+      snapshotDuration.record(event.durationMs, { kind: event.type });
+      // event.deletedBlocks / event.retainedBlocks / event.dryRun
+      break;
     case "sync-started":
     case "sync-stopped":
     case "subscription-recovered":

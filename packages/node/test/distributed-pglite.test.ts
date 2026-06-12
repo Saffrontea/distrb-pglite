@@ -336,6 +336,106 @@ describe("DistributedPGlite", () => {
   });
 });
 
+describe("runCasGc", () => {
+  it("runs dryRun GC on a group with a snapshot and emits a cas-gc telemetry event", async () => {
+    const root = await makeTempDir("distributed-pglite-cas-gc");
+    const transport = new MemoryTransport();
+    const telemetryEvents: SyncTelemetryEvent[] = [];
+    let node: DistributedPGlite | undefined;
+
+    try {
+      node = await DistributedPGlite.open({
+        nodeId: "node-a",
+        dataDir: join(root, "data"),
+        casDir: join(root, "cas"),
+        schema: SCHEMA,
+        transport,
+        telemetry: (e) => telemetryEvents.push(e),
+        partitions: [
+          {
+            ...sensorPartition("tenant:jp"),
+            storage: {
+              groupId: "sensors",
+              rootRelation: "sensor_readings",
+              relations: ["sensor_readings"],
+              snapshotScope: "catalog-and-data",
+            },
+          },
+        ],
+      });
+
+      await node.write<SensorPayload>("tenant:jp", { sensorId: "tokyo-temperature", reading: 25 });
+      await node.createSnapshot("tenant:jp");
+
+      const execution = await node.runCasGc("sensors", { dryRun: true });
+
+      expect(execution).toBeDefined();
+      expect(Array.isArray(execution!.gc.deleted)).toBe(true);
+      expect(Array.isArray(execution!.gc.retained)).toBe(true);
+      // The snapshot we just created is recent and should be retained
+      expect(execution!.gc.retained.length).toBeGreaterThan(0);
+
+      const gcEvent = telemetryEvents.find((e) => e.type === "cas-gc");
+      expect(gcEvent).toBeDefined();
+      expect(gcEvent).toMatchObject({
+        type: "cas-gc",
+        groupId: "sensors",
+        dryRun: true,
+        durationMs: expect.any(Number),
+      });
+      expect(
+        (gcEvent as Extract<SyncTelemetryEvent, { type: "cas-gc" }>).durationMs,
+      ).toBeGreaterThanOrEqual(0);
+    } finally {
+      await node?.close();
+    }
+  }, 120_000);
+
+  it("returns undefined and emits no cas-gc event for a nonexistent groupId", async () => {
+    const root = await makeTempDir("distributed-pglite-cas-gc-missing");
+    const transport = new MemoryTransport();
+    const telemetryEvents: SyncTelemetryEvent[] = [];
+    let node: DistributedPGlite | undefined;
+
+    try {
+      node = await DistributedPGlite.open({
+        nodeId: "node-a",
+        dataDir: join(root, "data"),
+        casDir: join(root, "cas"),
+        schema: SCHEMA,
+        transport,
+        telemetry: (e) => telemetryEvents.push(e),
+      });
+
+      const execution = await node.runCasGc("nonexistent-group");
+
+      expect(execution).toBeUndefined();
+      expect(telemetryEvents.some((e) => e.type === "cas-gc")).toBe(false);
+    } finally {
+      await node?.close();
+    }
+  }, 120_000);
+
+  it("rejects with casDir error when opened without casDir", async () => {
+    const root = await makeTempDir("distributed-pglite-cas-gc-no-casdir");
+    const transport = new MemoryTransport();
+    let node: DistributedPGlite | undefined;
+
+    try {
+      node = await DistributedPGlite.open({
+        nodeId: "node-a",
+        dataDir: join(root, "data"),
+        schema: SCHEMA,
+        transport,
+      });
+
+      await expect(node.runCasGc("sensors")).rejects.toThrow("casDir is required");
+    } finally {
+      await node?.close();
+    }
+  }, 120_000);
+});
+
 function sensorPartition(id: string) {
   return {
     id,

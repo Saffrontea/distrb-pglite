@@ -26,7 +26,8 @@ OTel exporter は利用側が被せられるようにする。
 - [x] `SyncNode` と両 facade に配線する(未指定時はゼロコスト)
 - [x] snapshot/CAS イベント(snapshot-created / snapshot-pulled、転送
       block 数、duration)を facade 層から同じ sink に出す
-- [ ] CAS GC 実行のテレメトリ(facade が GC を公開したタイミングで)
+- [x] CAS GC を facade に公開 (`DistributedPGlite.runCasGc`) し、
+      `cas-gc` テレメトリイベントを emit する
 - [x] OTel を被せる例を docs に置く (docs/examples/otel-telemetry.md)
 
 ## 3. ライブラリとしての整理(公開準備)

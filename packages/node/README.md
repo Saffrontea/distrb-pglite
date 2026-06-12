@@ -85,16 +85,12 @@ await db.close();
 新規 node の bootstrap や大量 event replay の回避に使います。
 
 ```ts
-import { DistributedPGlite, listStorageSnapshotCatalogEntries } from "@distrb-pglite/node";
-
 // source node でスナップショットを作成
 const snapshot = await sourceDb.createSnapshot("tenant:jp");
 
 // source node の snapshot catalog エントリを取得して target node に渡す
-const snapshotEntries = await listStorageSnapshotCatalogEntries({
-  db: sourceDb.internals.db,
-  partitionId: "tenant:jp",
-});
+// (groupId は partition の storage.groupId)
+const snapshotEntries = await sourceDb.listSnapshotEntries("sensors");
 
 // target node でスナップショットを pull して bootstrap
 const pulled = await targetDb.pullSnapshot({
@@ -103,6 +99,14 @@ const pulled = await targetDb.pullSnapshot({
   sourceCasDir: "./data/node-a-cas",
 });
 // pulled.entry.highWatermark 以降の event は自動で replay されます
+```
+
+不要になった snapshot の CAS ブロックは、binding group の retention policy
+に従って `runCasGc` で削除できます。
+
+```ts
+const execution = await db.runCasGc("sensors", { dryRun: true });
+// execution?.gc.deleted / execution?.gc.retained
 ```
 
 snapshot の経路と scope (`catalog-and-data` / `data-only`) については
@@ -123,7 +127,8 @@ const db = await DistributedPGlite.open({
   telemetry: (event) => {
     // event.type: sync-started / sync-stopped / local-write /
     //   remote-event / replay-served / catchup /
-    //   snapshot-created / snapshot-pulled / subscription-recovered
+    //   snapshot-created / snapshot-pulled / cas-gc /
+    //   subscription-recovered
     console.log(event.type, event);
   },
 });

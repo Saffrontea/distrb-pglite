@@ -30,6 +30,8 @@ import {
   listStorageSnapshotCatalogEntries,
   loadStorageCatalogManifest,
   loadStoragePartitionBinding,
+  runStorageCasGcFromCatalog,
+  type StorageCasGcExecution,
 } from "./storage-binding.js";
 import {
   createManagedPartitionCasSnapshot,
@@ -341,6 +343,41 @@ export class DistributedPGlite {
       durationMs: Date.now() - startedAt,
     });
     return snapshot;
+  }
+
+  // Deletes CAS blocks no longer referenced by retained snapshot catalog
+  // entries, per the group's vacuum/GC retention policy. Returns undefined
+  // when the binding group does not exist.
+  async runCasGc(
+    groupId: string,
+    options?: {
+      activePullGenerations?: readonly number[];
+      activeStorageGenerations?: readonly number[];
+      dryRun?: boolean;
+      casDir?: string;
+    },
+  ): Promise<StorageCasGcExecution | undefined> {
+    const startedAt = Date.now();
+    const execution = await runStorageCasGcFromCatalog({
+      db: this.dbInstance,
+      groupId,
+      casDir: options?.casDir ?? this.requireCasDir(),
+      activePullGenerations: options?.activePullGenerations,
+      activeStorageGenerations: options?.activeStorageGenerations,
+      dryRun: options?.dryRun,
+    });
+    if (execution) {
+      emitTelemetry(this.options.telemetry, {
+        type: "cas-gc",
+        nodeId: this.options.nodeId,
+        groupId,
+        deletedBlocks: execution.gc.deleted.length,
+        retainedBlocks: execution.gc.retained.length,
+        dryRun: options?.dryRun ?? false,
+        durationMs: Date.now() - startedAt,
+      });
+    }
+    return execution;
   }
 
   async loadCatalog(groupId: string): Promise<StorageCatalogManifest | undefined> {
