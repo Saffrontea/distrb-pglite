@@ -2,10 +2,35 @@
   "name": "@distrb-pglite/node",
   "version": "0.0.0",
   "private": true,
+  "description": "Node.js adapters for distrb-pglite: DistributedPGlite facade, PGlite partition store, WebSocket transport, CAS snapshot, and storage orchestration.",
+  "keywords": [
+    "cas",
+    "edge-database",
+    "eventual-consistency",
+    "local-first",
+    "nodejs",
+    "pglite",
+    "postgres",
+    "replication",
+    "snapshot",
+    "websocket"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Saffrontea/distrb-pglite",
+    "directory": "packages/node"
+  },
+  "files": [
+    "dist"
+  ],
   "type": "module",
+  "sideEffects": false,
   "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./dist/index.js"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",

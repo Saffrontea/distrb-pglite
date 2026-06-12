@@ -2,10 +2,36 @@
   "name": "@distrb-pglite/browser",
   "version": "0.0.0",
   "private": true,
+  "description": "Browser adapters for distrb-pglite: DistributedBrowserPGlite facade, OPFS filesystem, browser CAS snapshot/restore, and browser WebSocket transport.",
+  "keywords": [
+    "browser",
+    "cas",
+    "edge-database",
+    "eventual-consistency",
+    "local-first",
+    "opfs",
+    "pglite",
+    "postgres",
+    "replication",
+    "snapshot",
+    "websocket"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Saffrontea/distrb-pglite",
+    "directory": "packages/browser"
+  },
+  "files": [
+    "dist"
+  ],
   "type": "module",
+  "sideEffects": false,
   "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./dist/index.js"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",

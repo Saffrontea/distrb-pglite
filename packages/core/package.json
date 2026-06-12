@@ -2,10 +2,32 @@
   "name": "@distrb-pglite/core",
   "version": "0.0.0",
   "private": true,
+  "description": "Transport-agnostic sync engine for partition-scoped PGlite replication: event model, SyncNode, MemoryTransport, and storage policy types.",
+  "keywords": [
+    "edge-database",
+    "eventual-consistency",
+    "local-first",
+    "pglite",
+    "postgres",
+    "replication",
+    "sync"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Saffrontea/distrb-pglite",
+    "directory": "packages/core"
+  },
+  "files": [
+    "dist"
+  ],
   "type": "module",
+  "sideEffects": false,
   "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./dist/index.js"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
