@@ -35,8 +35,9 @@ OTel exporter は利用側が被せられるようにする。
 - [x] 各公開パッケージ (core / node / browser) の package.json 整備:
       `files`, `exports`(`types` condition 込み), `repository`,
       `sideEffects` を追加済み
-- [ ] LICENSE ファイルを追加する(**ライセンス選定は要決定** — 決まるまで
-      `private: true` / `0.0.0` のまま。`license` フィールドも未設定)
+- [ ] LICENSE ファイルを追加する(2026-06-12 に確認し**意図的に保留**。
+      決まるまで `private: true` / `0.0.0` のまま、`license` フィールドも
+      未設定。候補: MIT / Apache-2.0(PGlite と同じ)/ MPL-2.0)
 - [x] 各パッケージに README(インストール・最小利用例・API の入口)を書く
 - [x] ルート README をライブラリ利用者向けに更新する
 - [x] `internals` 経由でしか触れない低レベル API と公開 API の線引きを
