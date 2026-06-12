@@ -52,6 +52,8 @@ export {
   selectPruneAnchor,
   SnapshotRequiredError,
 } from "./compaction.js";
+export { StaticSnapshotSource } from "./snapshot-source.js";
+export type { SnapshotSource } from "./snapshot-source.js";
 export type { PartitionOwnershipTransfer } from "./single-writer.js";
 export { compareHighWatermarks, convergenceStatus, planCatchupFromStatus } from "./convergence.js";
 export type {
