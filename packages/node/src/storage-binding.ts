@@ -275,7 +275,12 @@ export async function migrateStorageBindingCatalog(db: PGliteClient): Promise<vo
       VALUES (group_name, root_oid, 1, 1, vacuum_policy)
       ON CONFLICT (group_id) DO UPDATE SET
         root_relation_oid = EXCLUDED.root_relation_oid,
-        vacuum_policy = EXCLUDED.vacuum_policy;
+        -- NULL means "not specified", not "clear": facades re-create
+        -- binding groups on every (re)open.
+        vacuum_policy = COALESCE(
+          EXCLUDED.vacuum_policy,
+          distrb_storage_binding_groups.vacuum_policy
+        );
 
       RETURN root_oid;
     END;
@@ -1912,7 +1917,13 @@ export async function createStorageBindingGroup(options: {
     `
       SELECT distrb_create_binding_group($1, $2::regclass, $3::jsonb)
     `,
-    [options.groupId, options.rootRelation, JSON.stringify(options.vacuumPolicy ?? null)],
+    // SQL NULL (not jsonb 'null') so the COALESCE in the upsert preserves
+    // an existing policy when none is specified.
+    [
+      options.groupId,
+      options.rootRelation,
+      options.vacuumPolicy ? JSON.stringify(options.vacuumPolicy) : null,
+    ],
   );
 
   if (options.ddlGeneration !== undefined && options.ddlGeneration !== 1) {

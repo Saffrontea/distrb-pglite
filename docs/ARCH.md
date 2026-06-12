@@ -361,6 +361,31 @@ event log は append-only だが、snapshot を anchor にして有限長に保�
 
 ---
 
+## 物理レプリケーションの contract (ADR 0009)
+
+論理面の `Transport` と対になる物理面の contract が `SnapshotSource`。
+責務は**発見**(peer が広告する snapshot catalog entries の列挙)と
+**転送**(1 entry の不足 block をローカル block store に揃える)の 2 つだけ。
+検証(ADR 0007 の fence)・entry 選択・復元は consumer 側に残る:
+source 実装は「list と fetch」より賢くなってはいけない。
+
+- content-addressed なので転送は冪等・再開可能で、提供側を信頼しなくてよい
+- facade に `snapshotSource` を構成すると、`catchUpFrom` が
+  `SnapshotRequiredError` から透過的に回復する(pull → replay → catchup)
+- 実装: `StaticSnapshotSource`(テスト/移行用、core)、
+  `SharedDirSnapshotSource`(共有ファイルシステム、node)。
+  wire protocol 上の block 転送は将来の実装(contract は変えずに足せる)
+- `pullSnapshot` の `snapshotEntries` / `sourceCasDir` 引数は
+  「呼び出し側が source を兼ねる」退化ケースとして残る移行経路
+
+また `vacuumPolicy.autoPruneEvents` を有効にすると、`runCasGc` が
+CAS block の GC と同じ retention 判断で各 partition の event log を
+「最古の retained bootstrap anchor の HWM」まで自動 prune する。
+retention window 内の遅れは replay で、それ以遅は snapshot pull で
+回復する、という猶予が policy から自動的に導かれる。
+
+---
+
 ## エコシステムの責務境界
 
 このライブラリは WireGuard 相当のレイヤーであり、Tailscale 的な
@@ -384,3 +409,4 @@ CAS block store に閉じる。これらの上位機能は別レイヤー/別プ
 | [0006](adr/0006-single-writer-partition-ownership.md) | partition は常に単一 writer、競合 merge は実装しない                         |
 | [0007](adr/0007-logical-source-of-truth.md)           | 論理層が正本、物理 snapshot は version/generation fence 付きの最適化         |
 | [0008](adr/0008-event-log-compaction.md)              | snapshot-anchored な event log compaction、replay gap は明示応答             |
+| [0009](adr/0009-physical-replication-contract.md)     | 物理面の contract `SnapshotSource`(発見+転送のみ、検証/選択/復元は外)      |

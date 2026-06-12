@@ -16,12 +16,15 @@ import {
   type NodeId,
   type PartitionId,
   type PartitionStore,
+  type StorageBindingGroup,
   type StorageCatalogManifest,
   type StoragePullRequirement,
   type StorageSnapshotCatalogEntry,
   type StorageSnapshotComponent,
   type StorageSnapshotScope,
+  SnapshotRequiredError,
   type SingleWriterViolationError,
+  type SnapshotSource,
   type SyncTelemetrySink,
   type Transport,
 } from "@distrb-pglite/core";
@@ -31,6 +34,7 @@ import {
   bindStoragePartition,
   createStorageBindingGroup,
   listStorageSnapshotCatalogEntries,
+  loadStorageBindingGroup,
   loadStorageCatalogManifest,
   loadStoragePartitionBinding,
   runStorageCasGcFromCatalog,
@@ -67,6 +71,8 @@ export type DistributedPGlitePartitionOptions<TPayload = any> = {
     snapshotScope?: StorageSnapshotScope;
     snapshotComponents?: StorageSnapshotComponent[];
     pullRequires?: StorageSnapshotComponent[];
+    // Applied when this partition's binding group is first created.
+    vacuumPolicy?: StorageBindingGroup["vacuumPolicy"];
   };
 };
 
@@ -85,6 +91,9 @@ export type DistributedPGliteOpenOptions = {
   singleWriter?: SingleWriterRegistry | { owners: Record<PartitionId, NodeId> };
   onSingleWriterViolation?: (error: SingleWriterViolationError) => void;
   telemetry?: SyncTelemetrySink;
+  // ADR 0009: configured physical-plane source. With it, catchUpFrom
+  // recovers automatically from SnapshotRequiredError via snapshot pull.
+  snapshotSource?: SnapshotSource<CasManifest>;
 };
 
 export type DistributedPGliteWriteOptions<TPayload> = {
@@ -285,12 +294,42 @@ export class DistributedPGlite {
     return this.singleWriterRegistry;
   }
 
-  catchUpFrom(peerNodeId: NodeId, partitionId: PartitionId): Promise<number> {
-    return this.syncNode.catchUpFrom(peerNodeId, partitionId);
+  // ADR 0009: with a configured snapshotSource, a snapshot-required replay
+  // gap (ADR 0008) is recovered transparently: pull the snapshot through
+  // the source, then catch up again from the new high-watermark.
+  async catchUpFrom(peerNodeId: NodeId, partitionId: PartitionId): Promise<number> {
+    try {
+      return await this.syncNode.catchUpFrom(peerNodeId, partitionId);
+    } catch (error) {
+      if (!(error instanceof SnapshotRequiredError) || !this.options.snapshotSource) {
+        throw error;
+      }
+      await this.pullSnapshotFromSource(this.options.snapshotSource, peerNodeId, partitionId);
+      return this.syncNode.catchUpFrom(peerNodeId, partitionId);
+    }
   }
 
   reconcileFrom(peerNodeId: NodeId, partitionId: PartitionId): Promise<number> {
     return this.syncNode.reconcileFrom(peerNodeId, partitionId);
+  }
+
+  private async pullSnapshotFromSource(
+    source: SnapshotSource<CasManifest>,
+    peerNodeId: NodeId,
+    partitionId: PartitionId,
+  ): Promise<PulledPartitionCasSnapshot> {
+    const partition = this.requireStoragePartition(partitionId);
+    const snapshotEntries = await source.listSnapshotEntries(peerNodeId, partitionId);
+    const catalogManifest = await source.loadCatalogManifest?.(
+      peerNodeId,
+      partition.storage.groupId,
+    );
+    return this.pullSnapshot({
+      partitionId,
+      snapshotEntries,
+      catalogManifest,
+      fetchBlocks: (entry) => source.fetchBlocks(peerNodeId, entry),
+    });
   }
 
   highWatermark(partitionId: PartitionId) {
@@ -393,7 +432,10 @@ export class DistributedPGlite {
 
   // Deletes CAS blocks no longer referenced by retained snapshot catalog
   // entries, per the group's vacuum/GC retention policy. Returns undefined
-  // when the binding group does not exist.
+  // when the binding group does not exist. With vacuumPolicy.autoPruneEvents
+  // the same retention decision also compacts each bound partition's event
+  // log through its oldest retained bootstrap anchor (ADR 0008/0009): one
+  // policy drives blocks and events.
   async runCasGc(
     groupId: string,
     options?: {
@@ -402,7 +444,7 @@ export class DistributedPGlite {
       dryRun?: boolean;
       casDir?: string;
     },
-  ): Promise<StorageCasGcExecution | undefined> {
+  ): Promise<(StorageCasGcExecution & { prunedEvents?: Record<PartitionId, number> }) | undefined> {
     const startedAt = Date.now();
     const execution = await runStorageCasGcFromCatalog({
       db: this.dbInstance,
@@ -412,18 +454,53 @@ export class DistributedPGlite {
       activeStorageGenerations: options?.activeStorageGenerations,
       dryRun: options?.dryRun,
     });
-    if (execution) {
-      emitTelemetry(this.options.telemetry, {
-        type: "cas-gc",
-        nodeId: this.options.nodeId,
-        groupId,
-        deletedBlocks: execution.gc.deleted.length,
-        retainedBlocks: execution.gc.retained.length,
-        dryRun: options?.dryRun ?? false,
-        durationMs: Date.now() - startedAt,
-      });
+    if (!execution) {
+      return undefined;
     }
-    return execution;
+    emitTelemetry(this.options.telemetry, {
+      type: "cas-gc",
+      nodeId: this.options.nodeId,
+      groupId,
+      deletedBlocks: execution.gc.deleted.length,
+      retainedBlocks: execution.gc.retained.length,
+      dryRun: options?.dryRun ?? false,
+      durationMs: Date.now() - startedAt,
+    });
+
+    if (options?.dryRun) {
+      return execution;
+    }
+    const group = await loadStorageBindingGroup(this.dbInstance, groupId);
+    if (!group?.vacuumPolicy?.autoPruneEvents) {
+      return execution;
+    }
+    const prunedEvents: Record<PartitionId, number> = {};
+    const entries = await this.listSnapshotEntries(groupId);
+    const retainedIds = new Set(execution.retainedSnapshotIds);
+    for (const partition of this.partitions.values()) {
+      if (partition.storage?.groupId !== groupId) {
+        continue;
+      }
+      // The floor trails the OLDEST retained anchor, not the newest: peers
+      // within the retention window still catch up by replay; only peers
+      // older than the whole window are sent to snapshot pull.
+      const oldestRetained = entries
+        .filter(
+          (entry) =>
+            entry.partitionId === partition.id &&
+            retainedIds.has(entry.snapshotId) &&
+            canSatisfyStorageSnapshotCatalogPull(entry, "bootstrap"),
+        )
+        .sort((left, right) => left.snapshotId.localeCompare(right.snapshotId))[0];
+      if (!oldestRetained || oldestRetained.highWatermark.length === 0) {
+        continue;
+      }
+      const result = await this.pruneEvents(partition.id, {
+        through: new Map(oldestRetained.highWatermark),
+      });
+      prunedEvents[partition.id] = result.pruned;
+    }
+    return { ...execution, prunedEvents };
   }
 
   async loadCatalog(groupId: string): Promise<StorageCatalogManifest | undefined> {
@@ -442,6 +519,7 @@ export class DistributedPGlite {
     catalogManifest?: StorageCatalogManifest;
     snapshotEntries: readonly StorageSnapshotCatalogEntry<CasManifest>[];
     requirement?: StoragePullRequirement;
+    fetchBlocks?: (entry: StorageSnapshotCatalogEntry<CasManifest>) => Promise<number>;
     sourceCasDir?: string;
   }): Promise<PulledPartitionCasSnapshot> {
     const partition = this.requireStoragePartition(options.partitionId);
@@ -467,6 +545,7 @@ export class DistributedPGlite {
         groupId: partition.storage.groupId,
         partitionId: options.partitionId,
         requirement: options.requirement ?? "bootstrap",
+        fetchBlocks: options.fetchBlocks,
         sourceCasDir: options.sourceCasDir,
         targetCasDir: this.requireCasDir(),
         targetDir: this.options.dataDir,
@@ -548,6 +627,7 @@ export class DistributedPGlite {
           db: this.dbInstance,
           groupId: partition.storage.groupId,
           rootRelation: partition.storage.rootRelation,
+          vacuumPolicy: partition.storage.vacuumPolicy,
         });
       } else if (previousRoot !== partition.storage.rootRelation) {
         throw new Error(`storage group root relation mismatch: ${partition.storage.groupId}`);
@@ -564,6 +644,7 @@ export class DistributedPGlite {
       db: this.dbInstance,
       groupId: partition.storage.groupId,
       rootRelation: partition.storage.rootRelation,
+      vacuumPolicy: partition.storage.vacuumPolicy,
     });
     await bindStoragePartition({
       db: this.dbInstance,

@@ -53,9 +53,14 @@ OTel exporter は利用側が被せられるようにする。
       (memory / websocket hub / p2p)。v1 peer には timeout で失敗させる
 - [x] facade: 明示 prune API (`DistributedPGlite.pruneEvents`、
       bootstrap snapshot anchor 検証つき)
-- [ ] catchup の snapshot pull **自動**フォールバック(現状は
-      `SnapshotRequiredError` を受けて利用者が `pullSnapshot` する)
-- [ ] auto-prune policy(auto CAS GC と並ぶ vacuumPolicy 駆動)
+- [x] ADR 0009: 物理面 contract `SnapshotSource`(発見+転送)。
+      `StaticSnapshotSource`(core)/ `SharedDirSnapshotSource`(node)
+- [x] catchup の snapshot pull 自動フォールバック(facade の
+      `snapshotSource` オプション。未構成なら従来通り error が伝播)
+- [x] auto-prune policy: `vacuumPolicy.autoPruneEvents` で `runCasGc` が
+      最古 retained bootstrap anchor まで event log を自動 prune
+- [ ] wire protocol 上の `SnapshotSource` 実装(block-request/response。
+      contract は固定済み、protocol v2 の拡張として)
 - [x] anchor snapshot の GC 保護: `runStorageCasGcFromCatalog` は
       `pruned_through` を cover する bootstrap 可能 entry を世代 plan に
       関係なく retain する

@@ -40,6 +40,10 @@ export type StorageBindingGroup = {
   vacuumPolicy?: {
     retainSnapshotGenerations: number;
     gcAfterGeneration: number;
+    // ADR 0008/0009: when set, CAS GC also prunes each partition's event
+    // log through the oldest retained bootstrap-capable snapshot anchor,
+    // so blocks and events are compacted by one retention policy.
+    autoPruneEvents?: boolean;
   };
 };
 

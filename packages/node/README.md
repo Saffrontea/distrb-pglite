@@ -119,6 +119,41 @@ await db.createSnapshot("tenant:jp");
 const { pruned } = await db.pruneEvents("tenant:jp");
 ```
 
+回復と圧縮はシステムに任せられます (ADR 0009):
+
+- open 時に `snapshotSource`(物理面の contract。共有ファイルシステムなら
+  `SharedDirSnapshotSource`)を渡すと、`catchUpFrom` が prune 済み範囲への
+  遭遇時に snapshot pull → replay → catchup を透過的に行います。
+- storage の `vacuumPolicy` に `autoPruneEvents: true` を含めると、
+  `runCasGc` が CAS block の GC と同じ retention 判断で event log を
+  最古の retained anchor まで自動 prune します。
+
+```ts
+const db = await DistributedPGlite.open({
+  // ...
+  snapshotSource: new SharedDirSnapshotSource({
+    sourceCasDir: "./shared/node-a-cas",
+    targetCasDir: "./data/node-b-cas",
+    listEntries: (peer, partitionId) => fetchEntriesSomehow(peer, partitionId),
+  }),
+  partitions: [
+    {
+      id: "tenant:jp",
+      storage: {
+        groupId: "sensors",
+        rootRelation: "sensor_readings",
+        relations: ["sensor_readings"],
+        vacuumPolicy: {
+          retainSnapshotGenerations: 1,
+          gcAfterGeneration: 0,
+          autoPruneEvents: true,
+        },
+      },
+    },
+  ],
+});
+```
+
 snapshot の経路と scope (`catalog-and-data` / `data-only`) については
 [docs/ARCH.md](../../docs/ARCH.md) の「CAS スナップショット」節を参照してください。
 

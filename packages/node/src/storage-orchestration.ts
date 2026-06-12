@@ -118,6 +118,9 @@ export async function pullPartitionCasSnapshot(options: {
   groupId: string;
   partitionId: PartitionId;
   requirement: StoragePullRequirement;
+  // ADR 0009: block acquisition for the selected entry. Preferred over
+  // sourceCasDir, which remains as the shared-filesystem degenerate case.
+  fetchBlocks?: (entry: StorageSnapshotCatalogEntry<CasManifest>) => Promise<number>;
   sourceCasDir?: string;
   targetCasDir: string;
   targetDir: string;
@@ -177,15 +180,17 @@ export async function pullPartitionCasSnapshot(options: {
   validatePullStorageCompatibility(entry, snapshot.storageBinding);
   validateCasManifest(entry.manifest, entry.snapshotId);
   validateEntryComponentsMatchCasManifest(entry);
-  const transferredBlocks = options.sourceCasDir
-    ? (
-        await transferMissingBlocks({
-          manifest: entry.manifest,
-          sourceCasDir: options.sourceCasDir,
-          targetCasDir: options.targetCasDir,
-        })
-      ).length
-    : 0;
+  const transferredBlocks = options.fetchBlocks
+    ? await options.fetchBlocks(entry)
+    : options.sourceCasDir
+      ? (
+          await transferMissingBlocks({
+            manifest: entry.manifest,
+            sourceCasDir: options.sourceCasDir,
+            targetCasDir: options.targetCasDir,
+          })
+        ).length
+      : 0;
   const appliedCatalog =
     options.db && catalogManifest
       ? await applyStorageCatalogManifest({ db: options.db, manifest: catalogManifest })
