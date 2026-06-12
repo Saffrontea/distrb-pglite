@@ -31,14 +31,15 @@ OTel exporter は利用側が被せられるようにする。
 
 ## 3. ライブラリとしての整理(公開準備)
 
-- [ ] 各公開パッケージ (core / node / browser) の package.json 整備:
-      `files`, `exports`(`types` condition 込み), `license`, `repository`,
-      `sideEffects`, `private` フラグの扱いを決める
-- [ ] LICENSE ファイルを追加する(ライセンス選定は要決定)
-- [ ] 各パッケージに README(インストール・最小利用例・API の入口)を書く
-- [ ] ルート README をライブラリ利用者向けに更新する
-- [ ] `internals` 経由でしか触れない低レベル API と公開 API の線引きを
-      docs に明記する
+- [x] 各公開パッケージ (core / node / browser) の package.json 整備:
+      `files`, `exports`(`types` condition 込み), `repository`,
+      `sideEffects` を追加済み
+- [ ] LICENSE ファイルを追加する(**ライセンス選定は要決定** — 決まるまで
+      `private: true` / `0.0.0` のまま。`license` フィールドも未設定)
+- [x] 各パッケージに README(インストール・最小利用例・API の入口)を書く
+- [x] ルート README をライブラリ利用者向けに更新する
+- [x] `internals` 経由でしか触れない低レベル API と公開 API の線引きを
+      ARCH.md に明記する
 
 ## 4. エコシステム(スコープ外として記録)
 
@@ -47,4 +48,4 @@ Tailscale 的なネットワーキング層はこのライブラリの責務で�
 別の責務として切り出す。relay/hub(WebSocketHub)は transport と
 authorization の責務だけを持つ、という現行の線引きを維持する。
 
-- [ ] この責務分担を ARCH.md に 1 セクションとして明記する(実装はしない)
+- [x] この責務分担を ARCH.md に 1 セクションとして明記する(実装はしない)

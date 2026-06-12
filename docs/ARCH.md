@@ -39,6 +39,18 @@ local SQL (`query` / `exec`), partition writes, catchup, event inspection, and
 snapshot operations. Lower-level building blocks remain available for tests and
 research, but facade instances expose them only through `internals`.
 
+### 公開 API と internals の線引き
+
+- **公開 API(後方互換性を意識する面)**: facade のメソッドと open オプション、
+  core の型(`EventEnvelope` など)、`Transport` インターフェース、
+  `SyncTelemetrySink`、`SingleWriterRegistry`。
+- **internals(契約外)**: facade の `internals` getter から触れる
+  `SyncNode`・store・PGlite インスタンスと、`@distrb-pglite/node` の
+  storage orchestration / CAS / inventory ヘルパー群。テスト・研究・
+  上位レイヤー実装のために export しているが、シグネチャは予告なく変わる。
+- 迷ったら: facade で表現できないユースケースが出たときは internals に
+  手を伸ばすのではなく、facade に何が足りないかを先に問う。
+
 ```mermaid
 classDiagram
   class SyncNode {
