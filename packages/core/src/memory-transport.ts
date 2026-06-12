@@ -5,6 +5,7 @@ import {
   assertValidEventEnvelope,
   assertValidNodeId,
   assertValidPartitionId,
+  validateEventCursorEntries,
 } from "./store.js";
 
 export class MemoryTransport implements Transport {
@@ -136,6 +137,12 @@ function assertValidReplayResponse(
     throw new Error(
       `replay response partition mismatch: requested=${requestedPartitionId} response=${response.partitionId}`,
     );
+  }
+  if (response.snapshotRequired) {
+    validateEventCursorEntries(response.snapshotRequired.prunedThrough);
+    if (response.events.length > 0) {
+      throw new Error("snapshot-required replay response must not carry events");
+    }
   }
   for (const event of response.events) {
     assertValidEventEnvelope(event);

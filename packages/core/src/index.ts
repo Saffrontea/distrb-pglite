@@ -9,6 +9,7 @@ export type {
   PgOid,
   ReplayRequest,
   ReplayResponse,
+  ReplaySnapshotRequired,
   SnapshotId,
   SnapshotMetadata,
   StoragePartitionBinding,
@@ -45,6 +46,12 @@ export type { SyncNodeOptions, SyncNodeStartOptions, SubscribeOptions } from "./
 export { SingleWriterRegistry, SingleWriterViolationError } from "./single-writer.js";
 export { emitTelemetry } from "./telemetry.js";
 export type { SyncTelemetryEvent, SyncTelemetrySink } from "./telemetry.js";
+export {
+  assertPruneAnchored,
+  hasReplayGap,
+  selectPruneAnchor,
+  SnapshotRequiredError,
+} from "./compaction.js";
 export type { PartitionOwnershipTransfer } from "./single-writer.js";
 export { compareHighWatermarks, convergenceStatus, planCatchupFromStatus } from "./convergence.js";
 export type {

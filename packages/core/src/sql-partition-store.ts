@@ -75,6 +75,13 @@ export class SqlPartitionStore implements PartitionStore {
         partition_id text NOT NULL,
         high_watermark jsonb NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS distrb_pruned_through (
+        partition_id text NOT NULL,
+        source_node_id text NOT NULL,
+        event_id uuid NOT NULL,
+        PRIMARY KEY (partition_id, source_node_id)
+      );
     `);
   }
 
@@ -133,6 +140,12 @@ export class SqlPartitionStore implements PartitionStore {
       await this.assertExistingEventMatchesIfPresent(event);
       return false;
     }
+    // ADR 0008: the pruned floor doubles as the idempotence floor. Events at
+    // or below it had their dedupe rows deleted with them, so re-deliveries
+    // from non-pruned peers must be rejected here, not re-applied.
+    if (await this.isAtOrBelowPrunedThrough(event)) {
+      return false;
+    }
 
     return this.withTransaction(async () => {
       const applied = await this.db.query<{ event_id: string }>(
@@ -187,7 +200,9 @@ export class SqlPartitionStore implements PartitionStore {
 
   async getHighWatermark(partitionId: PartitionId): Promise<HighWatermark> {
     assertValidPartitionId(partitionId);
-    const highWatermark = new Map<NodeId, EventId>();
+    // Seed with the pruned floor so the watermark never regresses below it
+    // after compaction (otherwise catchup would re-request pruned ranges).
+    const highWatermark = new Map<NodeId, EventId>(await this.getPrunedThrough(partitionId));
     for (const event of (await this.loadPartitionEvents(partitionId)).map(rowToEvent)) {
       const current = highWatermark.get(event.sourceNodeId);
       if (!current || compareEventIds(event.eventId, current) > 0) {
@@ -195,6 +210,76 @@ export class SqlPartitionStore implements PartitionStore {
       }
     }
     return highWatermark;
+  }
+
+  async getPrunedThrough(partitionId: PartitionId): Promise<HighWatermark> {
+    assertValidPartitionId(partitionId);
+    const result = await this.db.query<{ source_node_id: string; event_id: string }>(
+      `
+        SELECT source_node_id, event_id::text AS event_id
+        FROM distrb_pruned_through
+        WHERE partition_id = $1
+      `,
+      [partitionId],
+    );
+    return new Map(result.rows.map((row) => [row.source_node_id, row.event_id]));
+  }
+
+  async pruneEvents(partitionId: PartitionId, through: HighWatermark): Promise<number> {
+    assertValidPartitionId(partitionId);
+    assertValidEventCursors(through);
+    return this.withTransaction(async () => {
+      let pruned = 0;
+      for (const [sourceNodeId, eventId] of through) {
+        const deleted = await this.db.query(
+          `
+            DELETE FROM distrb_events
+            WHERE partition_id = $1
+              AND source_node_id = $2
+              AND event_id <= $3::uuid
+          `,
+          [partitionId, sourceNodeId, eventId],
+        );
+        pruned += deleted.affectedRows ?? 0;
+        await this.db.query(
+          `
+            DELETE FROM distrb_applied_events
+            WHERE partition_id = $1
+              AND source_node_id = $2
+              AND event_id <= $3::uuid
+          `,
+          [partitionId, sourceNodeId, eventId],
+        );
+        // Monotone floor: never move pruned_through backwards.
+        await this.db.query(
+          `
+            INSERT INTO distrb_pruned_through (partition_id, source_node_id, event_id)
+            VALUES ($1, $2, $3::uuid)
+            ON CONFLICT (partition_id, source_node_id)
+            DO UPDATE SET event_id = EXCLUDED.event_id
+            WHERE distrb_pruned_through.event_id < EXCLUDED.event_id
+          `,
+          [partitionId, sourceNodeId, eventId],
+        );
+      }
+      return pruned;
+    });
+  }
+
+  private async isAtOrBelowPrunedThrough(event: EventEnvelope): Promise<boolean> {
+    const result = await this.db.query<{ pruned: boolean }>(
+      `
+        SELECT EXISTS (
+          SELECT 1
+          FROM distrb_pruned_through
+          WHERE partition_id = $1
+            AND source_node_id = $2
+            AND event_id >= $3::uuid
+        ) AS pruned
+      `,
+      [event.partitionId, event.sourceNodeId, event.eventId],
+    );
+    return result.rows[0]?.pruned ?? false;
   }
 
   async createSnapshotMetadata(partitionId: PartitionId): Promise<SnapshotMetadata> {

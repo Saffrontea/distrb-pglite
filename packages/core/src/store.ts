@@ -22,6 +22,14 @@ export type PartitionStore = {
   ): Promise<EventEnvelope[]>;
   getHighWatermark(partitionId: PartitionId): Promise<HighWatermark>;
   createSnapshotMetadata(partitionId: PartitionId): Promise<SnapshotMetadata>;
+  // ADR 0008 compaction surface. Optional: a store without these never
+  // prunes and never reports replay gaps. pruneEvents deletes events at or
+  // below `through` per source node and advances the durable pruned_through
+  // floor monotonically. The floor doubles as the idempotence floor:
+  // applyRemote must treat events at or below it as duplicates, because
+  // their dedupe records are deleted together with the events.
+  getPrunedThrough?(partitionId: PartitionId): Promise<HighWatermark>;
+  pruneEvents?(partitionId: PartitionId, through: HighWatermark): Promise<number>;
 };
 
 export type EventProjection<TPayload = unknown> = (
@@ -47,8 +55,9 @@ export function isEventTransactionalPartitionStore(
 
 export class InMemoryPartitionStore implements PartitionStore {
   private readonly partitions = new Set<PartitionId>();
-  private readonly events: EventEnvelope[] = [];
+  private events: EventEnvelope[] = [];
   private readonly applied = new Map<string, EventEnvelope>();
+  private readonly prunedThrough = new Map<PartitionId, Map<NodeId, EventId>>();
 
   constructor(
     private readonly nodeId: NodeId,
@@ -86,6 +95,9 @@ export class InMemoryPartitionStore implements PartitionStore {
     const existing = this.applied.get(appliedKey(event.sourceNodeId, event.eventId));
     if (existing) {
       assertSameEvent(existing, event);
+      return false;
+    }
+    if (this.isAtOrBelowPrunedThrough(event)) {
       return false;
     }
     if (!(await this.hasPartition(event.partitionId))) {
@@ -128,7 +140,9 @@ export class InMemoryPartitionStore implements PartitionStore {
 
   async getHighWatermark(partitionId: PartitionId): Promise<HighWatermark> {
     assertValidPartitionId(partitionId);
-    const watermark = new Map<NodeId, EventId>();
+    // Seed with the pruned floor so the watermark never regresses below it
+    // after compaction (otherwise catchup would re-request pruned ranges).
+    const watermark = new Map<NodeId, EventId>(this.prunedThrough.get(partitionId) ?? []);
     for (const event of this.events) {
       if (event.partitionId !== partitionId) {
         continue;
@@ -141,6 +155,45 @@ export class InMemoryPartitionStore implements PartitionStore {
     }
 
     return watermark;
+  }
+
+  async getPrunedThrough(partitionId: PartitionId): Promise<HighWatermark> {
+    assertValidPartitionId(partitionId);
+    return new Map(this.prunedThrough.get(partitionId) ?? []);
+  }
+
+  async pruneEvents(partitionId: PartitionId, through: HighWatermark): Promise<number> {
+    assertValidPartitionId(partitionId);
+    assertValidEventCursors(through);
+    const floor = this.prunedThrough.get(partitionId) ?? new Map<NodeId, EventId>();
+
+    let pruned = 0;
+    this.events = this.events.filter((event) => {
+      if (event.partitionId !== partitionId) {
+        return true;
+      }
+      const cursor = through.get(event.sourceNodeId);
+      if (!cursor || compareEventIds(event.eventId, cursor) > 0) {
+        return true;
+      }
+      this.applied.delete(appliedKey(event.sourceNodeId, event.eventId));
+      pruned += 1;
+      return false;
+    });
+
+    for (const [sourceNodeId, eventId] of through) {
+      const current = floor.get(sourceNodeId);
+      if (!current || compareEventIds(eventId, current) > 0) {
+        floor.set(sourceNodeId, eventId);
+      }
+    }
+    this.prunedThrough.set(partitionId, floor);
+    return pruned;
+  }
+
+  private isAtOrBelowPrunedThrough(event: EventEnvelope): boolean {
+    const cursor = this.prunedThrough.get(event.partitionId)?.get(event.sourceNodeId);
+    return cursor !== undefined && compareEventIds(event.eventId, cursor) <= 0;
   }
 
   async createSnapshotMetadata(partitionId: PartitionId): Promise<SnapshotMetadata> {

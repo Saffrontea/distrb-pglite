@@ -3,6 +3,7 @@ import {
   assertValidNodeId,
   assertValidPartitionId,
   isEventTransactionalPartitionStore,
+  validateEventCursorEntries,
   type EventProjection,
   type PartitionStore,
 } from "./store.js";
@@ -23,6 +24,7 @@ import {
 } from "./convergence.js";
 import { SingleWriterViolationError, type SingleWriterRegistry } from "./single-writer.js";
 import { emitTelemetry, type SyncTelemetrySink } from "./telemetry.js";
+import { hasReplayGap, SnapshotRequiredError } from "./compaction.js";
 
 export type SyncNodeStartOptions = {
   autoRecoverSubscriptions?: boolean;
@@ -73,6 +75,23 @@ export class SyncNode {
           epoch,
           { partitionId: request.partitionId, events: [] },
           async () => {
+            // ADR 0008: a request below the pruned floor gets an explicit
+            // snapshot-required response, never a silently partial replay.
+            const prunedThrough = await this.store.getPrunedThrough?.(request.partitionId);
+            if (prunedThrough && hasReplayGap(request.cursors, prunedThrough)) {
+              emitTelemetry(this.options.telemetry, {
+                type: "snapshot-required",
+                nodeId: this.nodeId,
+                partitionId: request.partitionId,
+                peerNodeId: request.requesterNodeId,
+                direction: "served",
+              });
+              return {
+                partitionId: request.partitionId,
+                events: [],
+                snapshotRequired: { prunedThrough: [...prunedThrough] },
+              };
+            }
             const events = await this.store.listEventsAfterCursors(
               request.partitionId,
               request.cursors,
@@ -171,6 +190,20 @@ export class SyncNode {
       throw new Error(
         `replay response partition mismatch: requested=${partitionId} response=${response.partitionId}`,
       );
+    }
+
+    if (response.snapshotRequired) {
+      const prunedThrough = new Map(
+        validateEventCursorEntries(response.snapshotRequired.prunedThrough),
+      );
+      emitTelemetry(this.options.telemetry, {
+        type: "snapshot-required",
+        nodeId: this.nodeId,
+        partitionId,
+        peerNodeId,
+        direction: "received",
+      });
+      throw new SnapshotRequiredError(partitionId, peerNodeId, prunedThrough);
     }
 
     validateReplayEvents(response.events, partitionId);

@@ -71,6 +71,22 @@ export type SyncTelemetryEvent =
       durationMs: number;
     }
   | {
+      type: "snapshot-required";
+      nodeId: NodeId;
+      partitionId: PartitionId;
+      peerNodeId: NodeId;
+      // served: this node refused a replay below its pruned floor;
+      // received: a peer refused this node's catchup/reconcile.
+      direction: "served" | "received";
+    }
+  | {
+      type: "events-pruned";
+      nodeId: NodeId;
+      partitionId: PartitionId;
+      pruned: number;
+      durationMs: number;
+    }
+  | {
       type: "cas-gc";
       nodeId: NodeId;
       groupId: string;

@@ -122,7 +122,16 @@ export type ReplayRequest = {
   cursors: ReadonlyMap<NodeId, EventId>;
 };
 
+// ADR 0008: replying with a silently partial event list after pruning is
+// forbidden. When any requested cursor falls below the responder's
+// pruned_through boundary, the response carries snapshotRequired (with an
+// empty events list) and the requester must recover via snapshot pull.
+export type ReplaySnapshotRequired = {
+  prunedThrough: [NodeId, EventId][];
+};
+
 export type ReplayResponse = {
   partitionId: PartitionId;
   events: EventEnvelope[];
+  snapshotRequired?: ReplaySnapshotRequired;
 };
