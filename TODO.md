@@ -43,7 +43,22 @@ OTel exporter は利用側が被せられるようにする。
 - [x] `internals` 経由でしか触れない低レベル API と公開 API の線引きを
       ARCH.md に明記する
 
-## 4. エコシステム(スコープ外として記録)
+## 4. Event log compaction (ADR 0008)
+
+設計合意済み(2026-06-12)。0007 は変更しない。実装は 3 段階:
+
+- [ ] core: 永続 `pruned_through` vector、anchor 検証付き prune 操作、
+      replay serving での gap 拒否
+- [ ] wire: `snapshot-required` response variant + protocol version field、
+      `reconcileFrom` / catchup の snapshot pull フォールバック
+- [ ] facade: 明示 prune API(snapshot catalog 連携)、
+      その後 auto CAS GC と並ぶ auto-prune policy
+- [ ] anchor snapshot の GC 保護(`pruned_through` が依存する entry は
+      CAS GC retention で保護)
+- [ ] telemetry: `events-pruned` イベント
+- [ ] subscriber prune(serve 先がないノードの緩い prune)は別クラスとして
+
+## 5. エコシステム(スコープ外として記録)
 
 Tailscale 的なネットワーキング層はこのライブラリの責務ではない。
 これは WireGuard 相当のレイヤーであり、認証・認可・ノード発見・鍵配布は

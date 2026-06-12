@@ -366,3 +366,4 @@ CAS block store に閉じる。これらの上位機能は別レイヤー/別プ
 | [0005](adr/0005-storage-layer-escalation.md)          | PGlite を black box として扱い、smgr には入らない                            |
 | [0006](adr/0006-single-writer-partition-ownership.md) | partition は常に単一 writer、競合 merge は実装しない                         |
 | [0007](adr/0007-logical-source-of-truth.md)           | 論理層が正本、物理 snapshot は version/generation fence 付きの最適化         |
+| [0008](adr/0008-event-log-compaction.md)              | snapshot-anchored な event log compaction、replay gap は明示応答             |
