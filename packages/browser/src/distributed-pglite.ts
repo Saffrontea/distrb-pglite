@@ -480,6 +480,14 @@ class ProjectingBrowserStore implements PartitionStore {
     return this.inner.getHighWatermark(partitionId);
   }
 
+  getPrunedThrough(partitionId: PartitionId) {
+    return this.inner.getPrunedThrough(partitionId);
+  }
+
+  pruneEvents(partitionId: PartitionId, through: ReadonlyMap<NodeId, EventId>) {
+    return this.inner.pruneEvents(partitionId, through);
+  }
+
   createSnapshotMetadata(partitionId: PartitionId) {
     return this.inner.createSnapshotMetadata(partitionId);
   }

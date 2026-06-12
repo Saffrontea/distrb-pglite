@@ -109,6 +109,16 @@ const execution = await db.runCasGc("sensors", { dryRun: true });
 // execution?.gc.deleted / execution?.gc.retained
 ```
 
+event log は `pruneEvents` で切り詰められます (ADR 0008)。境界は
+bootstrap 可能な snapshot の high-watermark に anchor され、prune 済み
+範囲への catchup は `SnapshotRequiredError` になるため `pullSnapshot`
+で回復します。anchor になった snapshot は `runCasGc` から自動で保護されます。
+
+```ts
+await db.createSnapshot("tenant:jp");
+const { pruned } = await db.pruneEvents("tenant:jp");
+```
+
 snapshot の経路と scope (`catalog-and-data` / `data-only`) については
 [docs/ARCH.md](../../docs/ARCH.md) の「CAS スナップショット」節を参照してください。
 

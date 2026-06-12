@@ -1,4 +1,9 @@
-import { planStorageGc, selectStorageSnapshotCatalogEntryForPull } from "@distrb-pglite/core";
+import {
+  canSatisfyStorageSnapshotCatalogPull,
+  compareEventIds,
+  planStorageGc,
+  selectStorageSnapshotCatalogEntryForPull,
+} from "@distrb-pglite/core";
 import type {
   PartitionId,
   StorageBindingGroup,
@@ -1794,15 +1799,39 @@ export async function runStorageCasGcFromCatalog(options: {
     db: options.db,
     groupId: options.groupId,
   });
+  // ADR 0008: an anchor snapshot is the only recovery path below the pruned
+  // floor; GC'ing it after pruning is data loss. Bootstrap-capable entries
+  // whose high-watermark covers a partition's pruned_through stay retained
+  // regardless of the generation-based plan.
+  const prunedFloors = await loadPrunedThroughFloors(options.db);
+  const isPruneAnchor = (entry: StorageSnapshotCatalogEntry<CasManifest>): boolean => {
+    const floor = prunedFloors.get(entry.partitionId);
+    if (!floor || floor.size === 0) {
+      return false;
+    }
+    if (!canSatisfyStorageSnapshotCatalogPull(entry, "bootstrap")) {
+      return false;
+    }
+    const highWatermark = new Map(entry.highWatermark);
+    for (const [sourceNodeId, eventId] of floor) {
+      const cursor = highWatermark.get(sourceNodeId);
+      if (!cursor || compareEventIds(cursor, eventId) < 0) {
+        return false;
+      }
+    }
+    return true;
+  };
   const retainedEntries = entries.filter(
     (entry) =>
       entry.manifestKind === "cas" &&
-      !plan.canGcStorageGeneration(entry.storageGeneration ?? entry.ddlGeneration),
+      (!plan.canGcStorageGeneration(entry.storageGeneration ?? entry.ddlGeneration) ||
+        isPruneAnchor(entry)),
   );
   const gcEligibleEntries = entries.filter(
     (entry) =>
       entry.manifestKind === "cas" &&
-      plan.canGcStorageGeneration(entry.storageGeneration ?? entry.ddlGeneration),
+      plan.canGcStorageGeneration(entry.storageGeneration ?? entry.ddlGeneration) &&
+      !isPruneAnchor(entry),
   );
 
   return {
@@ -1815,6 +1844,32 @@ export async function runStorageCasGcFromCatalog(options: {
     retainedSnapshotIds: retainedEntries.map((entry) => entry.snapshotId).sort(),
     gcEligibleSnapshotIds: gcEligibleEntries.map((entry) => entry.snapshotId).sort(),
   };
+}
+
+// Reads the ADR 0008 pruned_through floors when the event store schema is
+// present. Standalone catalog databases without the event store have no
+// floors and therefore no prune anchors to protect.
+async function loadPrunedThroughFloors(
+  db: PGliteClient,
+): Promise<Map<PartitionId, Map<string, string>>> {
+  const floors = new Map<PartitionId, Map<string, string>>();
+  const table = await db.query<{ exists: string | null }>(
+    "SELECT to_regclass('distrb_pruned_through')::text AS exists",
+  );
+  if (!table.rows[0]?.exists) {
+    return floors;
+  }
+  const result = await db.query<{
+    partition_id: string;
+    source_node_id: string;
+    event_id: string;
+  }>("SELECT partition_id, source_node_id, event_id::text AS event_id FROM distrb_pruned_through");
+  for (const row of result.rows) {
+    const floor = floors.get(row.partition_id) ?? new Map<string, string>();
+    floor.set(row.source_node_id, row.event_id);
+    floors.set(row.partition_id, floor);
+  }
+  return floors;
 }
 
 export async function runStorageCasAutoGcFromCatalog(options: {

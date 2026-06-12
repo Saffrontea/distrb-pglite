@@ -3,8 +3,11 @@ import { PGlite, type PGliteOptions } from "@electric-sql/pglite";
 import {
   SingleWriterRegistry,
   SyncNode,
+  assertPruneAnchored,
   assertValidPartitionId,
+  canSatisfyStorageSnapshotCatalogPull,
   emitTelemetry,
+  selectStorageSnapshotCatalogEntryForPull,
   type EventEnvelope,
   type EventCursor,
   type EventProjection,
@@ -345,6 +348,49 @@ export class DistributedPGlite {
     return snapshot;
   }
 
+  // ADR 0008: explicit event log compaction. Deletes events at or below
+  // `through` (default: the newest bootstrap-capable snapshot's
+  // high-watermark) after proving the boundary is covered by one retained
+  // bootstrap-capable snapshot. Once pruned, that snapshot stops being an
+  // optimization: peers behind the boundary must recover via snapshot pull.
+  async pruneEvents(
+    partitionId: PartitionId,
+    options?: { through?: ReadonlyMap<NodeId, EventId> },
+  ): Promise<{
+    pruned: number;
+    through: ReadonlyMap<NodeId, EventId>;
+    anchorSnapshotId: string;
+  }> {
+    const partition = this.requireStoragePartition(partitionId);
+    const entries = await this.listSnapshotEntries(partition.storage.groupId);
+    const anchorEntries = entries.filter(
+      (entry) =>
+        entry.partitionId === partitionId &&
+        canSatisfyStorageSnapshotCatalogPull(entry, "bootstrap"),
+    );
+    const anchors = anchorEntries.map((entry) => new Map(entry.highWatermark));
+    const defaultAnchor = selectStorageSnapshotCatalogEntryForPull(anchorEntries, "bootstrap");
+    const through = options?.through ?? (defaultAnchor && new Map(defaultAnchor.highWatermark));
+    if (!through || through.size === 0) {
+      throw new Error(
+        `no prune boundary for partition ${partitionId}: create a bootstrap-capable ` +
+          `snapshot first or pass an explicit through cursor`,
+      );
+    }
+    const anchorIndex = assertPruneAnchored(partitionId, through, anchors);
+
+    const startedAt = Date.now();
+    const pruned = await this.storeInstance.pruneEvents(partitionId, through);
+    emitTelemetry(this.options.telemetry, {
+      type: "events-pruned",
+      nodeId: this.options.nodeId,
+      partitionId,
+      pruned,
+      durationMs: Date.now() - startedAt,
+    });
+    return { pruned, through, anchorSnapshotId: anchorEntries[anchorIndex].snapshotId };
+  }
+
   // Deletes CAS blocks no longer referenced by retained snapshot catalog
   // entries, per the group's vacuum/GC retention policy. Returns undefined
   // when the binding group does not exist.
@@ -622,6 +668,14 @@ class ProjectingPartitionStore implements PartitionStore {
 
   getHighWatermark(partitionId: PartitionId) {
     return this.inner.getHighWatermark(partitionId);
+  }
+
+  getPrunedThrough(partitionId: PartitionId) {
+    return this.inner.getPrunedThrough(partitionId);
+  }
+
+  pruneEvents(partitionId: PartitionId, through: ReadonlyMap<NodeId, EventId>) {
+    return this.inner.pruneEvents(partitionId, through);
   }
 
   createSnapshotMetadata(partitionId: PartitionId) {

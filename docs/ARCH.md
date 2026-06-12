@@ -344,6 +344,23 @@ const db = await DistributedPGlite.open({
 
 ---
 
+## Event log compaction (ADR 0008)
+
+event log は append-only だが、snapshot を anchor にして有限長に保てる。
+
+- prune は「retained な bootstrap 可能 snapshot の high-watermark 以下」のみ。
+  facade の `pruneEvents` がこの anchor 検証を行う(明示 API のみ、自動 prune はまだない)。
+- `pruned_through` は partition × source node の永続 cursor vector。
+  冪等性の床も兼ねる: floor 以下のイベントの再配送は duplicate として拒否される。
+- prune 済みの範囲に cursor が落ちる replay 要求には、部分的なイベント列ではなく
+  `snapshot-required` 応答が返り、要求側は `SnapshotRequiredError` を受けて
+  snapshot pull で回復する。wire protocol v2(hello の `protocolVersion`)で運ばれ、
+  v1 の peer には silent な空応答ではなく timeout で失敗させる。
+- prune 後、anchor snapshot は最適化ではなく回復経路の一部になる
+  (ADR 0008 の Relationship to ADR 0007 を参照)。
+
+---
+
 ## エコシステムの責務境界
 
 このライブラリは WireGuard 相当のレイヤーであり、Tailscale 的な

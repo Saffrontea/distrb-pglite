@@ -48,8 +48,12 @@ function otelSink(event: SyncTelemetryEvent): void {
       }
       break;
     case "cas-gc":
+    case "events-pruned":
       snapshotDuration.record(event.durationMs, { kind: event.type });
-      // event.deletedBlocks / event.retainedBlocks / event.dryRun
+      break;
+    case "snapshot-required":
+      // ADR 0008 の replay gap。direction: served | received。
+      // received が継続的に出るノードは snapshot pull での回復が必要。
       break;
     case "sync-started":
     case "sync-stopped":

@@ -4,6 +4,7 @@ import {
   MemoryTransport,
   SingleWriterRegistry,
   SingleWriterViolationError,
+  SnapshotRequiredError,
 } from "@distrb-pglite/core";
 import type { SyncTelemetryEvent } from "@distrb-pglite/core";
 import { DistributedPGlite, WebSocketHub } from "../src/index.js";
@@ -334,6 +335,207 @@ describe("DistributedPGlite", () => {
       }
     });
   });
+});
+
+describe("pruneEvents", () => {
+  it("happy path: prunes events at/below snapshot HWM, preserves newer events, emits telemetry, HWM covers all", async () => {
+    const root = await makeTempDir("distributed-pglite-prune-happy");
+    const transport = new MemoryTransport();
+    const telemetryEvents: SyncTelemetryEvent[] = [];
+    let node: DistributedPGlite | undefined;
+
+    try {
+      node = await DistributedPGlite.open({
+        nodeId: "node-a",
+        dataDir: join(root, "data"),
+        casDir: join(root, "cas"),
+        schema: SCHEMA,
+        transport,
+        telemetry: (e) => telemetryEvents.push(e),
+        partitions: [
+          {
+            ...sensorPartition("tenant:jp"),
+            storage: {
+              groupId: "sensors",
+              rootRelation: "sensor_readings",
+              relations: ["sensor_readings"],
+              snapshotScope: "catalog-and-data",
+            },
+          },
+        ],
+      });
+
+      // Write 3 events before snapshot
+      await node.write<SensorPayload>("tenant:jp", { sensorId: "s1", reading: 1 });
+      await node.write<SensorPayload>("tenant:jp", { sensorId: "s2", reading: 2 });
+      await node.write<SensorPayload>("tenant:jp", { sensorId: "s3", reading: 3 });
+
+      // Create a bootstrap-capable snapshot (anchors HWM at 3 events)
+      await node.createSnapshot("tenant:jp");
+
+      // Write 2 more events after snapshot
+      const e4 = await node.write<SensorPayload>("tenant:jp", { sensorId: "s4", reading: 4 });
+      const e5 = await node.write<SensorPayload>("tenant:jp", { sensorId: "s5", reading: 5 });
+
+      // pruneEvents defaults to snapshot HWM → should prune the first 3 events
+      const result = await node.pruneEvents("tenant:jp");
+
+      expect(result.pruned).toBe(3);
+      expect(typeof result.anchorSnapshotId).toBe("string");
+      expect(result.through.size).toBeGreaterThan(0);
+
+      // Only the 2 post-snapshot events should remain
+      const remaining = await node.listEventsAfter("tenant:jp");
+      expect(remaining).toHaveLength(2);
+      expect(remaining.map((e) => e.eventId)).toEqual(
+        expect.arrayContaining([e4.eventId, e5.eventId]),
+      );
+      expect(remaining.map((e) => e.eventId)).not.toContain(expect.stringMatching(/.+/));
+
+      // HWM must still cover all 5 events (floor seeding keeps it moving forward)
+      const hwm = await node.highWatermark("tenant:jp");
+      expect(hwm?.get("node-a")).toBe(e5.eventId);
+
+      // Telemetry must include an events-pruned event
+      const pruneEvent = telemetryEvents.find((e) => e.type === "events-pruned");
+      expect(pruneEvent).toBeDefined();
+      expect(pruneEvent).toMatchObject({
+        type: "events-pruned",
+        nodeId: "node-a",
+        partitionId: "tenant:jp",
+        pruned: 3,
+        durationMs: expect.any(Number),
+      });
+    } finally {
+      await node?.close();
+    }
+  }, 120_000);
+
+  it("rejects with 'no prune boundary' when no snapshot exists", async () => {
+    const root = await makeTempDir("distributed-pglite-prune-no-snapshot");
+    const transport = new MemoryTransport();
+    let node: DistributedPGlite | undefined;
+
+    try {
+      node = await DistributedPGlite.open({
+        nodeId: "node-a",
+        dataDir: join(root, "data"),
+        casDir: join(root, "cas"),
+        schema: SCHEMA,
+        transport,
+        partitions: [
+          {
+            ...sensorPartition("tenant:jp"),
+            storage: {
+              groupId: "sensors",
+              rootRelation: "sensor_readings",
+              relations: ["sensor_readings"],
+              snapshotScope: "catalog-and-data",
+            },
+          },
+        ],
+      });
+
+      await node.write<SensorPayload>("tenant:jp", { sensorId: "s1", reading: 1 });
+
+      await expect(node.pruneEvents("tenant:jp")).rejects.toThrow("no prune boundary");
+    } finally {
+      await node?.close();
+    }
+  }, 120_000);
+
+  it("end-to-end gap + recovery: node-b catchUpFrom rejects with SnapshotRequiredError, then recovers via pullSnapshot + catchUpFrom", async () => {
+    const root = await makeTempDir("distributed-pglite-prune-gap-recovery");
+    const transport = new MemoryTransport();
+    let nodeA: DistributedPGlite | undefined;
+    let nodeB: DistributedPGlite | undefined;
+
+    try {
+      // node-a: writer, creates snapshot, prunes
+      nodeA = await DistributedPGlite.open({
+        nodeId: "node-a",
+        dataDir: join(root, "node-a-data"),
+        casDir: join(root, "node-a-cas"),
+        schema: SCHEMA,
+        transport,
+        partitions: [
+          {
+            ...sensorPartition("tenant:jp"),
+            storage: {
+              groupId: "sensors",
+              rootRelation: "sensor_readings",
+              relations: ["sensor_readings"],
+              snapshotScope: "catalog-and-data",
+            },
+          },
+        ],
+      });
+
+      // Write 3 events, snapshot, prune
+      await nodeA.write<SensorPayload>("tenant:jp", { sensorId: "s1", reading: 10 });
+      await nodeA.write<SensorPayload>("tenant:jp", { sensorId: "s2", reading: 20 });
+      const e3 = await nodeA.write<SensorPayload>("tenant:jp", { sensorId: "s3", reading: 30 });
+
+      await nodeA.createSnapshot("tenant:jp");
+      const { pruned } = await nodeA.pruneEvents("tenant:jp");
+      expect(pruned).toBe(3);
+
+      // Write 1 more event after prune so node-b will catch up to something
+      const e4 = await nodeA.write<SensorPayload>("tenant:jp", { sensorId: "s4", reading: 40 });
+
+      // node-b: fresh node, same transport, empty store, subscribed
+      nodeB = await DistributedPGlite.open({
+        nodeId: "node-b",
+        dataDir: join(root, "node-b-data"),
+        casDir: join(root, "node-b-cas"),
+        schema: SCHEMA,
+        transport,
+        partitions: [
+          {
+            ...sensorPartition("tenant:jp"),
+            storage: {
+              groupId: "sensors",
+              rootRelation: "sensor_readings",
+              relations: ["sensor_readings"],
+              snapshotScope: "catalog-and-data",
+            },
+          },
+        ],
+      });
+
+      // catchUpFrom should fail with SnapshotRequiredError because node-a pruned
+      await expect(nodeB.catchUpFrom("node-a", "tenant:jp")).rejects.toThrow(SnapshotRequiredError);
+
+      // Recovery: pull the snapshot from node-a's casDir, then catch up
+      const snapshotEntries = await nodeA.listSnapshotEntries("sensors");
+      expect(snapshotEntries.length).toBeGreaterThan(0);
+
+      await nodeB.pullSnapshot({
+        partitionId: "tenant:jp",
+        snapshotEntries,
+        sourceCasDir: join(root, "node-a-cas"),
+      });
+
+      // After pullSnapshot, catchUpFrom should succeed and pick up e4 (post-prune event)
+      const caught = await nodeB.catchUpFrom("node-a", "tenant:jp");
+      expect(caught).toBeGreaterThanOrEqual(1);
+
+      // node-b query results should match node-a
+      const rowsA = await readSensors(nodeA);
+      const rowsB = await readSensors(nodeB);
+      expect(rowsB).toEqual(rowsA);
+
+      // Verify e4 is present in node-b
+      const eventIds = rowsB.map((r) => r.event_id);
+      expect(eventIds).toContain(e4.eventId);
+      // e3 may or may not be present depending on snapshot scope, but the total rows must match
+      expect(rowsB.length).toBeGreaterThanOrEqual(1);
+      void e3; // used above
+    } finally {
+      await nodeA?.close();
+      await nodeB?.close();
+    }
+  }, 120_000);
 });
 
 describe("runCasGc", () => {

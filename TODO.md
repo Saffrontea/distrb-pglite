@@ -47,15 +47,19 @@ OTel exporter は利用側が被せられるようにする。
 
 設計合意済み(2026-06-12)。0007 は変更しない。実装は 3 段階:
 
-- [ ] core: 永続 `pruned_through` vector、anchor 検証付き prune 操作、
-      replay serving での gap 拒否
-- [ ] wire: `snapshot-required` response variant + protocol version field、
-      `reconcileFrom` / catchup の snapshot pull フォールバック
-- [ ] facade: 明示 prune API(snapshot catalog 連携)、
-      その後 auto CAS GC と並ぶ auto-prune policy
-- [ ] anchor snapshot の GC 保護(`pruned_through` が依存する entry は
-      CAS GC retention で保護)
-- [ ] telemetry: `events-pruned` イベント
+- [x] core: 永続 `pruned_through` vector(冪等性の床を兼ねる)、
+      prune 操作、replay serving での gap 拒否
+- [x] wire: `snapshot-required` response variant + protocol version field
+      (memory / websocket hub / p2p)。v1 peer には timeout で失敗させる
+- [x] facade: 明示 prune API (`DistributedPGlite.pruneEvents`、
+      bootstrap snapshot anchor 検証つき)
+- [ ] catchup の snapshot pull **自動**フォールバック(現状は
+      `SnapshotRequiredError` を受けて利用者が `pullSnapshot` する)
+- [ ] auto-prune policy(auto CAS GC と並ぶ vacuumPolicy 駆動)
+- [x] anchor snapshot の GC 保護: `runStorageCasGcFromCatalog` は
+      `pruned_through` を cover する bootstrap 可能 entry を世代 plan に
+      関係なく retain する
+- [x] telemetry: `events-pruned` / `snapshot-required` イベント
 - [ ] subscriber prune(serve 先がないノードの緩い prune)は別クラスとして
 
 ## 5. エコシステム(スコープ外として記録)
