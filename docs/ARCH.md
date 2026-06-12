@@ -295,6 +295,54 @@ erDiagram
 
 ---
 
+## Partition 所有権の保証レベル (ADR 0006)
+
+partition は常に単一 writer という前提だが、ライブラリが提供するのは**検出**であって**強制**ではない。
+
+- `singleWriter` オプションは opt-in。未指定なら所有権チェックは一切行われない。
+- 所有権はローカル知識。`claimPartition` / `transferPartition` はローカルの
+  `SingleWriterRegistry` を更新するだけで、レプリケーションも永続化も
+  旧 writer の fence もしない。所有権の配布と fencing は上位レイヤーの責務。
+- registry を渡した場合: 違反するリモートイベントは skip され
+  `onSingleWriterViolation` と telemetry に報告される。違反するローカル書き込みは throw する。
+- 詳細は [ADR 0006](adr/0006-single-writer-partition-ownership.md) の Guarantee Level を参照。
+
+---
+
+## テレメトリ
+
+core は OpenTelemetry に依存しない。代わりに構造化イベントの observer hook
+(`SyncTelemetrySink`)を公開し、OTel exporter・ロガー・メトリクスは利用側が
+1 つの adapter 関数として被せる。
+
+```ts
+const db = await DistributedPGlite.open({
+  // ...
+  telemetry: (event) => {
+    // event は判別可能 union: sync-started / sync-stopped / local-write /
+    // remote-event (applied | duplicate | rejected-single-writer) /
+    // replay-served / catchup / subscription-recovered
+    meter.counterFor(event.type).add(1);
+  },
+});
+```
+
+- sink が throw してもレプリケーションは壊れない(エラーは握りつぶす契約)。
+- sink 未指定時はゼロコスト。
+
+---
+
+## エコシステムの責務境界
+
+このライブラリは WireGuard 相当のレイヤーであり、Tailscale 的な
+ネットワーキング層(認証・認可・ノード発見・鍵配布・メンバーシップ管理)は
+責務外。relay/hub(`WebSocketHub`)は transport と authorization の
+入口だけを持ち、ストレージのセマンティクスは manifest・event log・
+CAS block store に閉じる。これらの上位機能は別レイヤー/別プロダクトとして
+被せる前提で、core の API はそれを妨げない形を保つ。
+
+---
+
 ## 主要なアーキテクチャ決定
 
 | ADR                                                   | 決定                                                                         |
