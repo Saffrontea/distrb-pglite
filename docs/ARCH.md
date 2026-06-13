@@ -409,4 +409,4 @@ CAS block store に閉じる。これらの上位機能は別レイヤー/別プ
 | [0006](adr/0006-single-writer-partition-ownership.md) | partition は常に単一 writer、競合 merge は実装しない                         |
 | [0007](adr/0007-logical-source-of-truth.md)           | 論理層が正本、物理 snapshot は version/generation fence 付きの最適化         |
 | [0008](adr/0008-event-log-compaction.md)              | snapshot-anchored な event log compaction、replay gap は明示応答             |
-| [0009](adr/0009-physical-replication-contract.md)     | 物理面の contract `SnapshotSource`(発見+転送のみ、検証/選択/復元は外)      |
+| [0009](adr/0009-physical-replication-contract.md)     | 物理面の contract `SnapshotSource`(発見+転送のみ、検証/選択/復元は外)        |

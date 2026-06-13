@@ -125,6 +125,7 @@ export class DistributedPGlite {
   private syncNode!: SyncNode;
   private online = false;
   private readonly partitions = new Map<PartitionId, OpenPartition>();
+  private wireSnapshotSource?: SnapshotSource<CasManifest>;
   // Resolved once so ownership learned at runtime survives reopen() after a
   // snapshot pull instead of being rebuilt from the original open options.
   private readonly singleWriterRegistry?: SingleWriterRegistry;
@@ -301,10 +302,11 @@ export class DistributedPGlite {
     try {
       return await this.syncNode.catchUpFrom(peerNodeId, partitionId);
     } catch (error) {
-      if (!(error instanceof SnapshotRequiredError) || !this.options.snapshotSource) {
+      const snapshotSource = this.options.snapshotSource ?? this.wireSnapshotSource;
+      if (!(error instanceof SnapshotRequiredError) || !snapshotSource) {
         throw error;
       }
-      await this.pullSnapshotFromSource(this.options.snapshotSource, peerNodeId, partitionId);
+      await this.pullSnapshotFromSource(snapshotSource, peerNodeId, partitionId);
       return this.syncNode.catchUpFrom(peerNodeId, partitionId);
     }
   }
@@ -602,16 +604,46 @@ export class DistributedPGlite {
   }
 
   private createSyncNode(): void {
-    this.syncNode = new SyncNode(
-      this.options.nodeId,
-      this.projectedStore,
-      createTransport(this.options.transport),
-      {
-        singleWriter: this.singleWriterRegistry,
-        onSingleWriterViolation: this.options.onSingleWriterViolation,
-        telemetry: this.options.telemetry,
-      },
-    );
+    const transport = this.createTransport();
+    this.syncNode = new SyncNode(this.options.nodeId, this.projectedStore, transport, {
+      singleWriter: this.singleWriterRegistry,
+      onSingleWriterViolation: this.options.onSingleWriterViolation,
+      telemetry: this.options.telemetry,
+    });
+  }
+
+  private createTransport(): Transport {
+    if ("connect" in this.options.transport) {
+      this.wireSnapshotSource = isSnapshotSource(this.options.transport)
+        ? this.options.transport
+        : undefined;
+      return this.options.transport;
+    }
+    if (this.options.transport.type === "websocket") {
+      const snapshot =
+        this.options.casDir && !this.options.snapshotSource
+          ? {
+              casDir: this.options.casDir,
+              listSnapshotEntries: async (_peerNodeId: NodeId, partitionId: PartitionId) => {
+                const partition = this.requireStoragePartition(partitionId);
+                return this.listSnapshotEntries(partition.storage.groupId);
+              },
+              loadCatalogManifest: async (_peerNodeId: NodeId, groupId: string) =>
+                this.loadCatalog(groupId),
+            }
+          : undefined;
+      const transport = new WebSocketTransport({
+        url: this.options.transport.url,
+        compress: this.options.transport.compress,
+        reconnect: this.options.transport.reconnect,
+        snapshot,
+      });
+      this.wireSnapshotSource = snapshot ? transport : undefined;
+      return transport;
+    }
+    const { type: _type, ...p2pOptions } = this.options.transport;
+    this.wireSnapshotSource = undefined;
+    return new P2PWebSocketTransport(p2pOptions);
   }
 
   private async setupStorageBindings(): Promise<void> {
@@ -780,17 +812,11 @@ function resolveSingleWriterRegistry(
   return registry;
 }
 
-function createTransport(options: DistributedPGliteTransportOptions): Transport {
-  if ("connect" in options) {
-    return options;
-  }
-  if (options.type === "websocket") {
-    return new WebSocketTransport({
-      url: options.url,
-      compress: options.compress,
-      reconnect: options.reconnect,
-    });
-  }
-  const { type: _type, ...p2pOptions } = options;
-  return new P2PWebSocketTransport(p2pOptions);
+function isSnapshotSource(value: Transport): value is Transport & SnapshotSource<CasManifest> {
+  return (
+    "listSnapshotEntries" in value &&
+    "fetchBlocks" in value &&
+    typeof value.listSnapshotEntries === "function" &&
+    typeof value.fetchBlocks === "function"
+  );
 }

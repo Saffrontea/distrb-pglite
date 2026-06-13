@@ -51,7 +51,9 @@ export {
   hasReplayGap,
   selectPruneAnchor,
   SnapshotRequiredError,
+  SubscriberPrunePlanner,
 } from "./compaction.js";
+export type { SubscriberPrunePlan } from "./compaction.js";
 export { StaticSnapshotSource } from "./snapshot-source.js";
 export type { SnapshotSource } from "./snapshot-source.js";
 export type { PartitionOwnershipTransfer } from "./single-writer.js";

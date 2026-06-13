@@ -6,6 +6,7 @@ import {
   MemoryTransport,
   selectPruneAnchor,
   SnapshotRequiredError,
+  SubscriberPrunePlanner,
   SyncNode,
   UuidV7Factory,
 } from "../src/index.js";
@@ -170,6 +171,52 @@ describe("assertPruneAnchored", () => {
     expect(() => assertPruneAnchored("tenant:special", hwm({ "node-a": id1! }), [])).toThrow(
       /tenant:special/,
     );
+  });
+});
+
+describe("SubscriberPrunePlanner", () => {
+  it("plans through the local high-watermark when there are no subscribers", () => {
+    const [id1] = makeIds(1);
+    const planner = new SubscriberPrunePlanner();
+    const plan = planner.plan("tenant:jp", hwm({ "node-a": id1! }));
+
+    expect(plan.subscriberCount).toBe(0);
+    expect(plan.through.get("node-a")).toBe(id1);
+  });
+
+  it("plans only through the slowest known subscriber cursor", () => {
+    const [id1, id2, id3] = makeIds(3);
+    const planner = new SubscriberPrunePlanner();
+    planner.observeSubscriber("tenant:jp", "subscriber-a", hwm({ "node-a": id2! }));
+    planner.observeSubscriber("tenant:jp", "subscriber-b", hwm({ "node-a": id1! }));
+
+    const plan = planner.plan("tenant:jp", hwm({ "node-a": id3! }));
+
+    expect(plan.subscriberCount).toBe(2);
+    expect(plan.through.get("node-a")).toBe(id1);
+  });
+
+  it("does not prune a source when any known subscriber has no cursor for it", () => {
+    const [id1, id2] = makeIds(2);
+    const planner = new SubscriberPrunePlanner();
+    planner.observeSubscriber("tenant:jp", "subscriber-a", hwm({ "node-a": id1! }));
+    planner.observeSubscriber("tenant:jp", "subscriber-b", hwm({ "node-b": id1! }));
+
+    const plan = planner.plan("tenant:jp", hwm({ "node-a": id2!, "node-b": id2! }));
+
+    expect(plan.through.size).toBe(0);
+  });
+
+  it("returns to no-subscriber pruning after the last subscriber is removed", () => {
+    const [id1, id2] = makeIds(2);
+    const planner = new SubscriberPrunePlanner();
+    planner.observeSubscriber("tenant:jp", "subscriber-a", hwm({ "node-a": id1! }));
+    planner.removeSubscriber("tenant:jp", "subscriber-a");
+
+    const plan = planner.plan("tenant:jp", hwm({ "node-a": id2! }));
+
+    expect(plan.subscriberCount).toBe(0);
+    expect(plan.through.get("node-a")).toBe(id2);
   });
 });
 

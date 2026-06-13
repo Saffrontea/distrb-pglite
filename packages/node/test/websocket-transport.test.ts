@@ -1,7 +1,17 @@
+import { mkdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { InMemoryPartitionStore, SyncNode } from "@distrb-pglite/core";
+import type { StorageSnapshotCatalogEntry } from "@distrb-pglite/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket, { WebSocketServer } from "ws";
-import { WebSocketHub, WebSocketTransport } from "../src/index.js";
+import {
+  NodeCasBlockStore,
+  snapshotToCas,
+  WebSocketHub,
+  WebSocketTransport,
+  type CasManifest,
+} from "../src/index.js";
+import { makeTempDir } from "./temp-dir.js";
 import {
   describeTransportContract,
   getFreePort,
@@ -426,6 +436,78 @@ describe("WebSocketTransport (Hub 固有)", () => {
       requester.close();
       bystander.close();
       target.close();
+    }
+  });
+
+  it("serves SnapshotSource catalog entries and CAS blocks over the hub wire protocol", async () => {
+    const port = await getFreePort();
+    if (port === undefined) return;
+
+    const hub = new WebSocketHub({ port });
+    hubs.push(hub);
+    const url = `ws://127.0.0.1:${port}`;
+    const sourceDataDir = await makeTempDir("wire-source-data");
+    const sourceCasDir = await makeTempDir("wire-source-cas");
+    const targetCasDir = await makeTempDir("wire-target-cas");
+    await mkdir(join(sourceDataDir, "base"), { recursive: true });
+    await writeFile(join(sourceDataDir, "base", "tenant.txt"), "snapshot over websocket");
+    const manifest = await snapshotToCas({
+      dataDir: sourceDataDir,
+      casDir: sourceCasDir,
+      snapshotId: "018bcfe5-6800-7001-8000-000000000011",
+    });
+    const entry: StorageSnapshotCatalogEntry<CasManifest> = {
+      groupId: "app",
+      partitionId: "tenant:jp",
+      snapshotId: manifest.snapshotId,
+      components: ["catalog", "data"],
+      highWatermark: [["node-a", "018bcfe5-6800-7001-8000-000000000012"]],
+      ddlGeneration: 1,
+      manifestKind: "cas",
+      manifest,
+    };
+    const catalogManifest = {
+      version: 1 as const,
+      groupId: "app",
+      rootRelationOid: 1,
+      ddlGeneration: 1,
+      bindings: [],
+      snapshots: [
+        {
+          partitionId: entry.partitionId,
+          snapshotId: entry.snapshotId,
+          components: entry.components,
+          ddlGeneration: entry.ddlGeneration,
+          manifestKind: entry.manifestKind,
+        },
+      ],
+    };
+    const source = new WebSocketTransport({
+      url,
+      snapshot: {
+        casDir: sourceCasDir,
+        listSnapshotEntries: async () => [entry],
+        loadCatalogManifest: async () => catalogManifest,
+      },
+    });
+    const target = new WebSocketTransport({
+      url,
+      snapshot: { casDir: targetCasDir },
+    });
+    const sourceConnection = await source.connect("node-a", { onEvent: () => {} });
+    const targetConnection = await target.connect("node-b", { onEvent: () => {} });
+
+    try {
+      await expect(target.listSnapshotEntries("node-a", "tenant:jp")).resolves.toEqual([entry]);
+      await expect(target.loadCatalogManifest("node-a", "app")).resolves.toEqual(catalogManifest);
+      await expect(target.fetchBlocks("node-a", entry)).resolves.toBeGreaterThan(0);
+      const sourceHashes = await new NodeCasBlockStore(sourceCasDir).listBlockHashes();
+      const targetHashes = await new NodeCasBlockStore(targetCasDir).listBlockHashes();
+      expect(targetHashes).toEqual(sourceHashes);
+      await expect(target.fetchBlocks("node-a", entry)).resolves.toBe(0);
+    } finally {
+      await sourceConnection.close();
+      await targetConnection.close();
     }
   });
 

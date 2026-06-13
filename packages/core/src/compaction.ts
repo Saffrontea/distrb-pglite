@@ -73,3 +73,78 @@ export function assertPruneAnchored(
   }
   return anchor;
 }
+
+export type SubscriberPrunePlan = {
+  partitionId: PartitionId;
+  through: HighWatermark;
+  subscriberCount: number;
+};
+
+// ADR 0008 follow-up: a deliberately separate, loose pruning policy for
+// deployments that only promise replay to known subscribers. Unknown or
+// offline nodes may be forced to recover by snapshot. With no subscribers,
+// the local high-watermark is prunable. With subscribers, each source can be
+// pruned only through the minimum cursor reported by every subscriber that
+// has a cursor for that source; a missing cursor blocks that source.
+export class SubscriberPrunePlanner {
+  private readonly subscribers = new Map<PartitionId, Map<NodeId, HighWatermark>>();
+
+  observeSubscriber(
+    partitionId: PartitionId,
+    subscriberNodeId: NodeId,
+    cursors: HighWatermark,
+  ): void {
+    let partitionSubscribers = this.subscribers.get(partitionId);
+    if (!partitionSubscribers) {
+      partitionSubscribers = new Map();
+      this.subscribers.set(partitionId, partitionSubscribers);
+    }
+    partitionSubscribers.set(subscriberNodeId, new Map(cursors));
+  }
+
+  removeSubscriber(partitionId: PartitionId, subscriberNodeId: NodeId): void {
+    const partitionSubscribers = this.subscribers.get(partitionId);
+    if (!partitionSubscribers) {
+      return;
+    }
+    partitionSubscribers.delete(subscriberNodeId);
+    if (partitionSubscribers.size === 0) {
+      this.subscribers.delete(partitionId);
+    }
+  }
+
+  plan(partitionId: PartitionId, localHighWatermark: HighWatermark): SubscriberPrunePlan {
+    const partitionSubscribers = this.subscribers.get(partitionId);
+    if (!partitionSubscribers || partitionSubscribers.size === 0) {
+      return {
+        partitionId,
+        through: new Map(localHighWatermark),
+        subscriberCount: 0,
+      };
+    }
+
+    const through = new Map<NodeId, EventId>();
+    for (const [sourceNodeId, localCursor] of localHighWatermark) {
+      let floor: EventId | undefined = localCursor;
+      for (const subscriberCursors of partitionSubscribers.values()) {
+        const subscriberCursor = subscriberCursors.get(sourceNodeId);
+        if (!subscriberCursor) {
+          floor = undefined;
+          break;
+        }
+        if (compareEventIds(subscriberCursor, floor) < 0) {
+          floor = subscriberCursor;
+        }
+      }
+      if (floor) {
+        through.set(sourceNodeId, floor);
+      }
+    }
+
+    return {
+      partitionId,
+      through,
+      subscriberCount: partitionSubscribers.size,
+    };
+  }
+}

@@ -59,13 +59,13 @@ OTel exporter は利用側が被せられるようにする。
       `snapshotSource` オプション。未構成なら従来通り error が伝播)
 - [x] auto-prune policy: `vacuumPolicy.autoPruneEvents` で `runCasGc` が
       最古 retained bootstrap anchor まで event log を自動 prune
-- [ ] wire protocol 上の `SnapshotSource` 実装(block-request/response。
+- [x] wire protocol 上の `SnapshotSource` 実装(block-request/response。
       contract は固定済み、protocol v2 の拡張として)
 - [x] anchor snapshot の GC 保護: `runStorageCasGcFromCatalog` は
       `pruned_through` を cover する bootstrap 可能 entry を世代 plan に
       関係なく retain する
 - [x] telemetry: `events-pruned` / `snapshot-required` イベント
-- [ ] subscriber prune(serve 先がないノードの緩い prune)は別クラスとして
+- [x] subscriber prune(serve 先がないノードの緩い prune)は別クラスとして
 
 ## 5. エコシステム(スコープ外として記録)
 

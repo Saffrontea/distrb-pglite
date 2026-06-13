@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   assertValidEventEnvelope,
   assertValidNodeId,
@@ -10,11 +11,21 @@ import {
   type PartitionId,
   type ReplayResponse,
   type ReplaySnapshotRequired,
+  type SnapshotSource,
+  type StorageCatalogManifest,
+  type StorageSnapshotCatalogEntry,
   type Transport,
   type TransportConnection,
   type TransportHandlers,
 } from "@distrb-pglite/core";
 import WebSocket, { WebSocketServer } from "ws";
+import {
+  diffMissingBlocks,
+  NodeCasBlockStore,
+  validateCasManifest,
+  type CasBlockStore,
+  type CasManifest,
+} from "./cas.js";
 import { loadZstd } from "./zstd.js";
 
 // ADR 0008 introduced protocolVersion (2). Pre-versioned peers (absent
@@ -44,6 +55,48 @@ type WireMessage =
       partitionId: PartitionId;
       events: EventEnvelope[];
       snapshotRequired?: ReplaySnapshotRequired;
+    }
+  | {
+      type: "snapshot-list-request";
+      requestId: string;
+      requesterNodeId: NodeId;
+      targetNodeId: NodeId;
+      partitionId: PartitionId;
+    }
+  | {
+      type: "snapshot-list-response";
+      requestId: string;
+      requesterNodeId: NodeId;
+      partitionId: PartitionId;
+      entries: StorageSnapshotCatalogEntry<CasManifest>[];
+    }
+  | {
+      type: "snapshot-catalog-request";
+      requestId: string;
+      requesterNodeId: NodeId;
+      targetNodeId: NodeId;
+      groupId: string;
+    }
+  | {
+      type: "snapshot-catalog-response";
+      requestId: string;
+      requesterNodeId: NodeId;
+      groupId: string;
+      manifest?: StorageCatalogManifest;
+    }
+  | {
+      type: "snapshot-block-request";
+      requestId: string;
+      requesterNodeId: NodeId;
+      targetNodeId: NodeId;
+      hash: string;
+    }
+  | {
+      type: "snapshot-block-response";
+      requestId: string;
+      requesterNodeId: NodeId;
+      hash: string;
+      contentBase64: string;
     };
 
 type ClientRecord = {
@@ -62,6 +115,18 @@ type PendingHubReplay = {
   timer: ReturnType<typeof setTimeout>;
 };
 
+type PendingHubSnapshotRequest = {
+  requesterNodeId: NodeId;
+  requesterSocket: WebSocket;
+  targetNodeId: NodeId;
+  targetSocket: WebSocket;
+  kind: "list" | "catalog" | "block";
+  partitionId?: PartitionId;
+  groupId?: string;
+  hash?: string;
+  timer: ReturnType<typeof setTimeout>;
+};
+
 const REPLAY_REQUEST_FALLBACK_TIMEOUT_MS = 1_000;
 const REPLAY_REQUEST_MIN_TIMEOUT_MS = 250;
 const REPLAY_REQUEST_MAX_TIMEOUT_MS = 5_000;
@@ -75,6 +140,7 @@ export class WebSocketHub {
   private readonly server: WebSocketServer;
   private readonly clients = new Map<NodeId, ClientRecord>();
   private readonly pendingReplay = new Map<string, PendingHubReplay>();
+  private readonly pendingSnapshot = new Map<string, PendingHubSnapshotRequest>();
   private readonly compress: boolean;
   private closing = false;
 
@@ -87,6 +153,7 @@ export class WebSocketHub {
   async close(): Promise<void> {
     this.closing = true;
     this.clearPendingReplay();
+    this.clearPendingSnapshot();
     for (const client of this.clients.values()) {
       client.socket.terminate();
     }
@@ -154,6 +221,7 @@ export class WebSocketHub {
     socket.on("close", () => {
       if (record) {
         this.deletePendingReplayForSocket(socket);
+        this.deletePendingSnapshotForSocket(socket);
         if (this.clients.get(record.nodeId)?.socket !== socket) {
           return;
         }
@@ -199,6 +267,49 @@ export class WebSocketHub {
           assertValidEventEnvelope(event);
         }
         this.forwardReplayResponse(source, message);
+        break;
+      case "snapshot-list-request":
+        assertValidRequestId(message.requestId);
+        assertValidNodeId(message.requesterNodeId);
+        assertValidNodeId(message.targetNodeId);
+        assertValidPartitionId(message.partitionId);
+        assertNodeMatches("snapshot list requester", source.nodeId, message.requesterNodeId);
+        this.forwardSnapshotRequest(source, message, "list");
+        break;
+      case "snapshot-list-response":
+        assertValidRequestId(message.requestId);
+        assertValidNodeId(message.requesterNodeId);
+        assertValidPartitionId(message.partitionId);
+        this.forwardSnapshotResponse(source, message, "list");
+        break;
+      case "snapshot-catalog-request":
+        assertValidRequestId(message.requestId);
+        assertValidNodeId(message.requesterNodeId);
+        assertValidNodeId(message.targetNodeId);
+        assertNonEmptyString(message.groupId, "snapshot catalog groupId");
+        assertNodeMatches("snapshot catalog requester", source.nodeId, message.requesterNodeId);
+        this.forwardSnapshotRequest(source, message, "catalog");
+        break;
+      case "snapshot-catalog-response":
+        assertValidRequestId(message.requestId);
+        assertValidNodeId(message.requesterNodeId);
+        assertNonEmptyString(message.groupId, "snapshot catalog groupId");
+        this.forwardSnapshotResponse(source, message, "catalog");
+        break;
+      case "snapshot-block-request":
+        assertValidRequestId(message.requestId);
+        assertValidNodeId(message.requesterNodeId);
+        assertValidNodeId(message.targetNodeId);
+        assertCasBlockHash(message.hash, "snapshot block hash");
+        assertNodeMatches("snapshot block requester", source.nodeId, message.requesterNodeId);
+        this.forwardSnapshotRequest(source, message, "block");
+        break;
+      case "snapshot-block-response":
+        assertValidRequestId(message.requestId);
+        assertValidNodeId(message.requesterNodeId);
+        assertCasBlockHash(message.hash, "snapshot block hash");
+        assertNonEmptyString(message.contentBase64, "snapshot block content");
+        this.forwardSnapshotResponse(source, message, "block");
         break;
       case "hello":
       case "pong":
@@ -307,6 +418,97 @@ export class WebSocketHub {
     }
   }
 
+  private forwardSnapshotRequest(
+    source: ClientRecord,
+    message: Extract<
+      WireMessage,
+      | { type: "snapshot-list-request" }
+      | { type: "snapshot-catalog-request" }
+      | { type: "snapshot-block-request" }
+    >,
+    kind: PendingHubSnapshotRequest["kind"],
+  ): void {
+    if (this.pendingSnapshot.has(message.requestId)) {
+      throw new Error(`duplicate snapshot request id: ${message.requestId}`);
+    }
+    const target = this.clients.get(message.targetNodeId);
+    if (!target) {
+      return;
+    }
+    if (target.protocolVersion < 2) {
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      this.pendingSnapshot.delete(message.requestId);
+    }, HUB_REPLAY_PENDING_TIMEOUT_MS);
+    timer.unref?.();
+    this.pendingSnapshot.set(message.requestId, {
+      requesterNodeId: message.requesterNodeId,
+      requesterSocket: source.socket,
+      targetNodeId: message.targetNodeId,
+      targetSocket: target.socket,
+      kind,
+      partitionId: "partitionId" in message ? message.partitionId : undefined,
+      groupId: "groupId" in message ? message.groupId : undefined,
+      hash: "hash" in message ? message.hash : undefined,
+      timer,
+    });
+    void this.encode(target.socket, message);
+  }
+
+  private forwardSnapshotResponse(
+    source: ClientRecord,
+    message: Extract<
+      WireMessage,
+      | { type: "snapshot-list-response" }
+      | { type: "snapshot-catalog-response" }
+      | { type: "snapshot-block-response" }
+    >,
+    kind: PendingHubSnapshotRequest["kind"],
+  ): void {
+    const pending = this.pendingSnapshot.get(message.requestId);
+    if (!pending) {
+      throw new Error(`unexpected snapshot response: ${message.requestId}`);
+    }
+    if (
+      source.nodeId !== pending.targetNodeId ||
+      source.socket !== pending.targetSocket ||
+      message.requesterNodeId !== pending.requesterNodeId ||
+      pending.kind !== kind ||
+      ("partitionId" in message && message.partitionId !== pending.partitionId) ||
+      ("groupId" in message && message.groupId !== pending.groupId) ||
+      ("hash" in message && message.hash !== pending.hash)
+    ) {
+      throw new Error(`snapshot response mismatch: ${message.requestId}`);
+    }
+    this.deletePendingSnapshot(message.requestId);
+    void this.encode(pending.requesterSocket, message);
+  }
+
+  private deletePendingSnapshot(requestId: string): void {
+    const pending = this.pendingSnapshot.get(requestId);
+    if (!pending) {
+      return;
+    }
+    this.pendingSnapshot.delete(requestId);
+    clearTimeout(pending.timer);
+  }
+
+  private clearPendingSnapshot(): void {
+    for (const requestId of this.pendingSnapshot.keys()) {
+      this.deletePendingSnapshot(requestId);
+    }
+  }
+
+  private deletePendingSnapshotForSocket(socket: WebSocket): void {
+    for (const [requestId, pending] of this.pendingSnapshot) {
+      if (pending.requesterSocket === socket || pending.targetSocket === socket) {
+        this.deletePendingSnapshot(requestId);
+      }
+    }
+  }
+
   private async encode(socket: WebSocket, message: WireMessage): Promise<void> {
     if (socket.readyState !== WebSocket.OPEN) {
       return;
@@ -343,12 +545,28 @@ export type WebSocketTransportOptions = {
   url: string;
   compress?: boolean;
   reconnect?: WebSocketTransportReconnectOptions;
+  snapshot?: WebSocketSnapshotOptions;
 };
 
-export class WebSocketTransport implements Transport {
+export type WebSocketSnapshotOptions = {
+  casDir?: string;
+  casStore?: CasBlockStore;
+  listSnapshotEntries?: (
+    peerNodeId: NodeId,
+    partitionId: PartitionId,
+  ) => Promise<StorageSnapshotCatalogEntry<CasManifest>[]>;
+  loadCatalogManifest?: (
+    peerNodeId: NodeId,
+    groupId: string,
+  ) => Promise<StorageCatalogManifest | undefined>;
+};
+
+export class WebSocketTransport implements Transport, SnapshotSource<CasManifest> {
   private readonly url: string;
   private readonly compress: boolean;
   private readonly reconnectOptions?: WebSocketTransportReconnectOptions;
+  private readonly snapshotOptions?: WebSocketSnapshotOptions;
+  private connection?: WebSocketTransportConnection;
 
   constructor(urlOrOptions: string | WebSocketTransportOptions, compress?: boolean) {
     if (typeof urlOrOptions === "string") {
@@ -358,8 +576,12 @@ export class WebSocketTransport implements Transport {
       this.url = urlOrOptions.url;
       this.compress = urlOrOptions.compress ?? false;
       this.reconnectOptions = urlOrOptions.reconnect;
+      this.snapshotOptions = urlOrOptions.snapshot;
     }
     assertValidWebSocketUrl(this.url, "url");
+    if (this.snapshotOptions?.casDir && this.snapshotOptions.casStore) {
+      throw new Error("snapshot options must pass casDir or casStore, not both");
+    }
   }
 
   async connect(nodeId: NodeId, handlers: TransportHandlers): Promise<TransportConnection> {
@@ -371,14 +593,47 @@ export class WebSocketTransport implements Transport {
     });
 
     const zstd = this.compress ? await loadZstd() : undefined;
-    return new WebSocketTransportConnection(
+    this.connection = new WebSocketTransportConnection(
       nodeId,
       socket,
       handlers,
       zstd,
       this.reconnectOptions,
       this.url,
+      this.snapshotOptions,
     );
+    return this.connection;
+  }
+
+  listSnapshotEntries(
+    peerNodeId: NodeId,
+    partitionId: PartitionId,
+  ): Promise<StorageSnapshotCatalogEntry<CasManifest>[]> {
+    return this.requireSnapshotConnection().requestSnapshotEntries(peerNodeId, partitionId);
+  }
+
+  fetchBlocks(
+    peerNodeId: NodeId,
+    entry: StorageSnapshotCatalogEntry<CasManifest>,
+  ): Promise<number> {
+    return this.requireSnapshotConnection().fetchSnapshotBlocks(peerNodeId, entry);
+  }
+
+  loadCatalogManifest(
+    peerNodeId: NodeId,
+    groupId: string,
+  ): Promise<StorageCatalogManifest | undefined> {
+    return this.requireSnapshotConnection().requestSnapshotCatalog(peerNodeId, groupId);
+  }
+
+  private requireSnapshotConnection(): WebSocketTransportConnection {
+    if (!this.snapshotOptions) {
+      throw new Error("websocket snapshot source is not enabled");
+    }
+    if (!this.connection) {
+      throw new Error("websocket transport is not connected");
+    }
+    return this.connection;
   }
 }
 
@@ -394,9 +649,22 @@ class WebSocketTransportConnection implements TransportConnection {
       timer: ReturnType<typeof setTimeout>;
     }
   >();
+  private readonly pendingSnapshot = new Map<
+    string,
+    {
+      kind: "list" | "catalog" | "block";
+      partitionId?: PartitionId;
+      groupId?: string;
+      hash?: string;
+      resolve: (response: WireMessage) => void;
+      reject: (error: Error) => void;
+      timer: ReturnType<typeof setTimeout>;
+    }
+  >();
   private pingInterval?: ReturnType<typeof setInterval>;
   private rttEwmaMs: number | undefined;
   private closed = false;
+  private readonly snapshotCasStore?: CasBlockStore;
 
   constructor(
     private readonly nodeId: NodeId,
@@ -405,7 +673,11 @@ class WebSocketTransportConnection implements TransportConnection {
     private readonly zstd?: Awaited<ReturnType<typeof loadZstd>>,
     private readonly reconnectOptions?: WebSocketTransportReconnectOptions,
     private readonly url?: string,
+    private readonly snapshotOptions?: WebSocketSnapshotOptions,
   ) {
+    this.snapshotCasStore =
+      snapshotOptions?.casStore ??
+      (snapshotOptions?.casDir ? new NodeCasBlockStore(snapshotOptions.casDir) : undefined);
     this.socket = socket;
     this.attach(socket);
     this.send({ type: "hello", nodeId, protocolVersion: WIRE_PROTOCOL_VERSION });
@@ -539,7 +811,56 @@ class WebSocketTransportConnection implements TransportConnection {
     this.closed = true;
     this.stopPing();
     this.rejectAllPendingReplay("websocket connection closed");
+    this.rejectAllPendingSnapshot("websocket connection closed");
     this.socket.close();
+  }
+
+  async requestSnapshotEntries(
+    targetNodeId: NodeId,
+    partitionId: PartitionId,
+  ): Promise<StorageSnapshotCatalogEntry<CasManifest>[]> {
+    assertValidNodeId(targetNodeId);
+    assertValidPartitionId(partitionId);
+    const response = await this.requestSnapshot(targetNodeId, "list", { partitionId });
+    if (response.type !== "snapshot-list-response") {
+      throw new Error(`snapshot list response type mismatch: ${response.type}`);
+    }
+    return response.entries.map(validateSnapshotEntry);
+  }
+
+  async requestSnapshotCatalog(
+    targetNodeId: NodeId,
+    groupId: string,
+  ): Promise<StorageCatalogManifest | undefined> {
+    assertValidNodeId(targetNodeId);
+    assertNonEmptyString(groupId, "snapshot catalog groupId");
+    const response = await this.requestSnapshot(targetNodeId, "catalog", { groupId });
+    if (response.type !== "snapshot-catalog-response") {
+      throw new Error(`snapshot catalog response type mismatch: ${response.type}`);
+    }
+    return response.manifest;
+  }
+
+  async fetchSnapshotBlocks(
+    targetNodeId: NodeId,
+    entry: StorageSnapshotCatalogEntry<CasManifest>,
+  ): Promise<number> {
+    assertValidNodeId(targetNodeId);
+    const casStore = this.requireSnapshotCasStore();
+    const manifest = validateCasManifest(entry.manifest, entry.snapshotId);
+    const missing = diffMissingBlocks(manifest, await casStore.listBlockHashes());
+    for (const block of missing) {
+      const response = await this.requestSnapshot(targetNodeId, "block", { hash: block.hash });
+      if (response.type !== "snapshot-block-response") {
+        throw new Error(`snapshot block response type mismatch: ${response.type}`);
+      }
+      const content = Buffer.from(response.contentBase64, "base64");
+      if (content.length !== block.size || sha256(content) !== block.hash) {
+        throw new Error(`snapshot block integrity check failed: ${block.hash}`);
+      }
+      await casStore.writeBlock(block.hash, content);
+    }
+    return missing.length;
   }
 
   private send(message: WireMessage): void {
@@ -663,6 +984,81 @@ class WebSocketTransportConnection implements TransportConnection {
         }
         break;
       }
+      case "snapshot-list-request": {
+        assertValidRequestId(message.requestId);
+        assertValidNodeId(message.requesterNodeId);
+        assertValidNodeId(message.targetNodeId);
+        assertValidPartitionId(message.partitionId);
+        if (message.targetNodeId !== this.nodeId) {
+          throw new Error(
+            `snapshot list target mismatch: local=${this.nodeId} target=${message.targetNodeId}`,
+          );
+        }
+        const entries =
+          (await this.snapshotOptions?.listSnapshotEntries?.(
+            message.requesterNodeId,
+            message.partitionId,
+          )) ?? [];
+        this.send({
+          type: "snapshot-list-response",
+          requestId: message.requestId,
+          requesterNodeId: message.requesterNodeId,
+          partitionId: message.partitionId,
+          entries,
+        });
+        break;
+      }
+      case "snapshot-catalog-request": {
+        assertValidRequestId(message.requestId);
+        assertValidNodeId(message.requesterNodeId);
+        assertValidNodeId(message.targetNodeId);
+        assertNonEmptyString(message.groupId, "snapshot catalog groupId");
+        if (message.targetNodeId !== this.nodeId) {
+          throw new Error(
+            `snapshot catalog target mismatch: local=${this.nodeId} target=${message.targetNodeId}`,
+          );
+        }
+        const manifest = await this.snapshotOptions?.loadCatalogManifest?.(
+          message.requesterNodeId,
+          message.groupId,
+        );
+        this.send({
+          type: "snapshot-catalog-response",
+          requestId: message.requestId,
+          requesterNodeId: message.requesterNodeId,
+          groupId: message.groupId,
+          ...(manifest ? { manifest } : {}),
+        });
+        break;
+      }
+      case "snapshot-block-request": {
+        assertValidRequestId(message.requestId);
+        assertValidNodeId(message.requesterNodeId);
+        assertValidNodeId(message.targetNodeId);
+        assertCasBlockHash(message.hash, "snapshot block hash");
+        if (message.targetNodeId !== this.nodeId) {
+          throw new Error(
+            `snapshot block target mismatch: local=${this.nodeId} target=${message.targetNodeId}`,
+          );
+        }
+        const content = await this.requireSnapshotCasStore().readBlock(message.hash);
+        if (sha256(content) !== message.hash) {
+          throw new Error(`local CAS block integrity check failed: ${message.hash}`);
+        }
+        this.send({
+          type: "snapshot-block-response",
+          requestId: message.requestId,
+          requesterNodeId: message.requesterNodeId,
+          hash: message.hash,
+          contentBase64: Buffer.from(content).toString("base64"),
+        });
+        break;
+      }
+      case "snapshot-list-response":
+      case "snapshot-catalog-response":
+      case "snapshot-block-response":
+        this.resolveSnapshotResponse(message);
+        break;
       case "ping":
         assertValidSentAt(message.sentAt);
         this.sendIfOpen({ type: "pong", sentAt: message.sentAt });
@@ -683,6 +1079,138 @@ class WebSocketTransportConnection implements TransportConnection {
       clearTimeout(pending.timer);
       pending.reject(new Error(reason));
     }
+  }
+
+  private async requestSnapshot(
+    targetNodeId: NodeId,
+    kind: "list",
+    payload: { partitionId: PartitionId },
+  ): Promise<Extract<WireMessage, { type: "snapshot-list-response" }>>;
+  private async requestSnapshot(
+    targetNodeId: NodeId,
+    kind: "catalog",
+    payload: { groupId: string },
+  ): Promise<Extract<WireMessage, { type: "snapshot-catalog-response" }>>;
+  private async requestSnapshot(
+    targetNodeId: NodeId,
+    kind: "block",
+    payload: { hash: string },
+  ): Promise<Extract<WireMessage, { type: "snapshot-block-response" }>>;
+  private async requestSnapshot(
+    targetNodeId: NodeId,
+    kind: "list" | "catalog" | "block",
+    payload: { partitionId?: PartitionId; groupId?: string; hash?: string },
+  ): Promise<WireMessage> {
+    if (this.closed) {
+      throw new Error("websocket connection is closed");
+    }
+    const requestId = uuidV7();
+    const timeoutMs = this.replayRequestTimeoutMs();
+    const response = new Promise<WireMessage>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        if (this.pendingSnapshot.delete(requestId)) {
+          reject(new Error(`snapshot request timed out after ${timeoutMs}ms`));
+        }
+      }, timeoutMs);
+      this.pendingSnapshot.set(requestId, { kind, ...payload, resolve, reject, timer });
+    });
+
+    try {
+      if (kind === "list") {
+        this.send({
+          type: "snapshot-list-request",
+          requestId,
+          requesterNodeId: this.nodeId,
+          targetNodeId,
+          partitionId: payload.partitionId!,
+        });
+      } else if (kind === "catalog") {
+        this.send({
+          type: "snapshot-catalog-request",
+          requestId,
+          requesterNodeId: this.nodeId,
+          targetNodeId,
+          groupId: payload.groupId!,
+        });
+      } else {
+        this.send({
+          type: "snapshot-block-request",
+          requestId,
+          requesterNodeId: this.nodeId,
+          targetNodeId,
+          hash: payload.hash!,
+        });
+      }
+    } catch (error) {
+      this.rejectPendingSnapshot(requestId, String(error));
+      throw error;
+    }
+
+    return response;
+  }
+
+  private resolveSnapshotResponse(
+    message: Extract<
+      WireMessage,
+      | { type: "snapshot-list-response" }
+      | { type: "snapshot-catalog-response" }
+      | { type: "snapshot-block-response" }
+    >,
+  ): void {
+    const pending = this.pendingSnapshot.get(message.requestId);
+    if (!pending) {
+      return;
+    }
+    if (message.requesterNodeId !== this.nodeId) {
+      this.rejectPendingSnapshot(
+        message.requestId,
+        `snapshot response mismatch: ${message.requestId}`,
+      );
+      return;
+    }
+    if (
+      (message.type === "snapshot-list-response" &&
+        (pending.kind !== "list" || message.partitionId !== pending.partitionId)) ||
+      (message.type === "snapshot-catalog-response" &&
+        (pending.kind !== "catalog" || message.groupId !== pending.groupId)) ||
+      (message.type === "snapshot-block-response" &&
+        (pending.kind !== "block" || message.hash !== pending.hash))
+    ) {
+      this.rejectPendingSnapshot(
+        message.requestId,
+        `snapshot response mismatch: ${message.requestId}`,
+      );
+      return;
+    }
+
+    this.pendingSnapshot.delete(message.requestId);
+    clearTimeout(pending.timer);
+    pending.resolve(message);
+  }
+
+  private rejectAllPendingSnapshot(reason: string): void {
+    for (const [requestId, pending] of this.pendingSnapshot) {
+      this.pendingSnapshot.delete(requestId);
+      clearTimeout(pending.timer);
+      pending.reject(new Error(reason));
+    }
+  }
+
+  private rejectPendingSnapshot(requestId: string, reason: string): void {
+    const pending = this.pendingSnapshot.get(requestId);
+    if (!pending) {
+      return;
+    }
+    this.pendingSnapshot.delete(requestId);
+    clearTimeout(pending.timer);
+    pending.reject(new Error(reason));
+  }
+
+  private requireSnapshotCasStore(): CasBlockStore {
+    if (!this.snapshotCasStore) {
+      throw new Error("websocket snapshot CAS store is not configured");
+    }
+    return this.snapshotCasStore;
   }
 
   private rejectPendingReplay(requestId: string, reason: string): void {
@@ -791,6 +1319,12 @@ function assertKnownWireMessage(message: unknown): asserts message is WireMessag
     case "event":
     case "replay-request":
     case "replay-response":
+    case "snapshot-list-request":
+    case "snapshot-list-response":
+    case "snapshot-catalog-request":
+    case "snapshot-catalog-response":
+    case "snapshot-block-request":
+    case "snapshot-block-response":
       return;
     default:
       throw new Error(`unknown wire message type: ${String((message as { type: unknown }).type)}`);
@@ -801,4 +1335,34 @@ function assertNodeMatches(name: string, expected: NodeId, actual: NodeId): void
   if (actual !== expected) {
     throw new Error(`${name} mismatch: expected=${expected} actual=${actual}`);
   }
+}
+
+function assertNonEmptyString(value: unknown, name: string): asserts value is string {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error(`${name} must be a non-empty string`);
+  }
+}
+
+function assertCasBlockHash(value: unknown, name: string): asserts value is string {
+  if (typeof value !== "string" || !/^[0-9a-f]{64}$/.test(value)) {
+    throw new Error(`${name} must be a 64-character lowercase sha256 hash`);
+  }
+}
+
+function validateSnapshotEntry(
+  entry: StorageSnapshotCatalogEntry<CasManifest>,
+): StorageSnapshotCatalogEntry<CasManifest> {
+  assertNonEmptyString(entry.groupId, "snapshot entry groupId");
+  assertValidPartitionId(entry.partitionId);
+  assertNonEmptyString(entry.snapshotId, "snapshot entry snapshotId");
+  validateEventCursorEntries(entry.highWatermark);
+  if (entry.manifestKind !== "cas") {
+    throw new Error(`wire snapshot source only supports cas manifests: ${entry.manifestKind}`);
+  }
+  validateCasManifest(entry.manifest, entry.snapshotId);
+  return entry;
+}
+
+function sha256(content: Uint8Array): string {
+  return createHash("sha256").update(content).digest("hex");
 }
